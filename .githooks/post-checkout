@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+echo "📦 post-checkout: syncing secrets"
+[ -f sync-secrets.mjs ] && node sync-secrets.mjs || true
+exit 0

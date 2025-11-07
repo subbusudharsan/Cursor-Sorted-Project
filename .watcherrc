@@ -1,0 +1,15 @@
+{
+  "name": "Supabase Edge Functions Watcher",
+  "version": "2.0.0",
+  "enabled": true,
+  "autoStart": true,
+  "watchPath": "./supabase/functions",
+  "debounceMs": 2000,
+  "logRetention": 7,
+  "features": {
+    "fileHashing": true,
+    "deduplication": true,
+    "secretSync": true,
+    "backups": true
+  }
+}

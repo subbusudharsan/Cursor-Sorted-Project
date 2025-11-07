@@ -1,0 +1,928 @@
+import React, { useState, useEffect } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TouchableOpacity,
+  Modal,
+  ActivityIndicator,
+  TextInput,
+  Animated,
+} from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { router } from 'expo-router';
+import { useAuth } from '@/contexts/AuthContext';
+import { useNotifications } from '@/contexts/NotificationContext';
+import { supabase } from '@/lib/supabase';
+import { Bot, Bell, MessageCircle, Users, Heart, Plus, User, History, Clock, Search } from 'lucide-react-native';
+import NotificationsList from '@/components/NotificationsList';
+import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/Colors';
+import LoadingSpinner from '@/components/ui/LoadingSpinner';
+
+interface ContactChat {
+  contact_id: string;
+  contact_name: string;
+  contact_email: string;
+  last_message: string | null;
+  last_message_at: string | null;
+  session_count: number;
+  ongoing_count: number;
+  total_ongoing_count?: number;
+  contact_profile?: {
+    id: string;
+    email: string;
+    full_name: string | null;
+    avatar_url: string | null;
+  };
+  participants?: string[];
+  context_data?: any;
+  issueLabel?: string;
+  isUserB?: boolean;
+  lastMsg?: string;
+  is_resolved?: boolean;
+}
+
+function ChatsScreen() {
+  const insets = useSafeAreaInsets();
+  const { user } = useAuth();
+  const { unreadCount } = useNotifications();
+  const [contactChats, setContactChats] = useState<ContactChat[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [userProfile, setUserProfile] = useState<{ 
+    full_name: string | null; 
+    nickname: string | null;
+  } | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const fadeAnim = React.useRef(new Animated.Value(0)).current;
+  const [multiSelectMode, setMultiSelectMode] = useState(false);
+  const [selectedContactIds, setSelectedContactIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    Animated.timing(fadeAnim, {
+      toValue: 1,
+      duration: 600,
+      useNativeDriver: true,
+    }).start();
+  }, []);
+
+  useEffect(() => {
+    if (user) {
+      fetchUserProfile();
+      fetchAllChats();
+      setupRealtimeSubscription();
+      setupProfileSubscription();
+    }
+  }, [user]);
+
+  const fetchUserProfile = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('full_name, nickname')
+        .eq('id', user?.id)
+        .single();
+
+      if (error) throw error;
+      setUserProfile(data);
+    } catch (error) {
+      console.error('Error fetching user profile:', error);
+    }
+  };
+
+  const fetchAllChats = async () => {
+    console.log('📥 Fetching all chats for user:', user?.id);
+    try {
+      // Get all contact chats where user is involved
+      const { data: contactChatsData, error: contactChatsError } = await supabase
+  .from('chats')
+  .select(`
+    id,
+    user_id,
+    contact_id,
+    last_message,
+    last_message_at,
+    is_resolved,
+    context_data,
+    contact_profile:profiles!chats_contact_id_fkey(
+      id,
+      email,
+      full_name,
+      avatar_url
+    ),
+    owner_profile:profiles!chats_user_id_fkey(
+      id,
+      email,
+      full_name,
+      avatar_url
+    )
+  `)
+  .or(`user_id.eq.${user?.id},contact_id.eq.${user?.id},participants.cs.{${user?.id}}`)
+  .eq('chat_type', 'contact_chat')
+  .order('last_message_at', { ascending: false });
+
+if (contactChatsError) throw contactChatsError;
+
+// 🧩 Fetch latest messages fallback (only if last_message missing)
+const { data: recentMsgs } = await supabase
+  .from('messages')
+  .select('chat_id, content, created_at')
+  .order('created_at', { ascending: false })
+  .limit(50);
+
+const latestMsgMap = new Map<string, { content: string; created_at: string }>();
+(recentMsgs || []).forEach(msg => {
+  if (!latestMsgMap.has(msg.chat_id)) {
+    latestMsgMap.set(msg.chat_id, {
+      content: msg.content,
+      created_at: msg.created_at
+    });
+  }
+});
+
+// ✅ Include all chats where user participates (no over-filter)
+const validContactChats = (contactChatsData || []).filter((chat: any) =>
+  chat.user_id === user?.id ||
+  chat.contact_id === user?.id ||
+  (chat.participants && chat.participants.includes(user?.id))
+);
+
+// 🧠 Merge latest message fallback
+validContactChats.forEach(chat => {
+  if ((!chat.last_message || !chat.last_message_at) && latestMsgMap.has(chat.id)) {
+    const latest = latestMsgMap.get(chat.id);
+    chat.last_message = latest?.content || 'New conversation started';
+    chat.last_message_at = latest?.created_at || new Date().toISOString();
+  }
+});
+
+// 👇 keep your same grouping logic and issueLabel additions as before
+
+// Group contact chats by contact and precompute ongoing counts
+const contactChatMap = new Map<string, ContactChat>();
+const myOngoingByContact = new Map<string, number>();
+const totalOngoingByContact = new Map<string, number>();
+
+validContactChats.forEach((chat: any) => {
+  // Determine the contact ID and profile
+  let contactId: string = '';
+  let contactProfile: any;
+  const isMyTalk = chat.user_id === user?.id;
+
+  if (chat.user_id === user?.id) {
+    contactId = chat.contact_id;
+    contactProfile = Array.isArray(chat.contact_profile) ? chat.contact_profile[0] : chat.contact_profile;
+  } else if (chat.contact_id === user?.id) {
+    contactId = chat.user_id;
+    contactProfile = Array.isArray(chat.owner_profile) ? chat.owner_profile[0] : chat.owner_profile;
+  } else if (chat.participants && chat.participants.includes(user?.id)) {
+    const otherParticipantId = chat.participants.find((id: string) => id !== user?.id);
+    contactId = otherParticipantId || '';
+    const contactProf = Array.isArray(chat.contact_profile) ? chat.contact_profile[0] : chat.contact_profile;
+    const ownerProf = Array.isArray(chat.owner_profile) ? chat.owner_profile[0] : chat.owner_profile;
+    contactProfile =
+      contactProf?.id === otherParticipantId
+        ? contactProf
+        : ownerProf;
+  }
+
+  if (!contactId || !contactProfile) return;
+  const chatData: ContactChat = {
+    contact_id: contactId,
+    contact_name: contactProfile?.full_name || contactProfile?.email || 'Unknown',
+    contact_email: contactProfile?.email || '',
+    last_message: chat.last_message || 'New conversation started',
+    last_message_at: chat.last_message_at,
+    session_count: 1,
+    ongoing_count: 0, // will set after loop from maps
+    total_ongoing_count: 0, // will set after loop from maps
+    contact_profile: contactProfile,
+    context_data: chat.context_data || {},
+    participants: chat.participants,
+    is_resolved: chat.is_resolved,
+  };
+
+  const existingContact = contactChatMap.get(contactId);
+  if (!existingContact) {
+    contactChatMap.set(contactId, chatData);
+  } else {
+    if (
+      chat.last_message_at &&
+      (!existingContact.last_message_at ||
+        new Date(chat.last_message_at) >
+          new Date(existingContact.last_message_at))
+    ) {
+      existingContact.last_message = chat.last_message || 'New conversation started';
+      existingContact.last_message_at = chat.last_message_at;
+    }
+    existingContact.session_count += 1;
+  }
+
+  // Count ongoing per contact (maps prevent double-count drift when aggregating later)
+  // My Talks = chats where user_id === current user (user started the chat)
+  // Total = all unresolved chats with this contact (regardless of who started)
+  if (!chat.is_resolved) {
+    totalOngoingByContact.set(contactId, (totalOngoingByContact.get(contactId) || 0) + 1);
+    if (isMyTalk) {
+      myOngoingByContact.set(contactId, (myOngoingByContact.get(contactId) || 0) + 1);
+    }
+    console.log(`📊 Chat counting: chat_id=${chat.id}, user_id=${chat.user_id}, contact_id=${chat.contact_id}, isMyTalk=${isMyTalk}, contactId=${contactId}, myOngoing=${myOngoingByContact.get(contactId)}, totalOngoing=${totalOngoingByContact.get(contactId)}`);
+  }
+});
+
+// Apply the precomputed counts
+const finalChats = Array.from(contactChatMap.values()).map((chat) => {
+  const myOngoing = myOngoingByContact.get(chat.contact_id) || 0;
+  const totalOngoing = totalOngoingByContact.get(chat.contact_id) || 0;
+  const isUserA = chat.contact_profile?.id !== user?.id;
+  const isUserB = !isUserA;
+
+  if (isUserA) {
+    return {
+      ...chat,
+      ongoing_count: myOngoing,
+      total_ongoing_count: totalOngoing,
+      issueLabel:
+        chat?.context_data?.summary_a
+          ? `ISSUE: ${chat.context_data.summary_a}`
+          : '',
+      lastMsg: chat?.last_message
+        ? `Last message: ${chat.last_message}`
+        : '',
+      isUserB: false,
+    };
+  }
+
+  return {
+    ...chat,
+    ongoing_count: myOngoing,
+    total_ongoing_count: totalOngoing,
+    issueLabel:
+      chat?.context_data?.hint_to_contact?.full_text
+        ? `ISSUE: ${chat.context_data.hint_to_contact.full_text}`
+        : '',
+    lastMsg: chat?.last_message
+      ? `Last message: ${chat.last_message}`
+      : '',
+    isUserB: true,
+  };
+});
+
+// Sort by last_message_at in descending order (newest first)
+finalChats.sort((a, b) => {
+  const dateA = a.last_message_at ? new Date(a.last_message_at).getTime() : 0;
+  const dateB = b.last_message_at ? new Date(b.last_message_at).getTime() : 0;
+  return dateB - dateA;
+});
+
+setContactChats(finalChats);
+
+
+    } catch (error) {
+      console.error('💥 Error in fetchAllChats:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const setupRealtimeSubscription = () => {
+    if (!user?.id) return () => {};
+
+    const subscription = supabase
+      .channel(`user-chats-${user?.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'chats',
+        },
+        (payload: any) => {
+          const chatData = payload.new || payload.old;
+          if (chatData && (
+            chatData.user_id === user?.id ||
+            chatData.contact_id === user?.id ||
+            (chatData.participants && chatData.participants.includes(user?.id))
+          )) {
+            fetchAllChats();
+          }
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'messages',
+        },
+        (payload) => {
+          fetchAllChats();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      try {
+        supabase.removeChannel(subscription);
+      } catch (error) {
+        console.error('Error cleaning up chats subscription:', error);
+      }
+    };
+  };
+
+  const setupProfileSubscription = () => {
+    if (!user?.id) return () => {};
+
+    const profileSubscription = supabase
+      .channel(`user-profile-${user?.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'profiles',
+          filter: `id=eq.${user?.id}`,
+        },
+        (payload) => {
+          fetchUserProfile();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      try {
+        supabase.removeChannel(profileSubscription);
+      } catch (error) {
+        console.error('Error cleaning up profile subscription:', error);
+      }
+    };
+  };
+
+  const formatTime = (timestamp: string | null) => {
+    if (!timestamp) return '';
+    const date = new Date(timestamp);
+    const now = new Date();
+    const diffInHours = (now.getTime() - date.getTime()) / (1000 * 60 * 60);
+
+    if (diffInHours < 1) {
+      return 'Just now';
+    } else if (diffInHours < 24) {
+      return `${Math.floor(diffInHours)}h ago`;
+    } else {
+      return date.toLocaleDateString();
+    }
+  };
+
+  const handleContactPress = (contactChat: ContactChat) => {
+    if (multiSelectMode) {
+      setSelectedContactIds(prev => prev.includes(contactChat.contact_id)
+        ? prev.filter(id => id !== contactChat.contact_id)
+        : [...prev, contactChat.contact_id]);
+      return;
+    }
+    router.push(`/contact-chat-details?contactId=${contactChat.contact_id}`);
+  };
+
+  const handleAIAssistantPress = () => {
+    router.push('/ai-assistant');
+  };
+
+  const handleNotificationsPress = () => {
+    setShowNotifications(true);
+  };
+
+  // Filter contacts based on search query
+  const filteredContacts = contactChats.filter(contact =>
+    contact.contact_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    contact.contact_email.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.loadingContainer}>
+          <LoadingSpinner size="large" />
+          <Text style={styles.loadingText}>Loading your conversations...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <Animated.View style={[styles.content, { opacity: fadeAnim, paddingTop: insets.top }]}> 
+        {/* Centered content container */}
+        <View style={styles.centeredContainer}>
+          {/* Title and Notifications */}
+          <View style={styles.titleSection}>
+            <Text style={styles.title}>Chats</Text>
+            <TouchableOpacity
+              style={styles.headerButton}
+              onPress={handleNotificationsPress}
+            >
+              <Bell size={20} color={Colors.primary[500]} />
+              {unreadCount > 0 && (
+                <View style={styles.notificationBadge}>
+                  <Text style={styles.badgeText}>
+                    {unreadCount > 99 ? '99+' : unreadCount.toString()}
+                  </Text>
+                </View>
+              )}
+            </TouchableOpacity>
+          </View>
+
+          {/* Welcome Section */}
+          <View style={styles.welcomeSection}>
+            <Text style={styles.welcomeText}>
+              Welcome back{userProfile?.nickname ? `, ${userProfile.nickname}` : userProfile?.full_name ? `, ${userProfile.full_name}` : ''}!
+            </Text>
+          </View>
+
+          {/* AI Assistant Button */}
+          <TouchableOpacity style={styles.aiAssistantButton} onPress={handleAIAssistantPress}>
+            <View style={styles.aiAssistantIcon}>
+              <Text style={styles.aiAssistantEmoji}>🤖</Text>
+            </View>
+            <Text style={styles.aiAssistantButtonText}>Discuss with AI Assistant</Text>
+          </TouchableOpacity>
+
+          {/* Search Box */}
+          <View style={styles.searchContainer}>
+            <View style={styles.searchIcon}>
+              <Search size={18} color={Colors.text.tertiary} />
+            </View>
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search conversations..."
+              placeholderTextColor={Colors.text.tertiary}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+            />
+          </View>
+
+          {/* Chats List */}
+          <View style={styles.chatsList}>
+            {filteredContacts.length === 0 ? (
+              <View style={styles.emptyState}>
+                <View style={styles.emptyIcon}>
+                  <MessageCircle size={32} color={Colors.primary[400]} />
+                </View>
+                <Text style={styles.emptyTitle}>
+                  {searchQuery ? 'No contacts found' : 'No conversations yet'}
+                </Text>
+                <Text style={styles.emptyDescription}>
+                  {searchQuery 
+                    ? 'Try adjusting your search terms'
+                    : 'Start conversations with your contacts to see them here'
+                  }
+                </Text>
+              </View>
+            ) : (
+              <ScrollView 
+                style={styles.chatsScrollView} 
+                contentContainerStyle={styles.chatsContent}
+                showsVerticalScrollIndicator={false}
+              >
+                {filteredContacts.map((contactChat) => (
+                  <TouchableOpacity
+                    key={contactChat.contact_id}
+                    style={styles.chatCard}
+                    onPress={() => handleContactPress(contactChat)}
+                    onLongPress={() => {
+                      if (!multiSelectMode) {
+                        setMultiSelectMode(true);
+                        setSelectedContactIds([contactChat.contact_id]);
+                      }
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <View style={styles.chatContent}>
+                      <View style={styles.chatInfo}>
+                        {multiSelectMode && (
+                          <View style={styles.radioWrap}>
+                            <View style={[styles.radioOuter, selectedContactIds.includes(contactChat.contact_id) && styles.radioOuterSelected]}>
+                              {selectedContactIds.includes(contactChat.contact_id) && <View style={styles.radioInner} />}
+                            </View>
+                          </View>
+                        )}
+                        <View style={styles.chatAvatar}>
+                          <User size={20} color={Colors.success[500]} />
+                        </View>
+                        <View style={styles.chatDetails}>
+                          <View style={styles.chatTitleRow}>
+                            <Text style={styles.chatTitle} numberOfLines={1}>{contactChat.contact_name}</Text>
+                          </View>
+                         {contactChat.issueLabel ? (
+  <View style={styles.issueRow}>
+    <Text style={styles.issueText} numberOfLines={1}>
+      {contactChat.issueLabel}
+    </Text>
+    {contactChat.isUserB && (
+      <View style={styles.hintBadge}>
+        <Text style={styles.hintBadgeText}>💬 Hint Received</Text>
+      </View>
+    )}
+  </View>
+) : null}
+
+
+{contactChat.lastMsg ? (
+  <Text style={styles.lastMsgText} numberOfLines={1}>
+    {contactChat.lastMsg}
+  </Text>
+) : (
+  <Text style={styles.lastMessage} numberOfLines={1}>
+    {contactChat.last_message || 'No messages yet'}
+  </Text>
+)}
+{/* ✅ Closed peacefully label */}
+{contactChat.context_data?.is_resolved || contactChat.is_resolved ? (
+  <Text style={styles.closedPeacefullyText}>✅ Closed peacefully</Text>
+) : null}
+
+                        </View>
+                      </View>
+                      <View style={styles.badgeContainer}>
+                        {contactChat.ongoing_count > 0 && (
+                          <View style={styles.ongoingBadge}>
+                            <Text style={styles.ongoingBadgeText}>
+                              {contactChat.ongoing_count} ongoing
+                            </Text>
+                          </View>
+                        )}
+                        {(contactChat.total_ongoing_count || 0) > 0 && (
+                          <View style={styles.sessionBadge}>
+                            <Text style={styles.sessionBadgeText}>
+                              {contactChat.total_ongoing_count} total
+                            </Text>
+                          </View>
+                        )}
+                        <Text style={styles.chatTimeCompact}>
+                          {formatTime(contactChat.last_message_at)}
+                        </Text>
+                      </View>
+                    </View>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Animated.View>
+
+      {multiSelectMode && (
+        <View style={styles.actionBar}>
+          <Text style={styles.selectedCount}>{selectedContactIds.length} selected</Text>
+          <View style={styles.actionButtons}>
+            <TouchableOpacity
+              style={styles.cancelBtn}
+              onPress={() => { setMultiSelectMode(false); setSelectedContactIds([]); }}
+            >
+              <Text style={styles.cancelText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.deleteBtn, selectedContactIds.length === 0 && styles.deleteBtnDisabled]}
+              disabled={selectedContactIds.length === 0}
+              onPress={async () => {
+                try {
+                  if (!user?.id) return;
+                  for (const cid of selectedContactIds) {
+                    await supabase
+                      .from('chats')
+                      .delete()
+                      .eq('user_id', user.id)
+                      .eq('contact_id', cid)
+                      .eq('chat_type', 'contact_chat');
+                  }
+                  setMultiSelectMode(false);
+                  setSelectedContactIds([]);
+                  await fetchAllChats();
+                } catch (e) {
+                  console.error('Delete chats failed', e);
+                }
+              }}
+            >
+              <Text style={styles.deleteText}>Delete</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      <Modal
+        visible={showNotifications}
+        animationType="slide"
+        presentationStyle="pageSheet"
+      >
+        <NotificationsList onClose={() => setShowNotifications(false)} />
+      </Modal>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: Colors.background,
+  },
+  content: {
+    flex: 1,
+  },
+  centeredContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.lg,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: Spacing.lg,
+  },
+  loadingText: {
+    fontSize: Typography.fontSize.lg,
+    color: Colors.text.secondary,
+    fontWeight: Typography.fontWeight.medium,
+  },
+  titleSection: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: Spacing.lg,
+  },
+  title: {
+    fontSize: Typography.fontSize['2xl'],
+    fontWeight: Typography.fontWeight.bold,
+    color: '#0288D1',
+  },
+  welcomeSection: {
+    alignItems: 'center',
+    marginBottom: Spacing.xl,
+  },
+  welcomeText: {
+    fontSize: Typography.fontSize.lg,
+    fontWeight: Typography.fontWeight.semibold,
+    color: '#0288D1',
+    textAlign: 'center',
+  },
+  headerButton: {
+    width: 40,
+    height: 40,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: Colors.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
+    ...Shadows.small,
+  },
+  notificationBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    backgroundColor: Colors.error[500],
+    borderRadius: BorderRadius.full,
+    minWidth: 18,
+    height: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 6,
+    borderWidth: 2,
+    borderColor: Colors.background,
+  },
+  badgeText: {
+    color: Colors.text.inverse,
+    fontSize: Typography.fontSize.xs,
+    fontWeight: Typography.fontWeight.semibold,
+  },
+  aiAssistantButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.primary[500],
+    borderWidth: 3,
+    borderColor: Colors.secondary[600],
+    paddingVertical: Spacing.lg,
+    paddingHorizontal: Spacing.lg,
+    borderRadius: BorderRadius.xl,
+    marginBottom: Spacing.xl,
+    ...Shadows.medium,
+  },
+  aiAssistantIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: Spacing.md,
+  },
+  aiAssistantEmoji: {
+    fontSize: 20,
+  },
+  aiAssistantButtonText: {
+    fontSize: Typography.fontSize.lg,
+    fontWeight: Typography.fontWeight.bold,
+    color: '#FFFFFF',
+    flex: 1,
+    textShadowColor: Colors.secondary[600],
+    textShadowOffset: { width: 1, height: 1 },
+    textShadowRadius: 2,
+  },
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: Spacing.xl,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    ...Shadows.small,
+  },
+  searchIcon: {
+    marginRight: Spacing.md,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: Typography.fontSize.base,
+    color: Colors.text.primary,
+  },
+  chatsList: {
+    flex: 1,
+    // Allow full page scrolling
+    // Removing height cap to avoid half-scrolled view
+  },
+  chatsScrollView: {
+    flex: 1,
+  },
+  chatsContent: {
+    paddingBottom: Spacing.lg,
+  },
+  emptyState: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.xl,
+  },
+  emptyIcon: {
+    width: 64,
+    height: 64,
+    borderRadius: BorderRadius.xxl,
+    backgroundColor: Colors.primary[50],
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: Spacing.lg,
+  },
+  emptyTitle: {
+    fontSize: Typography.fontSize.lg,
+    fontWeight: Typography.fontWeight.semibold,
+    color: Colors.text.primary,
+    marginBottom: Spacing.sm,
+    textAlign: 'center',
+  },
+  emptyDescription: {
+    fontSize: Typography.fontSize.sm,
+    color: Colors.text.secondary,
+    textAlign: 'center',
+    lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
+  },
+  chatCard: {
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.md,
+    marginBottom: Spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+    ...Shadows.medium,
+  },
+  chatContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  chatInfo: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    flex: 1,
+  },
+  radioWrap: { justifyContent: 'center', alignItems: 'center', marginRight: Spacing.sm },
+  radioOuter: { width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: Colors.primary[500], justifyContent: 'center', alignItems: 'center' },
+  radioOuterSelected: { borderColor: Colors.primary[700] },
+  radioInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: Colors.primary[600] },
+  chatAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: Colors.success[50],
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: Spacing.md,
+  },
+  chatDetails: {
+    flex: 1,
+  },
+  chatTitleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 2,
+  },
+  chatTitle: {
+    fontSize: Typography.fontSize.base,
+    fontWeight: Typography.fontWeight.semibold,
+    color: Colors.text.primary,
+    flex: 1,
+    marginRight: Spacing.sm,
+  },
+  chatTime: {
+    fontSize: Typography.fontSize.sm,
+    color: Colors.text.tertiary,
+  },
+  badgeContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    marginTop: Spacing.xs,
+  },
+  ongoingBadge: {
+    backgroundColor: Colors.warning[500],
+    borderRadius: BorderRadius.sm,
+    paddingHorizontal: Spacing.xs,
+    paddingVertical: 2,
+  },
+  ongoingBadgeText: {
+    color: Colors.text.inverse,
+    fontSize: Typography.fontSize.xs,
+    fontWeight: Typography.fontWeight.semibold,
+  },
+  sessionBadge: {
+    backgroundColor: Colors.neutral[400],
+    borderRadius: BorderRadius.sm,
+    paddingHorizontal: Spacing.xs,
+    paddingVertical: 2,
+  },
+  sessionBadgeText: {
+    color: Colors.text.inverse,
+    fontSize: Typography.fontSize.xs,
+    fontWeight: Typography.fontWeight.semibold,
+  },
+  chatTimeCompact: {
+    marginLeft: Spacing.sm,
+    fontSize: Typography.fontSize.xs,
+    color: Colors.text.tertiary,
+  },
+  lastMessage: {
+    fontSize: Typography.fontSize.sm,
+    color: Colors.text.secondary,
+    lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
+  },
+ issueText: {
+  color: Colors.primary[700],
+  fontSize: Typography.fontSize.sm,
+  fontWeight: Typography.fontWeight.semibold,
+  marginTop: 2,
+},
+lastMsgText: {
+  color: Colors.text.secondary,
+  fontSize: Typography.fontSize.sm,
+  marginTop: 1,
+},
+
+issueRow: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  gap: 6,
+},
+hintBadge: {
+  backgroundColor: Colors.primary[100],
+  borderRadius: BorderRadius.sm,
+  paddingHorizontal: 6,
+  paddingVertical: 2,
+  marginLeft: 4,
+},
+hintBadgeText: {
+  fontSize: Typography.fontSize.xs,
+  color: Colors.primary[700],
+  fontWeight: Typography.fontWeight.medium,
+},
+  closedPeacefullyText: {
+  fontSize: Typography.fontSize.xs,
+  color: Colors.success[600],
+  fontWeight: Typography.fontWeight.semibold,
+  marginTop: 4,
+},
+  actionBar: { position: 'absolute', left: 0, right: 0, bottom: 0, padding: Spacing.md, backgroundColor: Colors.surfaceElevated, borderTopWidth: 1, borderTopColor: Colors.borderLight, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  actionButtons: { flexDirection: 'row', gap: Spacing.md },
+  selectedCount: { fontSize: Typography.fontSize.sm, color: Colors.text.primary, fontWeight: Typography.fontWeight.semibold },
+  cancelBtn: { backgroundColor: Colors.surface, borderWidth: 1, borderColor: Colors.borderLight, paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs, borderRadius: BorderRadius.lg },
+  cancelText: { color: Colors.text.secondary, fontSize: Typography.fontSize.sm },
+  deleteBtn: { backgroundColor: Colors.error[600], paddingHorizontal: Spacing.md, paddingVertical: Spacing.xs, borderRadius: BorderRadius.lg },
+  deleteBtnDisabled: { opacity: 0.5 },
+  deleteText: { color: Colors.text.inverse, fontSize: Typography.fontSize.sm, fontWeight: Typography.fontWeight.semibold },
+
+
+});
+
+export default ChatsScreen;

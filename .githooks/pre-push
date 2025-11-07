@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+if [ -z "$SUPABASE_PROJECT_ID" ] || [ -z "$SUPABASE_ACCESS_TOKEN" ]; then
+  echo "❌ Missing SUPABASE_PROJECT_ID or SUPABASE_ACCESS_TOKEN in env when pushing."
+  echo "   Add them to .env and your CI secrets."
+  exit 0
+fi
+exit 0

@@ -1,0 +1,114 @@
+[2025-11-02 12:26:29] ⚙️  Supabase Edge Functions Auto-Deploy System v2.0 Starting...
+[2025-11-02 12:26:29] ======================================================================
+[2025-11-02 12:26:29] 🚀 Supabase Edge Functions Auto-Deploy System v2.0
+[2025-11-02 12:26:29] ======================================================================
+[2025-11-02 12:26:29] 
+[2025-11-02 12:26:29] Configuration:
+[2025-11-02 12:26:29]   Project ID: kojoqekw...
+[2025-11-02 12:26:29]   Functions Dir: /tmp/cc-agent/59525076/project/supabase/functions
+[2025-11-02 12:26:29]   Backup Dir: /tmp/cc-agent/59525076/project/safe_backups
+[2025-11-02 12:26:29]   Debounce: 2000ms
+[2025-11-02 12:26:29] 
+[2025-11-02 12:26:29] 🔐 Synchronizing secrets (non-blocking)...
+[2025-11-02 12:26:33] ✅ Secrets synchronized successfully
+[2025-11-02 12:26:33] 
+[2025-11-02 12:26:33] 🌍 Initial deployment of all functions...
+[2025-11-02 12:26:33] 📦 Found 13 function(s) to deploy
+[2025-11-02 12:26:33] 🚀 Deploying add-contact-relationship (attempt #1)...
+[2025-11-02 12:26:33] 💾 Backup created: safe_backups/add-contact-relationship/index_2025-11-02T12-26-33-178Z.ts
+[2025-11-02 12:26:33] 📦 Zip created: safe_backups/add-contact-relationship.zip (132 bytes)
+[2025-11-02 12:26:33] 📦 Preparing add-contact-relationship: 0 bytes (0.00 KB)
+[2025-11-02 12:26:33] ✅ add-contact-relationship deployed successfully in 0.61s
+[2025-11-02 12:26:33] 📊 Stats: 1/1 successful
+[2025-11-02 12:26:33] 🚀 Deploying analyze-and-generate-questions (attempt #2)...
+[2025-11-02 12:26:33] 💾 Backup created: safe_backups/analyze-and-generate-questions/index_2025-11-02T12-26-33-785Z.ts
+[2025-11-02 12:26:33] 📦 Zip created: safe_backups/analyze-and-generate-questions.zip (2830 bytes)
+[2025-11-02 12:26:33] 📦 Preparing analyze-and-generate-questions: 7828 bytes (7.64 KB)
+[2025-11-02 12:26:34] ✅ analyze-and-generate-questions deployed successfully in 0.57s
+[2025-11-02 12:26:34] 📊 Stats: 2/2 successful
+[2025-11-02 12:26:34] 🚀 Deploying analyze-conversation-state (attempt #3)...
+[2025-11-02 12:26:34] 💾 Backup created: safe_backups/analyze-conversation-state/index_2025-11-02T12-26-34-357Z.ts
+[2025-11-02 12:26:34] 📦 Zip created: safe_backups/analyze-conversation-state.zip (3134 bytes)
+[2025-11-02 12:26:34] 📦 Preparing analyze-conversation-state: 8676 bytes (8.47 KB)
+[2025-11-02 12:26:35] ✅ analyze-conversation-state deployed successfully in 0.64s
+[2025-11-02 12:26:35] 📊 Stats: 3/3 successful
+[2025-11-02 12:26:35] 🚀 Deploying delete-user-account (attempt #4)...
+[2025-11-02 12:26:35] 💾 Backup created: safe_backups/delete-user-account/index_2025-11-02T12-26-35-001Z.ts
+[2025-11-02 12:26:35] 📦 Zip created: safe_backups/delete-user-account.zip (132 bytes)
+[2025-11-02 12:26:35] 📦 Preparing delete-user-account: 0 bytes (0.00 KB)
+[2025-11-02 12:26:35] ✅ delete-user-account deployed successfully in 0.46s
+[2025-11-02 12:26:35] 📊 Stats: 4/4 successful
+[2025-11-02 12:26:35] 🚀 Deploying evaluate-closure-readiness (attempt #5)...
+[2025-11-02 12:26:35] 💾 Backup created: safe_backups/evaluate-closure-readiness/index_2025-11-02T12-26-35-457Z.ts
+[2025-11-02 12:26:35] 📦 Zip created: safe_backups/evaluate-closure-readiness.zip (2713 bytes)
+[2025-11-02 12:26:35] 📦 Preparing evaluate-closure-readiness: 7558 bytes (7.38 KB)
+[2025-11-02 12:26:36] ✅ evaluate-closure-readiness deployed successfully in 0.61s
+[2025-11-02 12:26:36] 📊 Stats: 5/5 successful
+[2025-11-02 12:26:36] 🚀 Deploying generate-contextual-options (attempt #6)...
+[2025-11-02 12:26:36] 💾 Backup created: safe_backups/generate-contextual-options/index_2025-11-02T12-26-36-067Z.ts
+[2025-11-02 12:26:36] 📦 Zip created: safe_backups/generate-contextual-options.zip (11557 bytes)
+[2025-11-02 12:26:36] 📦 Preparing generate-contextual-options: 32419 bytes (31.66 KB)
+[2025-11-02 12:26:36] ❌ Failed to deploy generate-contextual-options: 400 - {"message":"Failed to bundle the function (reason: The module's source code could not be parsed: 'import', and 'export' cannot be used outside of module code at file:///tmp/user_fn_kojoqekwnlzsiqyfwhkv_fc1518a4-0c80-4d71-bd52-a1109529f75d_632/source/index.ts:661:1\n\n  import { normalizePronounReferences } from '@/lib/pronounResolution';\n  ~~~~~~)."}
+[2025-11-02 12:26:36] 📊 Stats: 5/6 successful, 1 failed
+[2025-11-02 12:26:36] 🚀 Deploying generate-summary (attempt #7)...
+[2025-11-02 12:26:36] 💾 Backup created: safe_backups/generate-summary/index_2025-11-02T12-26-36-529Z.ts
+[2025-11-02 12:26:36] 📦 Zip created: safe_backups/generate-summary.zip (2975 bytes)
+[2025-11-02 12:26:36] 📦 Preparing generate-summary: 8551 bytes (8.35 KB)
+[2025-11-02 12:26:36] ✅ generate-summary deployed successfully in 0.42s
+[2025-11-02 12:26:36] 📊 Stats: 6/7 successful
+[2025-11-02 12:26:36] 🚀 Deploying invoke-claude (attempt #8)...
+[2025-11-02 12:26:36] 💾 Backup created: safe_backups/invoke-claude/index_2025-11-02T12-26-36-951Z.ts
+[2025-11-02 12:26:36] 📦 Zip created: safe_backups/invoke-claude.zip (1830 bytes)
+[2025-11-02 12:26:36] 📦 Preparing invoke-claude: 5619 bytes (5.49 KB)
+[2025-11-02 12:26:37] ✅ invoke-claude deployed successfully in 0.58s
+[2025-11-02 12:26:37] 📊 Stats: 7/8 successful
+[2025-11-02 12:26:37] 🚀 Deploying orchestrate-conversation (attempt #9)...
+[2025-11-02 12:26:37] 💾 Backup created: safe_backups/orchestrate-conversation/index_2025-11-02T12-26-37-532Z.ts
+[2025-11-02 12:26:37] 📦 Zip created: safe_backups/orchestrate-conversation.zip (4994 bytes)
+[2025-11-02 12:26:37] 📦 Preparing orchestrate-conversation: 15998 bytes (15.62 KB)
+[2025-11-02 12:26:38] ✅ orchestrate-conversation deployed successfully in 0.74s
+[2025-11-02 12:26:38] 📊 Stats: 8/9 successful
+[2025-11-02 12:26:38] 🚀 Deploying send-email-invite (attempt #10)...
+[2025-11-02 12:26:38] 💾 Backup created: safe_backups/send-email-invite/index_2025-11-02T12-26-38-274Z.ts
+[2025-11-02 12:26:38] 📦 Zip created: safe_backups/send-email-invite.zip (1411 bytes)
+[2025-11-02 12:26:38] 📦 Preparing send-email-invite: 2944 bytes (2.88 KB)
+[2025-11-02 12:26:38] ✅ send-email-invite deployed successfully in 0.47s
+[2025-11-02 12:26:38] 📊 Stats: 9/10 successful
+[2025-11-02 12:26:38] 🚀 Deploying send-push-notification (attempt #11)...
+[2025-11-02 12:26:38] 💾 Backup created: safe_backups/send-push-notification/index_2025-11-02T12-26-38-746Z.ts
+[2025-11-02 12:26:38] 📦 Zip created: safe_backups/send-push-notification.zip (132 bytes)
+[2025-11-02 12:26:38] 📦 Preparing send-push-notification: 0 bytes (0.00 KB)
+[2025-11-02 12:26:39] ✅ send-push-notification deployed successfully in 0.46s
+[2025-11-02 12:26:39] 📊 Stats: 10/11 successful
+[2025-11-02 12:26:39] 🚀 Deploying validate-context-quality (attempt #12)...
+[2025-11-02 12:26:39] 💾 Backup created: safe_backups/validate-context-quality/index_2025-11-02T12-26-39-204Z.ts
+[2025-11-02 12:26:39] 📦 Zip created: safe_backups/validate-context-quality.zip (4831 bytes)
+[2025-11-02 12:26:39] 📦 Preparing validate-context-quality: 15674 bytes (15.31 KB)
+[2025-11-02 12:26:40] ✅ validate-context-quality deployed successfully in 1.17s
+[2025-11-02 12:26:40] 📊 Stats: 11/12 successful
+[2025-11-02 12:26:40] 🚀 Deploying validate-option-relevance (attempt #13)...
+[2025-11-02 12:26:40] 💾 Backup created: safe_backups/validate-option-relevance/index_2025-11-02T12-26-40-370Z.ts
+[2025-11-02 12:26:40] 📦 Zip created: safe_backups/validate-option-relevance.zip (3386 bytes)
+[2025-11-02 12:26:40] 📦 Preparing validate-option-relevance: 9805 bytes (9.58 KB)
+[2025-11-02 12:26:40] ✅ validate-option-relevance deployed successfully in 0.47s
+[2025-11-02 12:26:40] 📊 Stats: 12/13 successful
+[2025-11-02 12:26:40] 🎉 Initial deployment complete!
+[2025-11-02 12:26:40] 📊 Final stats: 12/13 successful
+[2025-11-02 12:26:40] 
+[2025-11-02 12:26:40] 👀 Starting file watcher for Supabase functions...
+[2025-11-02 12:26:40] 📂 Watching: /tmp/cc-agent/59525076/project/supabase/functions
+[2025-11-02 12:26:40] ✅ Watcher is ready and monitoring for changes
+[2025-11-02 12:26:40] 💡 Edit any function file to trigger auto-deployment
+[2025-11-02 12:26:40] 💡 Press Ctrl+C to stop the watcher gracefully
+[2025-11-02 12:27:40] 💓 Health: ✅ ACTIVE | Uptime: 1m | Events: 0 | Last event: 60s ago | Deployments: 12/13
+[2025-11-02 12:28:40] 💓 Health: ✅ ACTIVE | Uptime: 2m | Events: 0 | Last event: 120s ago | Deployments: 12/13
+[2025-11-02 12:28:50] 📝 File change detected (#1): generate-contextual-options/index.ts
+[2025-11-02 12:28:50] 🔄 File content changed for generate-contextual-options (hash: d491049d...)
+[2025-11-02 12:28:50] 📝 Change detected in generate-contextual-options - scheduling deployment in 2000ms
+[2025-11-02 12:28:52] 🚀 Deploying generate-contextual-options (attempt #14)...
+[2025-11-02 12:28:52] 💾 Backup created: safe_backups/generate-contextual-options/index_2025-11-02T12-28-52-972Z.ts
+[2025-11-02 12:28:52] 📦 Zip created: safe_backups/generate-contextual-options.zip (11345 bytes)
+[2025-11-02 12:28:52] 📦 Preparing generate-contextual-options: 31851 bytes (31.10 KB)
+[2025-11-02 12:28:54] ✅ generate-contextual-options deployed successfully in 1.10s
+[2025-11-02 12:28:54] 📊 Stats: 13/14 successful
+[2025-11-02 12:29:40] 💓 Health: ✅ ACTIVE | Uptime: 3m | Events: 1 | Last event: 49s ago | Deployments: 13/14

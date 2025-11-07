@@ -1,0 +1,177 @@
+import React, { createContext, useContext, useEffect, useState } from 'react';
+import { View, Text, ActivityIndicator, Platform } from 'react-native';
+import { Session, User } from '@supabase/supabase-js';
+import { supabase } from '@/lib/supabase';
+import { notificationService } from './NotificationService';
+
+interface AuthContextType {
+  session: Session | null;
+  user: User | null;
+  loading: boolean;
+  signUp: (email: string, password: string, fullName: string) => Promise<any>;
+  signIn: (email: string, password: string) => Promise<any>;
+  signOut: () => Promise<void>;
+}
+
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const [session, setSession] = useState<Session | null>(null);
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const restoreSession = async () => {
+      console.log("🔄 restoreSession() start");
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        console.log("🔍 getSession returned:", data, error);
+
+        if (error) {
+          console.warn("⚠️ restoreSession error:", error.message);
+          await supabase.auth.signOut();
+          setSession(null);
+          setUser(null);
+          return;
+        }
+
+        if (data?.session) {
+          setSession(data.session);
+          setUser(data.session.user);
+        } else {
+          console.log("❎ No session data in this tab");
+          setSession(null);
+          setUser(null);
+        }
+      } catch (err) {
+        console.error("❌ restoreSession exception:", err);
+      } finally {
+        setLoading(false);
+        console.log("✅ restoreSession ended, loading=false");
+      }
+    };
+
+
+// ...
+
+    // ✅ Add event listeners only for web (to avoid mobile crash)
+    if (
+      Platform.OS === "web" &&
+      typeof window !== "undefined" &&
+      typeof window.addEventListener === "function"
+    ) {
+      window.addEventListener("focus", restoreSession);
+      window.addEventListener("visibilitychange", () => {
+        if (typeof document !== "undefined" && document.visibilityState === "visible") {
+          restoreSession();
+        }
+      });
+    }
+
+
+
+    restoreSession();
+
+    const { data: listener } = supabase.auth.onAuthStateChange((event, sess) => {
+      console.log("🔔 onAuthStateChange:", event, sess);
+      setSession(sess);
+      setUser(sess?.user ?? null);
+      setLoading(false);
+
+      if (event === "SIGNED_IN" && sess) {
+        const { user } = sess;
+        if (notificationService?.initialize) {
+          (async () => {
+            try {
+              await notificationService.initialize(user.id);
+            } catch (err: any) {
+              console.log("⚠️ Notification init skipped:", err.message || err);
+            }
+          })();
+        }
+        (async () => {
+          try {
+            const { data: p, error: pErr } = await supabase
+              .from("profiles")
+              .select("id")
+              .eq("id", user.id);
+            if (pErr) throw pErr;
+            if (!p || p.length === 0) {
+              const { error: insErr } = await supabase.from("profiles").insert({
+                id: user.id,
+                email: user.email!,
+                full_name: user.user_metadata.full_name,
+              });
+              if (insErr) throw insErr;
+            }
+          } catch (e) {
+            console.error("⚠️ Profile creation error:", e);
+          }
+        })();
+      }
+    });
+
+    return () => {
+      listener.subscription.unsubscribe();
+      if (
+        Platform.OS === "web" &&
+        typeof window !== "undefined" &&
+        typeof window.removeEventListener === "function"
+      ) {
+        window.removeEventListener("focus", restoreSession);
+      }
+    };
+  }, []);
+
+  const signUp = async (email: string, password: string, fullName: string) => {
+    const { data, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: { data: { full_name: fullName } },
+    });
+    if (error) throw error;
+    return data;
+  };
+
+  const signIn = async (email: string, password: string) => {
+    console.log("🔐 signIn:", email);
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+    console.log("🛬 signIn result:", data, error);
+    if (error) throw error;
+    return data;
+  };
+
+  const signOut = async () => {
+    const { error } = await supabase.auth.signOut();
+    notificationService.cancelAllNotifications();
+    if (error) throw error;
+  };
+
+  return (
+    <AuthContext.Provider value={{ session, user, loading, signUp, signIn, signOut }}>
+      {loading ? (
+        Platform.OS === 'web' ? (
+          <div style={{ textAlign: 'center', marginTop: 50 }}>Loading…</div>
+        ) : (
+          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+            <ActivityIndicator size="large" color="#007AFF" />
+            <Text style={{ marginTop: 10 }}>Loading…</Text>
+          </View>
+        )
+      ) : (
+        children
+      )}
+    </AuthContext.Provider>
+  );
+}
+
+export const useAuth = () => {
+  const c = useContext(AuthContext);
+  if (c === undefined) {
+    throw new Error("useAuth must be used within AuthProvider");
+  }
+  return c;
+};
