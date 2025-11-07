@@ -757,13 +757,6 @@ if (recipientEntity && recipientEntity.entity_name) {
     const closureEligible = safeConversationHistory.length >= 6;
     const naturalClosureDetected = closureEligible && mutualExchange && emotionalClosureScore >= 0.5;
 
-    const latestLower = (cleanCurrentMessage || '').toLowerCase();
-    const closureSignalRegex = /(thank you|thanks for|glad we|happy we|appreciate you|feel better|we're on the same page|we're good|can we move forward|ready to move forward|i forgive you|i understand you|no worries|let's keep this energy|i value you|i'm here for you)/i;
-    const apologyResolutionRegex = /(i'm sorry|i apologise|i apologize|forgive me|i forgive you|you're forgiven|we're good|it's okay|all good|no hard feelings)/i;
-    const latestClosureHit = closureSignalRegex.test(latestLower) || apologyResolutionRegex.test(latestLower);
-
-    const finalClosureDetected = naturalClosureDetected || (closureEligible && latestClosureHit);
-
     console.log("🌈 Emotional closure analysis:", {
       emotionalClosureScore: emotionalClosureScore.toFixed(2),
       hasGratitude,
@@ -1879,7 +1872,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       : '';
     const issueKeywords = isRecipientUserA ? extractKeywords(issueSource, 12) : [];
 
-    if (!finalClosureDetected && isRecipientUserA && issueKeywords.length > 0) {
+    if (isRecipientUserA && issueKeywords.length > 0) {
       const hasIssueOption = enhancedOptions.some(opt => {
         const lower = opt.toLowerCase();
         return issueKeywords.some(keyword => lower.includes(keyword));
@@ -1897,7 +1890,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     const hintPerspective = shouldUseHint && !isRecipientUserA ? cleanPerspective(hintFromB || '') : '';
     const hintKeywords = shouldUseHint && !isRecipientUserA ? extractKeywords(hintPerspective, 12) : [];
 
-    if (!finalClosureDetected && shouldUseHint && !isRecipientUserA && hintKeywords.length > 0) {
+    if (shouldUseHint && !isRecipientUserA && hintKeywords.length > 0) {
       const hasHintOption = enhancedOptions.some(opt => {
         const lower = opt.toLowerCase();
         return hintKeywords.some(keyword => lower.includes(keyword));
@@ -1915,7 +1908,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     const latestKeywords = extractKeywords(cleanCurrentMessage || '', 12);
 
     const addEmojiFallbacksIfNeeded = () => {
-      if (!finalClosureDetected || emotionalClosureScore < 0.5) return;
+      if (!naturalClosureDetected || emotionalClosureScore < 0.5) return;
 
       const emojiPoolHigh = ['🙂','🤝','❤️','💙','😊','🫂','✨','👍'];
       const emojiPoolModerate = ['🙂','🤝','😊','❤️'];
@@ -2016,7 +2009,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       return latestKeywords.some(keyword => lower.includes(keyword));
     }).length;
 
-    if (!finalClosureDetected && latestKeywords.length > 0 && selectedLatestCoverage === 0) {
+    if (latestKeywords.length > 0 && selectedLatestCoverage === 0) {
       const latestSnippetRaw = getPrimaryStatement(cleanCurrentMessage || '');
       if (latestSnippetRaw) {
         const sanitizedSnippet = latestSnippetRaw.replace(/["']/g, '').trim();
@@ -2025,23 +2018,6 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
           : `You mentioned ${sanitizedSnippet}. I want to explain what I was dealing with and why.`;
         const processedFallback = processOption(fallbackLatest);
         selected[0] = processedFallback;
-      }
-    }
-
-    if (finalClosureDetected) {
-      const emojiPoolHigh = ['🙂','🤝','❤️','💙','😊','🫂','✨','👍'];
-      const closureEmoji = selected.find(opt => /^[\p{Emoji}]+$/u.test(opt.trim()));
-      if (!closureEmoji) {
-        const emojiChoice = emojiPoolHigh[Math.floor(Math.random() * emojiPoolHigh.length)];
-        selected[selected.length - 1] = emojiChoice;
-      }
-
-      const closureThanks = selected.find(opt => /thank|appreciate|glad/i.test(opt));
-      if (!closureThanks) {
-        const gratitudeFallback = isRecipientUserA
-          ? 'Thanks for talking this through with me.'
-          : 'Thanks for staying open with me while we worked through this.';
-        selected[0] = processOption(gratitudeFallback);
       }
     }
     

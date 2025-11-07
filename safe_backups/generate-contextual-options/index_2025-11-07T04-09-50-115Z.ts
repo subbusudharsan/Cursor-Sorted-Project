@@ -2016,7 +2016,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       return latestKeywords.some(keyword => lower.includes(keyword));
     }).length;
 
-    if (!finalClosureDetected && latestKeywords.length > 0 && selectedLatestCoverage === 0) {
+    if (latestKeywords.length > 0 && selectedLatestCoverage === 0) {
       const latestSnippetRaw = getPrimaryStatement(cleanCurrentMessage || '');
       if (latestSnippetRaw) {
         const sanitizedSnippet = latestSnippetRaw.replace(/["']/g, '').trim();
@@ -2025,23 +2025,6 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
           : `You mentioned ${sanitizedSnippet}. I want to explain what I was dealing with and why.`;
         const processedFallback = processOption(fallbackLatest);
         selected[0] = processedFallback;
-      }
-    }
-
-    if (finalClosureDetected) {
-      const emojiPoolHigh = ['🙂','🤝','❤️','💙','😊','🫂','✨','👍'];
-      const closureEmoji = selected.find(opt => /^[\p{Emoji}]+$/u.test(opt.trim()));
-      if (!closureEmoji) {
-        const emojiChoice = emojiPoolHigh[Math.floor(Math.random() * emojiPoolHigh.length)];
-        selected[selected.length - 1] = emojiChoice;
-      }
-
-      const closureThanks = selected.find(opt => /thank|appreciate|glad/i.test(opt));
-      if (!closureThanks) {
-        const gratitudeFallback = isRecipientUserA
-          ? 'Thanks for talking this through with me.'
-          : 'Thanks for staying open with me while we worked through this.';
-        selected[0] = processOption(gratitudeFallback);
       }
     }
     
