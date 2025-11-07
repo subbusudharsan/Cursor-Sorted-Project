@@ -1128,7 +1128,7 @@ CRITICAL CONTEXT:
 - Reference the hint's context naturally in responses even in later turns of the conversation
 ` : ''}
 
-${finalClosureDetected ? `
+${naturalClosureDetected ? `
 🌈 EMOTIONALLY-AWARE GRADUAL CLOSURE:
 Emotional closure score: ${emotionalClosureScore.toFixed(2)} | Turn ${safeConversationHistory.length}
 

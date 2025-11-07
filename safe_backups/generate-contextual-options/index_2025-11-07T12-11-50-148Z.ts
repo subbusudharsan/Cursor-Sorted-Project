@@ -1128,7 +1128,7 @@ CRITICAL CONTEXT:
 - Reference the hint's context naturally in responses even in later turns of the conversation
 ` : ''}
 
-${finalClosureDetected ? `
+${naturalClosureDetected ? `
 🌈 EMOTIONALLY-AWARE GRADUAL CLOSURE:
 Emotional closure score: ${emotionalClosureScore.toFixed(2)} | Turn ${safeConversationHistory.length}
 
@@ -1858,11 +1858,8 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     // Applied to: AI-generated options, fallback options, and emergency fallbacks
     // Order matters: strip tags → remove names → fix pronouns → capitalize
     // This runs for EVERY set of options in EVERY turn throughout the ENTIRE conversation
-    const processOption = (text: string): string => {
-      const stripped = stripTagSymbols(text);
-      const perspectived = cleanPerspective(stripped);
-      return capitalizeFirstLetter(fixPronounMistakes(removeListenerName(perspectived)));
-    };
+    const processOption = (text: string): string => 
+      capitalizeFirstLetter(fixPronounMistakes(removeListenerName(stripTagSymbols(text))));
 
     const finalOptions = options.slice(0, Math.min(expectedCount, options.length))
       .map((opt: string) => processOption(opt));

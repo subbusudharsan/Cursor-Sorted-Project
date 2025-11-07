@@ -20,6 +20,7 @@ interface NotificationContextType {
   markAsRead: (notificationId: string) => Promise<void>;
   markAllAsRead: () => Promise<void>;
   deleteAll: () => Promise<void>;
+  deleteSelected: (ids: string[]) => Promise<void>;
   refreshNotifications: () => Promise<void>;
 }
 
@@ -114,13 +115,24 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     }
   };
 
+  const deleteSelected = async (ids: string[]) => {
+    if (ids.length === 0) return;
+    try {
+      const { error } = await supabase.from('notifications').delete().in('id', ids);
+      if (error) throw error;
+      setNotifications(prev => prev.filter(n => !ids.includes(n.id)));
+    } catch (error) {
+      console.error('Error deleting selected notifications:', error);
+    }
+  };
+
   const refreshNotifications = async () => {
     setLoading(true);
     await fetchNotifications();
   };
 
   return (
-    <NotificationContext.Provider value={{ notifications, unreadCount, loading, markAsRead, markAllAsRead, deleteAll, refreshNotifications }}>
+    <NotificationContext.Provider value={{ notifications, unreadCount, loading, markAsRead, markAllAsRead, deleteAll, deleteSelected, refreshNotifications }}>
       {children}
     </NotificationContext.Provider>
   );

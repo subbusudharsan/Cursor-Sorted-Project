@@ -143,9 +143,10 @@ const latestMsgMap = new Map<string, { content: string; created_at: string }>();
 
 // ✅ Include all chats where user participates (no over-filter)
 const validContactChats = (contactChatsData || []).filter((chat: any) =>
-  chat.user_id === user?.id ||
+  (chat.user_id === user?.id ||
   chat.contact_id === user?.id ||
-  (chat.participants && chat.participants.includes(user?.id))
+  (chat.participants && chat.participants.includes(user?.id))) &&
+  !(chat.context_data?.initial_pending)
 );
 
 // 🧠 Merge latest message fallback

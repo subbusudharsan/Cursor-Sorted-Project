@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -10,6 +10,7 @@ import {
   Modal,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { router } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/Colors';
 import { supabase } from '@/lib/supabase';
@@ -47,12 +48,53 @@ function SoulroomScreen() {
   const [content, setContent] = useState('');
   const [selectedMood, setSelectedMood] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [conversationStats, setConversationStats] = useState({ myTalks: 0, pendingAI: 0 });
+  const [statsLoading, setStatsLoading] = useState(true);
 
   useEffect(() => {
     if (user) {
       fetchEntries();
     }
   }, [user]);
+
+  const fetchConversationStats = async () => {
+    if (!user?.id) return;
+    try {
+      setStatsLoading(true);
+
+      const { data: myTalksData, error: myTalksError } = await supabase
+        .from('chats')
+        .select('id, context_data, is_resolved')
+        .eq('user_id', user.id)
+        .eq('chat_type', 'contact_chat')
+        .eq('is_resolved', false);
+
+      if (myTalksError) throw myTalksError;
+
+      const myTalksCount = (myTalksData || []).filter((chat: any) => {
+        const contextData = chat.context_data || {};
+        return !(contextData && contextData.initial_pending);
+      }).length;
+
+      const { data: aiChatsData, error: aiChatsError } = await supabase
+        .from('chats')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('chat_type', 'ai_assistant')
+        .eq('is_resolved', false);
+
+      if (aiChatsError) throw aiChatsError;
+
+      setConversationStats({
+        myTalks: myTalksCount,
+        pendingAI: aiChatsData?.length || 0,
+      });
+    } catch (error) {
+      console.error('Error fetching conversation stats:', error);
+    } finally {
+      setStatsLoading(false);
+    }
+  };
 
   const fetchEntries = async () => {
     try {
@@ -64,6 +106,7 @@ function SoulroomScreen() {
 
       if (error) throw error;
       setEntries(data || []);
+      await fetchConversationStats();
     } catch (error) {
       console.error('Error fetching entries:', error);
       Alert.alert('Error', 'Failed to load your entries');
@@ -71,6 +114,26 @@ function SoulroomScreen() {
       setLoading(false);
     }
   };
+
+  const topMoodInfo = useMemo(() => {
+    if (!entries.length) return null;
+    const counts: Record<string, number> = {};
+    entries.forEach((entry) => {
+      if (!entry.mood) return;
+      counts[entry.mood] = (counts[entry.mood] || 0) + 1;
+    });
+
+    const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    if (!sorted.length) return null;
+
+    const topMoodKey = sorted[0][0];
+    const option = MOOD_OPTIONS.find((m) => m.value === topMoodKey);
+    return {
+      label: option?.label || topMoodKey,
+      color: option?.color || '#6366f1',
+      count: sorted[0][1],
+    };
+  }, [entries]);
 
   const openNewEntry = () => {
     setEditingEntry(null);
@@ -207,6 +270,51 @@ function SoulroomScreen() {
       </View>
 
       <ScrollView style={styles.entriesList} contentContainerStyle={styles.entriesContent}>
+        <View style={styles.overviewCard}>
+          <Text style={styles.sectionHeading}>Stay grounded before you talk</Text>
+          <Text style={styles.overviewSubtitle}>
+            Soulroom keeps your private reflections synced with every AI-assisted conversation.
+          </Text>
+          <View style={styles.statsRow}>
+            <View style={styles.statBadge}>
+              <Text style={styles.statValue}>{conversationStats.myTalks}</Text>
+              <Text style={styles.statLabel}>Active My Talks</Text>
+            </View>
+            <View style={styles.statBadge}>
+              <Text style={styles.statValue}>{conversationStats.pendingAI}</Text>
+              <Text style={styles.statLabel}>AI Sessions Waiting</Text>
+            </View>
+            {topMoodInfo ? (
+              <View style={[styles.statBadge, { borderColor: topMoodInfo.color }]}> 
+                <Text style={[styles.statValue, { color: topMoodInfo.color }]}> 
+                  {topMoodInfo.count}
+                </Text>
+                <Text style={styles.statLabel}>Most Logged Mood</Text>
+                <Text style={[styles.moodBadgeLabel, { color: topMoodInfo.color }]}>{topMoodInfo.label}</Text>
+              </View>
+            ) : (
+              <View style={styles.statBadge}>
+                <Text style={styles.statValue}>{entries.length}</Text>
+                <Text style={styles.statLabel}>Saved Reflections</Text>
+              </View>
+            )}
+          </View>
+          {statsLoading && (
+            <Text style={styles.statHint}>Refreshing conversation stats…</Text>
+          )}
+          <View style={styles.quickActionsRow}>
+            <TouchableOpacity style={styles.quickActionButton} onPress={openNewEntry}>
+              <Text style={styles.quickActionText}>New Reflection</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.quickActionButton} onPress={() => router.push('/ai-assistant')}>
+              <Text style={styles.quickActionText}>Plan with AI Assistant</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.quickActionButton} onPress={() => router.push('/(tabs)/chats')}>
+              <Text style={styles.quickActionText}>Open My Talks</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
         {entries.length === 0 ? (
           <View style={styles.emptyState}>
             <Heart size={48} color="#ef4444" />
@@ -222,6 +330,16 @@ function SoulroomScreen() {
         ) : (
           entries.map((entry) => {
             const moodInfo = getMoodInfo(entry.mood);
+            const contactTag = entry.tags?.find((tag) => tag.startsWith('contact:')) || null;
+            const contactIdFromTag = contactTag ? contactTag.split(':')[1] : null;
+            const displayTags = (entry.tags || []).map((tag) => {
+              if (tag.startsWith('contact:')) {
+                return 'Linked contact';
+              }
+              if (tag === 'pre_conversation') return 'Pre-conversation';
+              if (tag === 'closure') return 'Closure saved';
+              return tag.replace(/_/g, ' ');
+            });
             return (
               <View key={entry.id} style={styles.entryCard}>
                 <View style={styles.entryHeader}>
@@ -260,6 +378,32 @@ function SoulroomScreen() {
                 <Text style={styles.entryContent} numberOfLines={3}>
                   {entry.content}
                 </Text>
+                {displayTags.length > 0 && (
+                  <View style={styles.entryTagRow}>
+                    {displayTags.map((label, idx) => (
+                      <View key={`${entry.id}-tag-${idx}`} style={styles.tagChip}>
+                        <Text style={styles.tagChipText}>{label}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+
+                {contactIdFromTag && (
+                  <View style={styles.entryActionRow}>
+                    <TouchableOpacity
+                      style={styles.entryActionButton}
+                      onPress={() => router.push(`/ai-assistant?contactId=${contactIdFromTag}`)}
+                    >
+                      <Text style={styles.entryActionButtonText}>Plan next conversation</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.entryActionButtonSecondary}
+                      onPress={() => router.push('/(tabs)/chats')}
+                    >
+                      <Text style={styles.entryActionButtonSecondaryText}>View My Talks</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
               </View>
             );
           })
@@ -384,6 +528,86 @@ const styles = StyleSheet.create({
   },
   entriesContent: {
     padding: 16,
+    gap: 16,
+  },
+  overviewCard: {
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.lg,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+    ...Shadows.medium,
+  },
+  sectionHeading: {
+    fontSize: Typography.fontSize.lg,
+    fontWeight: Typography.fontWeight.bold,
+    color: Colors.text.primary,
+    marginBottom: Spacing.xs,
+  },
+  overviewSubtitle: {
+    fontSize: Typography.fontSize.sm,
+    color: Colors.text.secondary,
+    marginBottom: Spacing.md,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    gap: Spacing.md,
+    flexWrap: 'wrap',
+    marginBottom: Spacing.md,
+  },
+  statBadge: {
+    flex: 1,
+    minWidth: 110,
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+    backgroundColor: Colors.surface,
+    padding: Spacing.md,
+    ...Shadows.small,
+  },
+  statValue: {
+    fontSize: Typography.fontSize['2xl'],
+    fontWeight: Typography.fontWeight.bold,
+    color: Colors.primary[600],
+  },
+  statLabel: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.text.secondary,
+    marginTop: 4,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  moodBadgeLabel: {
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.semibold,
+    marginTop: 2,
+  },
+  statHint: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.text.tertiary,
+    marginBottom: Spacing.md,
+  },
+  quickActionsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.md,
+  },
+  quickActionButton: {
+    flexGrow: 1,
+    minWidth: 160,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: Colors.primary[500],
+    borderWidth: 2,
+    borderColor: Colors.secondary[600],
+    ...Shadows.small,
+  },
+  quickActionText: {
+    color: '#FFFFFF',
+    textAlign: 'center',
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.semibold,
   },
   emptyState: {
     flex: 1,
@@ -478,6 +702,58 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#374151',
     lineHeight: 20,
+  },
+  entryTagRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: Spacing.sm,
+  },
+  tagChip: {
+    backgroundColor: Colors.primary[50],
+    borderRadius: BorderRadius.md,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: Colors.primary[100],
+  },
+  tagChipText: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.primary[700],
+    fontWeight: Typography.fontWeight.medium,
+  },
+  entryActionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.sm,
+    marginTop: Spacing.md,
+  },
+  entryActionButton: {
+    paddingVertical: 8,
+    paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: Colors.primary[500],
+    borderWidth: 2,
+    borderColor: Colors.secondary[600],
+    ...Shadows.small,
+  },
+  entryActionButtonText: {
+    color: '#FFFFFF',
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.semibold,
+  },
+  entryActionButtonSecondary: {
+    paddingVertical: 8,
+    paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+  },
+  entryActionButtonSecondaryText: {
+    color: Colors.text.secondary,
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.medium,
   },
   modalContainer: {
     flex: 1,

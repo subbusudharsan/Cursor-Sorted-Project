@@ -90,6 +90,9 @@ function ContactChatScreen() {
   const [aiConfidence, setAiConfidence] = useState<string>("high");
   const [conversationPhase, setConversationPhase] = useState<string>("opening");
 
+  // 🧠 Cached chat context (avoid redundant fetches)
+  const [chatContext, setChatContext] = useState<any>(null);
+
   // 🔄 Conversation tracking (for context aggregator compatibility)
   const [conversationStage, setConversationStage] = useState<string>("warmup");
   const [turnCount, setTurnCount] = useState<number>(0);
@@ -161,11 +164,12 @@ const closureAnim = useRef(new Animated.Value(0)).current;
     try {
       const { data, error } = await supabase
         .from("chats")
-        .select("context_data, user_id, contact_id, ai_confidence_level, conversation_phase, is_resolved")
+        .select("context_data, user_id, contact_id, ai_confidence_level, conversation_phase, is_resolved, ai_source_chat_id, session_name, user_a_smiley_sent, user_b_smiley_sent")
         .eq("id", cid)
         .maybeSingle();
 
       if (!error && data?.context_data) {
+        setChatContext(data);
         // Set User A's context
         setChatSummary(String(data.context_data.summary_a || data.context_data.summary || ""));
         setChatThoughts(String(data.context_data.thoughts_a || data.context_data.thoughts || ""));
@@ -1056,16 +1060,58 @@ const sendMessage = async (messageContent: string) => {
           .from("chats")
           .update(updateData)
           .eq("id", currentChatId);
+
+        if (userASent && userBSent) {
+          try {
+            const contactLabel = contact?.full_name || contact?.email || contactId || 'contact';
+            const perspectiveLines = [] as string[];
+            if (summaryA) {
+              perspectiveLines.push(`My perspective: ${summaryA}`);
+            }
+            if (chatData?.context_data?.hint_from_b) {
+              perspectiveLines.push(`Their perspective: ${chatData.context_data.hint_from_b}`);
+            }
+            perspectiveLines.push(`Final note I sent: ${content}`);
+
+            const tags = ['closure'];
+            if (contactId) {
+              tags.push(`contact:${contactId}`);
+            }
+
+            await supabase
+              .from('soulroom_entries')
+              .insert({
+                user_id: user?.id,
+                title: `Closure with ${contactLabel}`,
+                content: perspectiveLines.join('\n\n'),
+                mood: 'peaceful',
+                tags,
+              });
+          } catch (closureLogError) {
+            console.warn('⚠️ Failed to log closure in Soulroom:', closureLogError);
+          }
+        }
       }
     }
 
-    const { data: chatData } = await supabase
-      .from("chats")
-      .select("user_id, contact_id, context_data, ai_source_chat_id, session_name")
-      .eq("id", currentChatId)
-      .single();
+    let chatData = chatContext;
+    if (!chatData) {
+      const { data: fetched } = await supabase
+        .from("chats")
+        .select("user_id, contact_id, context_data, ai_source_chat_id, session_name, ai_confidence_level, conversation_phase, is_resolved, user_a_smiley_sent, user_b_smiley_sent")
+        .eq("id", currentChatId)
+        .single();
+      if (fetched) {
+        chatData = fetched;
+        setChatContext(fetched);
+      }
+    }
 
-    const sessionId = chatData?.session_name || (currentChatId as string);
+    if (!chatData) {
+      throw new Error("Chat context unavailable");
+    }
+
+    const sessionId = chatData.session_name || (currentChatId as string);
 
     console.log("\n" + "=".repeat(60));
     console.log("📤 USER SENT MESSAGE - GENERATING OPTIONS FOR RECIPIENT");
@@ -1086,11 +1132,16 @@ const sendMessage = async (messageContent: string) => {
       ];
     });
 
+    const updatedContextData = chatData?.context_data
+      ? { ...chatData.context_data, initial_pending: false }
+      : { initial_pending: false };
+
     await supabase
       .from("chats")
       .update({
         last_message: content,
         last_message_at: new Date().toISOString(),
+        context_data: updatedContextData,
       })
       .eq("id", currentChatId);
 
@@ -1102,18 +1153,18 @@ const sendMessage = async (messageContent: string) => {
     }) || []; // ✅ Ensure it's always an array
 
     // ✅ FIX: Determine if current user is User A or User B to send correct context
-    const isCurrentUserA = user?.id === chatData?.user_id;
+    const isCurrentUserA = user?.id === chatData.user_id;
 
     // ✅ FIX: Use fresh context from database, not stale component state
     // Send User A's context when generating options for User B
     // ✅ CRITICAL: Always include User A's original issue context in all generations
-    const summaryA = chatData?.context_data?.summary_a || chatData?.context_data?.summary || "";
-    const thoughtsA = chatData?.context_data?.thoughts_a || chatData?.context_data?.thoughts || "";
-    const summaryB = chatData?.context_data?.summary_b || "";
-    const thoughtsB = chatData?.context_data?.thoughts_b || "";
+    const summaryA = chatData.context_data?.summary_a || chatData.context_data?.summary || "";
+    const thoughtsA = chatData.context_data?.thoughts_a || chatData.context_data?.thoughts || "";
+    const summaryB = chatData.context_data?.summary_b || "";
+    const thoughtsB = chatData.context_data?.thoughts_b || "";
 
     // Determine recipient's context
-    const isRecipientUserA = recipientId === chatData?.user_id;
+    const isRecipientUserA = recipientId === chatData.user_id;
     const recipientSummary = isRecipientUserA ? summaryA : summaryB;
     const recipientThoughts = isRecipientUserA ? thoughtsA : thoughtsB;
 
@@ -1122,7 +1173,7 @@ const sendMessage = async (messageContent: string) => {
       recipientRole: isRecipientUserA ? "User A" : "User B",
       originalIssueSummary: summaryA.substring(0, 60) || "❌ MISSING",
       recipientSummary: recipientSummary?.substring(0, 50) || "❌ MISSING",
-      hint_from_b: chatData?.context_data?.hint_from_b?.substring(0, 50) || "⚠️ Not provided",
+      hint_from_b: chatData.context_data?.hint_from_b?.substring(0, 50) || "⚠️ Not provided",
       conversationHistoryLength: conversationHistory.length,
       contactCategory: contact?.category || "General",
     });
@@ -1143,7 +1194,7 @@ const sendMessage = async (messageContent: string) => {
             thoughts: recipientThoughts,
             summaryB: summaryB,
             thoughtsB: thoughtsB,
-            hintFromB: chatData?.context_data?.hint_from_b || "",
+            hintFromB: chatData.context_data?.hint_from_b || "",
             conversationHistory,
             contactCategory: contact?.category || "General",
             isInitial: false,
@@ -1177,15 +1228,15 @@ const sendMessage = async (messageContent: string) => {
           thoughts: recipientThoughts || "",
           originalIssueSummary: summaryA || "",
           recipientSummary: summaryB || "",
-          hint_from_b: chatData?.context_data?.hint_from_b || '',
+          hint_from_b: chatData.context_data?.hint_from_b || '',
 
           // ✅ CRITICAL: Always pass User A's original issue context
           originalIssue: {
             summary: summaryA,
             thoughts: thoughtsA,
           },
-          hintFromB: chatData?.context_data?.hint_from_b || "",
-          hintToContact: chatData?.context_data?.hint_to_contact || null,
+          hintFromB: chatData.context_data?.hint_from_b || "",
+          hintToContact: chatData.context_data?.hint_to_contact || null,
           summaryB: summaryB || "",
           thoughtsB: thoughtsB || "",
           conversationHistory: Array.isArray(conversationHistory) ? conversationHistory : [],
@@ -1248,12 +1299,18 @@ const regenerateOptions = async () => {
       return;
     }
 
-    // Fetch chat context
-    const { data: chatCtx } = await supabase
-      .from("chats")
-      .select("context_data, user_id, contact_id")
-      .eq("id", currentChatId)
-      .single();
+    let chatCtx = chatContext;
+    if (!chatCtx) {
+      const { data: fetched } = await supabase
+        .from("chats")
+        .select("context_data, user_id, contact_id, ai_confidence_level, conversation_phase, is_resolved, ai_source_chat_id, session_name, user_a_smiley_sent, user_b_smiley_sent")
+        .eq("id", currentChatId)
+        .single();
+      if (fetched) {
+        chatCtx = fetched;
+        setChatContext(fetched);
+      }
+    }
 
     if (!chatCtx) {
       throw new Error("Chat context not found");

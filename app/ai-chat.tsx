@@ -337,7 +337,7 @@ function AIChatScreen() {
     }
   };
   
-// ✅ Fetch user’s personal hashtags and merge with general list
+// ✅ Fetch user's personal hashtags and merge with general list
 const fetchUserHashtags = async () => {
   try {
     const { data, error } = await supabase
@@ -1520,8 +1520,8 @@ const wordCount = initialDescription.trim().split(/\s+/).length;
 if (Math.round(wordCount * 1.5) > 150) {
 
   Alert.alert(
-    "Let’s simplify together 💛",
-    "That’s a very detailed story — I love your honesty! Let’s keep it short and crisp so I can help faster ❤️"
+    "Let's simplify together 💛",
+    "That's a very detailed story — I love your honesty! Let's keep it short and crisp so I can help faster ❤️"
   );
   return;
 } else if (wordCount > 100) {
@@ -1536,7 +1536,7 @@ const isMeaningful = await validateMeaningfulness(initialDescription);
 
 if (!isMeaningful) {
   Alert.alert(
-    "Hmm, I didn’t understand 🤔",
+    "Hmm, I didn't understand 🤔",
     "Could you describe your situation a bit more clearly so I can help better?"
   );
   return;
@@ -1551,7 +1551,7 @@ if (!isMeaningful) {
   if (wordCount > 120 && hasEmotion) {
     console.log("🧠 Skipping first question — detailed description detected");
     setFlowStage("qa");
-    setCurrentQuestion("You’ve already shared so thoughtfully 💛 Let’s just explore it a bit more before I summarize.");
+    setCurrentQuestion("You've already shared so thoughtfully 💛 Let's just explore it a bit more before I summarize.");
     setQuestionCount(1);
   } else {
     await generateFirstQuestion();
@@ -1649,7 +1649,7 @@ for (const [idx, pair] of qaPairs.entries()) {
   if (!prevAns) continue;
   if (isClearlyIrrelevant(prevAns)) {
     Alert.alert(
-      "Let’s clarify 💭",
+      "Let's clarify 💭",
       `Your earlier answer #${idx + 1} seems unclear. Could you rephrase it so I can better understand? ❤️`
     );
     return; // stop moving forward
@@ -2758,6 +2758,7 @@ Respond ONLY with valid JSON:
             thoughts_a: thoughts,
             hint_to_contact: hintToContact,
             contact_category: contactCategory,
+            initial_pending: true,
           },
         })
         .select("id")
@@ -2973,7 +2974,7 @@ Respond ONLY with valid JSON:
       }}
     >
       {initialDescription.trim().split(/\s+/).length > 100
-        ? "Let’s simplify it a bit ❤️"
+        ? "Let's simplify it a bit ❤️"
         : "Try to keep it short and clear 💛"}
     </Text>
   )}
@@ -2986,6 +2987,20 @@ Respond ONLY with valid JSON:
     
    {/* bottom buttons */}
 <View style={styles.buttonColumn}>
+  <TouchableOpacity
+    style={[styles.fullWidthButton, styles.secondaryButton]}
+    onPress={() => router.push('/(tabs)/chats')}
+  >
+    <Text style={styles.secondaryButtonText}>Go to Chats Home</Text>
+  </TouchableOpacity>
+
+  <TouchableOpacity
+    style={[styles.fullWidthButton, styles.secondaryButton]}
+    onPress={() => router.push('/(tabs)/soulroom')}
+  >
+    <Text style={styles.secondaryButtonText}>Open Soulroom</Text>
+  </TouchableOpacity>
+
   <TouchableOpacity
     style={[styles.fullWidthButton, styles.secondaryButton]}
     onPress={() => router.push("/(tabs)/contacts?mode=ai_chat")}
@@ -3360,7 +3375,7 @@ Respond ONLY with valid JSON:
         <View style={styles.quickTipBox}>
           <Text style={styles.quickTipTitle}>Need a bit more clarity</Text>
           <Text style={styles.quickTipText}>
-            I couldn’t confidently understand one or more parts. Try editing:
+            I couldn't confidently understand one or more parts. Try editing:
           </Text>
           {qaPairs.map((p, i) => {
             const t = (p.answer || '').trim();
@@ -3372,7 +3387,7 @@ Respond ONLY with valid JSON:
           {additionalInfo.trim().length > 0 && (additionalInfo.trim().split(/\s+/).length < 3) && (
             <Text style={styles.quickTipItem}>• Additional Information</Text>
           )}
-          <Text style={styles.quickTipHint}>Edit only what’s flagged above, then press Regenerate Summary.</Text>
+          <Text style={styles.quickTipHint}>Edit only what's flagged above, then press Regenerate Summary.</Text>
         </View>
       )}
 

@@ -77,38 +77,54 @@ const fetchConversations = useCallback(async () => {
         return;
       }
 
-      const formattedConversations = [];
+      const contactIds = Array.from(
+        new Set(
+          (chatsData || [])
+            .map((chat) => chat.context_contact_id)
+            .filter((id): id is string => Boolean(id))
+        )
+      );
 
-      for (const chat of chatsData) {
-        let contactNameStr = 'Unknown Contact';
+      let contactMap = new Map<string, { full_name: string | null; email: string | null }>();
+      if (contactIds.length > 0) {
+        const { data: contacts, error: contactsError } = await supabase
+          .from('profiles')
+          .select('id, full_name, email')
+          .in('id', contactIds);
 
-        if (chat.context_contact_id) {
-          const { data: contactData } = await supabase
-            .from('profiles')
-            .select('full_name, email')
-            .eq('id', chat.context_contact_id)
-            .maybeSingle();
-
-          if (contactData) {
-            contactNameStr = contactData.full_name || contactData.email;
-          }
+        if (contactsError) {
+          console.warn('⚠️ Failed to fetch contact profiles:', contactsError);
+        } else if (contacts) {
+          contacts.forEach((profile) => {
+            contactMap.set(profile.id, {
+              full_name: profile.full_name,
+              email: profile.email,
+            });
+          });
         }
+      }
 
-        formattedConversations.push({
+      const formattedConversations = (chatsData || []).map((chat) => {
+        const profile = chat.context_contact_id
+          ? contactMap.get(chat.context_contact_id)
+          : undefined;
+
+        const contactNameStr = profile
+          ? profile.full_name || profile.email || 'Unknown Contact'
+          : 'Unknown Contact';
+
+        return {
           id: chat.id,
           session_name: chat.session_name || 'Untitled Session',
           last_message: chat.last_message || 'No messages yet',
           created_at: chat.created_at,
           context_contact_id: chat.context_contact_id,
           contact_name: contactNameStr,
-        });
-      }
+        };
+      });
 
       setConversations(formattedConversations);
 
-console.log("🧹 Refreshed UI after DB delete, conversations now:", formattedConversations.length);
-await supabase.removeAllChannels(); // 🧹 move here — after setting conversations
-      
       console.log('✅ Updated conversations state with', formattedConversations.length, 'items');
     } catch (error) {
       console.error('❌ Error fetching conversations:', error);
@@ -335,15 +351,42 @@ await supabase.removeAllChannels(); // 🧹 move here — after setting conversa
         return;
       }
 
-      console.log('✅ Navigating with contactId:', contactIdToUse);
-      router.push({
-        pathname: '/ai-chat',
-        params: {
-          chatId: conversationId,
-          contactId: contactIdToUse,
-          mode: 'continue'
+      // Try to locate the corresponding contact chat to resume in real chat view
+      let contactChatId: string | undefined;
+      try {
+        const { data: relatedChat, error: relatedError } = await supabase
+          .from('chats')
+          .select('id')
+          .eq('chat_type', 'contact_chat')
+          .eq('ai_source_chat_id', conversationId)
+          .order('created_at', { ascending: false })
+          .maybeSingle();
+
+        if (relatedError) {
+          console.warn('⚠️ Unable to locate related contact chat:', relatedError);
         }
-      });
+
+        if (relatedChat?.id) {
+          contactChatId = relatedChat.id;
+        }
+      } catch (lookupError) {
+        console.warn('⚠️ Error looking up related contact chat:', lookupError);
+      }
+
+      if (contactChatId) {
+        console.log('✅ Opening contact chat', contactChatId);
+        router.push(`/contact-chat?chatId=${contactChatId}&contactId=${contactIdToUse}&isOngoing=true`);
+      } else {
+        console.log('ℹ️ Related contact chat not found, returning to AI preparation view');
+        router.push({
+          pathname: '/ai-chat',
+          params: {
+            chatId: conversationId,
+            contactId: contactIdToUse,
+            mode: 'continue'
+          }
+        });
+      }
     } catch (error) {
       console.error('❌ Error continuing conversation:', error);
       Alert.alert('Error', 'Failed to open conversation. Please try again.');
@@ -605,6 +648,30 @@ await supabase.removeAllChannels(); // 🧹 move here — after setting conversa
 
               console.log(`🔍 Verified ${existingChats.length} AI assistant chat(s) for deletion`);
 
+              // Delete any related contact chats that originated from these sessions
+              const { data: relatedContactChats, error: relatedError } = await supabase
+                .from('chats')
+                .select('id')
+                .eq('chat_type', 'contact_chat')
+                .in('ai_source_chat_id', idsToDelete);
+
+              if (relatedError) {
+                console.error('⚠️ Failed to lookup related contact chats:', relatedError);
+              }
+
+              if (relatedContactChats && relatedContactChats.length > 0) {
+                console.log(`🧹 Removing ${relatedContactChats.length} related contact chat(s)`);
+                const contactIds = relatedContactChats.map((c) => c.id);
+                const { error: contactDeleteError } = await supabase
+                  .from('chats')
+                  .delete()
+                  .in('id', contactIds);
+
+                if (contactDeleteError) {
+                  console.error('⚠️ Failed to delete related contact chats:', contactDeleteError);
+                }
+              }
+
               console.log("🗑️ Executing DELETE query...");
               const { error, count } = await supabase
                 .from("chats")
@@ -631,11 +698,7 @@ await supabase.removeAllChannels(); // 🧹 move here — after setting conversa
               // Update UI instantly
               setConversations(prev => prev.filter(c => !selectedConversations.includes(c.id)));
 
-              // Refresh from DB and clear channels together after short delay
-              setTimeout(async () => {
-                await supabase.removeAllChannels();
-                await fetchConversations();
-              }, 500);
+              await fetchConversations();
 
               Alert.alert("Success", `${count} chat(s) deleted successfully!`);
 
