@@ -1799,9 +1799,7 @@ const base64ToUint8Array = (base64: string) => {
 
   const coachMessageDisplay = useMemo(() => {
     if (!coachNudge?.message) return null;
-    const trimmed = coachNudge.message.trim();
-    if (trimmed.length <= 220) return trimmed;
-    return `${trimmed.slice(0, 217).trim()}…`;
+    return coachNudge.message.trim();
   }, [coachNudge?.message]);
 
   const coachPromptsDisplay = useMemo(() => {
@@ -1868,12 +1866,7 @@ const base64ToUint8Array = (base64: string) => {
           </View>
         </View>
 
-        <View
-          style={[
-            styles.entriesContent,
-            reflectionMultiSelect && { paddingBottom: Spacing.xl * 2 + insets.bottom },
-          ]}
-        >
+        <View style={styles.entriesContent}>
           {activeTab === 'overview' ? (
             <>
               {timelineData.length > 0 ? (
@@ -2622,6 +2615,37 @@ const base64ToUint8Array = (base64: string) => {
           </Modal>
         </SafeAreaView>
       </Modal>
+      {reflectionMultiSelect && (
+  <View style={styles.multiSelectBarContainer}>
+    <View style={styles.multiSelectBar}>
+      <Text style={styles.multiSelectCount}>
+        {selectedReflectionIds.length} selected
+      </Text>
+      <View style={styles.multiSelectActions}>
+        <TouchableOpacity
+          style={styles.multiSelectButton}
+          onPress={cancelReflectionSelection}
+        >
+          <Text style={styles.multiSelectButtonText}>Cancel</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[
+            styles.multiSelectButton,
+            styles.multiSelectDeleteButton,
+            bulkDeletingReflections && styles.multiSelectButtonDisabled,
+          ]}
+          onPress={confirmBulkDeleteReflections}
+          disabled={bulkDeletingReflections}
+        >
+          <Text style={[styles.multiSelectButtonText, styles.multiSelectDeleteText]}>
+            Delete
+          </Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  </View>
+)}
+
     </SafeAreaView>
   );
 }
@@ -2669,9 +2693,6 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 16,
   },
-  entriesContentWithBar: {
-    paddingBottom: Spacing.xl * 2,
-  },
   stickyTabWrapper: {
     backgroundColor: Colors.background,
     paddingHorizontal: 16,
@@ -2705,19 +2726,17 @@ const styles = StyleSheet.create({
   tabButtonTextActive: {
     color: '#ffffff',
   },
-  multiSelectBar: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: Spacing.sm,
+  multiSelectBarContainer: {
     backgroundColor: Colors.surface,
     borderTopWidth: 1,
     borderTopColor: Colors.borderLight,
     paddingHorizontal: Spacing.lg,
+  },
+  multiSelectBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.sm,
     paddingVertical: Spacing.sm,
     ...Shadows.small,
   },
@@ -3215,14 +3234,15 @@ const styles = StyleSheet.create({
   },
   coachCardWrapper: {
     marginTop: Spacing.md,
+    width: '100%',
   },
   coachCard: {
-    backgroundColor: Colors.surface,
+    backgroundColor: '#f0f5ff',
     borderRadius: BorderRadius.xl,
     padding: Spacing.lg,
     borderWidth: 1,
-    borderColor: Colors.borderLight,
-    gap: Spacing.sm,
+    borderColor: '#d6e4ff',
+    gap: Spacing.md,
     ...Shadows.small,
   },
   coachHeader: {
@@ -3231,14 +3251,16 @@ const styles = StyleSheet.create({
     gap: Spacing.xs,
   },
   coachHeadline: {
-    fontSize: Typography.fontSize.sm + 1,
-    fontWeight: Typography.fontWeight.medium,
+    flex: 1,
+    fontSize: Typography.fontSize.sm + 2,
+    fontWeight: Typography.fontWeight.semibold,
     color: Colors.text.primary,
+    letterSpacing: 0.15,
   },
   coachMessage: {
     fontSize: Typography.fontSize.sm,
     color: Colors.text.secondary,
-    lineHeight: 18,
+    lineHeight: 20,
   },
   coachPromptList: {
     gap: 4,
@@ -3246,16 +3268,17 @@ const styles = StyleSheet.create({
   coachPrompt: {
     fontSize: Typography.fontSize.xs,
     color: Colors.text.tertiary,
+    lineHeight: 16,
   },
   insightCardWrapper: {
     marginTop: Spacing.lg,
   },
   insightCard: {
-    backgroundColor: Colors.surfaceElevated,
+    backgroundColor: '#f3f4ff',
     borderRadius: BorderRadius.xl,
     padding: Spacing.lg,
     borderWidth: 1,
-    borderColor: Colors.borderLight,
+    borderColor: '#d9dcff',
     ...Shadows.small,
     gap: Spacing.md,
   },
@@ -3263,6 +3286,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: Spacing.sm,
   },
   insightTitle: {
     flex: 1,
@@ -3279,7 +3303,7 @@ const styles = StyleSheet.create({
   },
   insightBody: {
     fontSize: Typography.fontSize.sm + 1,
-    color: Colors.text.primary,
+    color: Colors.text.secondary,
     lineHeight: 22,
     fontWeight: Typography.fontWeight.normal,
   },

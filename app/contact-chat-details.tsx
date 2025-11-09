@@ -893,6 +893,9 @@ function ContactChatDetailsScreen() {
                   <Text style={styles.chatTitle} numberOfLines={1}>
                     {chat.title || 'Untitled Chat'}
                   </Text>
+                  <Text style={styles.chatPartner}>
+                    with {contact?.full_name || contact?.email || 'Contact'}
+                  </Text>
                   <Text style={styles.chatTime}>
                     {formatTime(chat.last_message_at || chat.created_at)}
                   </Text>
@@ -1457,6 +1460,11 @@ const styles = StyleSheet.create({
     flex: 1,
     marginRight: Spacing.sm,
   },
+  chatPartner: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.text.secondary,
+    marginBottom: Spacing.xs,
+  },
   chatTime: {
     fontSize: 11,
     color: Colors.text.tertiary,
@@ -1965,6 +1973,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: Colors.background,
+  },
+  chatSubtitle: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.text.tertiary,
+    marginTop: Spacing.xs,
+  },
+  chatDetails: {
+    flexDirection: 'column',
+    gap: Spacing.xs,
   },
 });
 

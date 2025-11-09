@@ -114,6 +114,9 @@ function AIChatScreen() {
   const [editedQAPairs, setEditedQAPairs] = useState<QAPair[]>([]);
   const [showGenerateSummaryButton, setShowGenerateSummaryButton] = useState(false);
   const editScrollViewRef = useRef<ScrollView>(null);
+  const contextDataRef = useRef<Record<string, any>>({});
+
+  const [chatTitle, setChatTitle] = useState("");
 
   // Aggregate clarity heuristic: allow short/typo answers if overall info is sufficient
   const hasAggregateClarity = React.useCallback(() => {
@@ -167,6 +170,23 @@ function AIChatScreen() {
 
   const resolvedContactId = contact?.id ?? contactIdValue ?? null;
 
+  const updateChatRecord = useCallback(
+    async (fields: Record<string, any> = {}, contextPatch?: Record<string, any>) => {
+      if (!currentChatId) return;
+      const payload: Record<string, any> = { ...fields };
+      if (contextPatch) {
+        const mergedContext = { ...contextDataRef.current, ...contextPatch };
+        contextDataRef.current = mergedContext;
+        payload.context_data = mergedContext;
+      }
+      if (Object.keys(payload).length === 0) return;
+      await supabase
+        .from('chats')
+        .update(payload)
+        .eq('id', currentChatId);
+    },
+    [currentChatId]
+  );
 
   const scrollViewRef = useRef<ScrollView>(null);
 
@@ -300,12 +320,15 @@ function AIChatScreen() {
         });
       }
 
+      const defaultSessionName = `Conversation with ${contactProfile?.full_name || contactProfile?.email}`;
+      setChatTitle(defaultSessionName);
+
       const { data: newChat, error } = await supabase
         .from("chats")
         .insert({
           user_id: user.id,
           chat_type: "ai_assistant",
-          session_name: `Discussion about ${contactProfile?.full_name || contactProfile?.email}`,
+          session_name: defaultSessionName,
           last_message: "Starting new session...",
           last_message_at: new Date().toISOString(),
           context_contact_id: contactIdValue,
@@ -317,6 +340,7 @@ function AIChatScreen() {
               full_name: contactProfile?.full_name,
             },
             flowStage: 'welcome',
+            chat_title: defaultSessionName,
           },
         })
         .select()
@@ -329,6 +353,7 @@ function AIChatScreen() {
 
       console.log('✅ Chat created:', newChat.id);
       setCurrentChatId(newChat.id);
+      contextDataRef.current = newChat.context_data || { chat_title: defaultSessionName };
       setFlowStage('welcome'); // Set to 'welcome' to show Stage 1 (initial description)
       setInitializing(false);
       
@@ -1402,6 +1427,12 @@ const inferEntityCategory = (name: string): string => {
       console.log('✅ Chat data loaded:', chatData);
 
       setCurrentChatId(chatData.id);
+      contextDataRef.current = chatData.context_data || {};
+      const existingTitle = (chatData.context_data && chatData.context_data.chat_title) || chatData.session_name || '';
+      if (existingTitle && contextDataRef.current.chat_title !== existingTitle) {
+        contextDataRef.current = { ...contextDataRef.current, chat_title: existingTitle };
+      }
+      setChatTitle(existingTitle);
       
       // Load entity registry cache for this chat
       loadEntityRegistryCache(chatData.id);
@@ -1554,60 +1585,79 @@ const inferEntityCategory = (name: string): string => {
   }
 
   const handleWelcomeSubmit = async () => {
+    const normalizedTitle = chatTitle.trim();
+
+    if (!normalizedTitle) {
+      Alert.alert(
+        "Add a chat title",
+        "Give this session a short title so you can spot it later."
+      );
+      return;
+    }
+
     if (!initialDescription.trim()) {
-  Alert.alert(
-    "Please describe the situation",
-    "Tell me what happened or what's on your mind."
-  );
-  return;
-}
+      Alert.alert(
+        "Please describe the situation",
+        "Tell me what happened or what's on your mind."
+      );
+      return;
+    }
 
-// 💡 Adaptive short-and-crisp alert to reduce token cost
-const wordCount = initialDescription.trim().split(/\s+/).length;
+    // 💡 Adaptive short-and-crisp alert to reduce token cost
+    const wordCount = initialDescription.trim().split(/\s+/).length;
 
-if (Math.round(wordCount * 1.5) > 150) {
+    if (Math.round(wordCount * 1.5) > 150) {
+      Alert.alert(
+        "Let's simplify together 💛",
+        "That's a very detailed story — I love your honesty! Let's keep it short and crisp so I can help faster ❤️"
+      );
+      return;
+    } else if (wordCount > 100) {
+      Alert.alert(
+        "Keep it short 💬",
+        "Try to describe the issue briefly — 2–3 lines is enough so I can help faster ❤️\n\n(Short notes also save AI energy and reduce token cost 💡)"
+      );
+      return;
+    }
 
-  Alert.alert(
-    "Let's simplify together 💛",
-    "That's a very detailed story — I love your honesty! Let's keep it short and crisp so I can help faster ❤️"
-  );
-  return;
-} else if (wordCount > 100) {
-  Alert.alert(
-    "Keep it short 💬",
-    "Try to describe the issue briefly — 2–3 lines is enough so I can help faster ❤️\n\n(Short notes also save AI energy and reduce token cost 💡)"
-  );
-  return;
-}
+    const isMeaningful = await validateMeaningfulness(initialDescription);
 
-const isMeaningful = await validateMeaningfulness(initialDescription);
-
-if (!isMeaningful) {
-  Alert.alert(
-    "Hmm, I didn't understand 🤔",
-    "Could you describe your situation a bit more clearly so I can help better?"
-  );
-  return;
-}
-
+    if (!isMeaningful) {
+      Alert.alert(
+        "Hmm, I didn't understand 🤔",
+        "Could you describe your situation a bit more clearly so I can help better?"
+      );
+      return;
+    }
 
     setLoading(true);
     try {
-  const wordCount = initialDescription.trim().split(/\s+/).length;
-  const hasEmotion = /(feel|think|want|said|because|angry|upset|happy|worried|hurt|sad|tense|care|sorry|love|hate)/i.test(initialDescription);
+      const wordCount = initialDescription.trim().split(/\s+/).length;
+      const hasEmotion = /(feel|think|want|said|because|angry|upset|happy|worried|hurt|sad|tense|care|sorry|love|hate)/i.test(initialDescription);
 
-  if (wordCount > 120 && hasEmotion) {
-    console.log("🧠 Skipping first question — detailed description detected");
-    setFlowStage("qa");
-    setCurrentQuestion("You've already shared so thoughtfully 💛 Let's just explore it a bit more before I summarize.");
-    setQuestionCount(1);
-  } else {
-    await generateFirstQuestion();
-  }
-} finally {
-  setLoading(false);
-}
+      if (wordCount > 120 && hasEmotion) {
+        console.log("🧠 Skipping first question — detailed description detected");
+        setFlowStage("qa");
+        setCurrentQuestion("You've already shared so thoughtfully 💛 Let's just explore it a bit more before I summarize.");
+        setQuestionCount(1);
+      } else {
+        await generateFirstQuestion();
+      }
+    } finally {
+      setLoading(false);
+    }
 
+    await updateChatRecord(
+      {
+        session_name: normalizedTitle,
+      },
+      {
+        chat_title: normalizedTitle,
+        initial_description: initialDescription,
+        taggedEntities,
+        flowStage: 'welcome',
+      }
+    );
   };
 
   const generateFirstQuestion = async () => {
@@ -1671,6 +1721,7 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
 
   const handleAnswerSubmit = async () => {
     const answer = currentQuestionType === "dropdown" ? selectedOption : currentAnswer;
+    const normalizedTitle = chatTitle.trim() || contextDataRef.current.chat_title || '';
 
    if (!answer?.trim() && !isReviewMode) {
   Alert.alert("Answer Required", "Please provide an answer to continue.");
@@ -1719,20 +1770,19 @@ for (const [idx, pair] of qaPairs.entries()) {
     // keep questionCount in sync with visible progress
     setQuestionCount(updatedPairs.length);
 
-    await supabase
-      .from('chats')
-      .update({
-        context_data: {
-          qa_pairs: updatedPairs,
-          initial_description: initialDescription,
-          flowStage: 'qa',
-          questionCount: updatedPairs.length,
-          taggedEntities,
-          currentAnswer: '',
-          selectedOption: null,
-        },
-      })
-      .eq('id', currentChatId);
+    await updateChatRecord(
+      {},
+      {
+        qa_pairs: updatedPairs,
+        initial_description: initialDescription,
+        flowStage: 'qa',
+        questionCount: updatedPairs.length,
+        taggedEntities,
+        currentAnswer: '',
+        selectedOption: null,
+        chat_title: normalizedTitle,
+      }
+    );
 
     // ✅ Enforce max 5 questions total
     if (updatedPairs.length >= 5) {
@@ -1887,22 +1937,22 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
         setCurrentQuestionType("text");
         setQuestionCount(questionCount + 1);
 
-        await supabase
-          .from('chats')
-          .update({
-            context_data: {
-              qa_pairs: pairs,
-              initial_description: initialDescription,
-              currentQuestion: result.content,
-              currentQuestionType: 'text',
-              currentAnswer: '',
-              selectedOption: null,
-              flowStage: 'qa',
-              questionCount: questionCount + 1,
-              taggedEntities,
-            },
-          })
-          .eq('id', currentChatId);
+        const normalizedTitle = chatTitle.trim() || contextDataRef.current.chat_title || '';
+        await updateChatRecord(
+          {},
+          {
+            qa_pairs: pairs,
+            initial_description: initialDescription,
+            currentQuestion: result.content,
+            currentQuestionType: 'text',
+            currentAnswer: '',
+            selectedOption: null,
+            flowStage: 'qa',
+            questionCount: questionCount + 1,
+            taggedEntities,
+            chat_title: normalizedTitle,
+          }
+        );
       }
     } catch (err) {
       console.error("Failed to generate next question:", err);
@@ -2297,20 +2347,20 @@ Return only two labeled sections exactly in this order:
         setSummary(summaryText);
         setThoughts(thoughtsText);
 
-        await supabase
-          .from("chats")
-          .update({
-            context_data: {
-              summary: summaryText,
-              thoughts: thoughtsText,
-              qa_pairs: pairs,
-              initial_description: initialDescription,
-              flowStage: 'summary',
-              questionCount: pairs.length,
-              taggedEntities,
-            },
-          })
-          .eq("id", currentChatId);
+        const normalizedTitle = chatTitle.trim() || contextDataRef.current.chat_title || '';
+        await updateChatRecord(
+          {},
+          {
+            summary: summaryText,
+            thoughts: thoughtsText,
+            qa_pairs: pairs,
+            initial_description: initialDescription,
+            flowStage: 'summary',
+            questionCount: pairs.length,
+            taggedEntities,
+            chat_title: normalizedTitle,
+          }
+        );
 
         setFlowStage("summary");
       }
@@ -2671,23 +2721,18 @@ Return only two labeled sections exactly in this order:
           setSummaryJustRegenerated(false);
         }, 500);
 
-        await supabase
-          .from("chats")
-          .update({
-            context_data: {
-              summary: summaryText,
-              thoughts: thoughtsText,
-              qa_pairs: editedQAPairs,
-              initial_description: initialDescription,
-              initial_description_tags: taggedEntities,
-              additional_info: additionalInfo,
-              additional_info_tags: additionalInfoTags,
-              flowStage: 'summary',
-              questionCount: editedQAPairs.length,
-              taggedEntities: [...taggedEntities, ...additionalInfoTags],
-            },
-          })
-          .eq("id", currentChatId);
+        await updateChatRecord({
+          summary: summaryText,
+          thoughts: thoughtsText,
+          qa_pairs: editedQAPairs,
+          initial_description: initialDescription,
+          initial_description_tags: taggedEntities,
+          additional_info: additionalInfo,
+          additional_info_tags: additionalInfoTags,
+          flowStage: 'summary',
+          questionCount: editedQAPairs.length,
+          taggedEntities: [...taggedEntities, ...additionalInfoTags],
+        });
       }
     } catch (err) {
       console.error("Failed to regenerate summary:", err);
@@ -2771,18 +2816,21 @@ Respond ONLY with valid JSON:
         }
       }
 
-      await supabase
-        .from("chats")
-        .update({
+      const normalizedTitle = chatTitle.trim() || contextDataRef.current.chat_title || `Conversation with ${contactName}`;
+
+      await updateChatRecord(
+        {
           is_resolved: true,
-          context_data: {
-            summary,
-            thoughts,
-            qa_pairs: qaPairs,
-            initial_description: initialDescription,
-          },
-        })
-        .eq("id", currentChatId);
+          session_name: normalizedTitle,
+        },
+        {
+          summary,
+          thoughts,
+          qa_pairs: qaPairs,
+          initial_description: initialDescription,
+          chat_title: normalizedTitle,
+        }
+      );
 
       // Always create a fresh contact chat for a clean session (no history reuse)
       let contactChatId: string | undefined;
@@ -2801,12 +2849,14 @@ Respond ONLY with valid JSON:
           turn_count_a: 0,
           turn_count_b: 0,
           resolution_detected: false,
+          title: normalizedTitle,
           context_data: {
             summary_a: summary,
             thoughts_a: thoughts,
             hint_to_contact: hintToContact,
             contact_category: contactCategory,
             initial_pending: true,
+            chat_title: normalizedTitle,
           },
         })
         .select("id")
@@ -2951,131 +3001,146 @@ Respond ONLY with valid JSON:
     </View>
 
     {/* Text Input + Dropdown Wrapper */}
-<View style={{ position: "relative", width: "100%" }}>
-  <TextInput
-  style={styles.descriptionInput}
-  value={initialDescription}
-  onChangeText={(text) => {
-    const tokensUsed = Math.round(text.trim().split(/\s+/).length * 1.5);
-    if (tokensUsed <= 150) {
-      handleDescriptionChange(text);
-    } else {
-      // Block further typing when limit reached (no alert spam)
-    }
-  }}
-  onSelectionChange={(event) => {
-    setDescriptionCursorPos(event.nativeEvent.selection.start);
-  }}
-  placeholder="Describe the situation … (use @ or # tags)"
-  placeholderTextColor={Colors.text.tertiary}
-  multiline
-  maxLength={800}
-/>
-
-
-  {/* Pronoun Dropdown */}
-  {showPronounDropdown && (
-    <View style={styles.tagDropdownContainer}>
-      <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled={true}>
-        <Text style={styles.tagDropdownHeader}>
-          Select Pronouns
-        </Text>
-        {(showPronounDropdown === '#' 
-          ? ['he/him', 'she/her', 'they/them', 'it/its']
-          : ['he/him', 'she/her', 'they/them']
-        ).map((pronoun) => (
-          <TouchableOpacity
-            key={pronoun}
-            style={styles.tagItem}
-            onPress={() => handlePronounSelect(pronoun)}
-          >
-            <View style={[styles.tagIndicator, { backgroundColor: Colors.primary[100] }]}>
-              <Text style={{ fontSize: 12, color: Colors.primary[600] }}>⚧</Text>
-            </View>
-            <Text style={styles.tagName}>{pronoun}</Text>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
+    <View style={styles.inputGroup}>
+      <Text style={styles.inputLabel}>Chat title</Text>
+      <TextInput
+        style={styles.titleInput}
+        value={chatTitle}
+        onChangeText={setChatTitle}
+        placeholder="e.g. Clearing the weekend misunderstanding"
+        placeholderTextColor={Colors.text.tertiary}
+        maxLength={80}
+        autoCapitalize="sentences"
+        returnKeyType="done"
+      />
+      <Text style={styles.inputHelper}>This appears in your AI prep and shared chat lists.</Text>
     </View>
-  )}
 
-  {/* @ Dropdown */}
-  {showTagDropdown === '@' && contactSuggestions.length > 0 && (
-    <View style={styles.tagDropdownContainer}>
-      <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled={true}>
-        <Text style={styles.tagDropdownHeader}>
-          <AtSign size={12} color={Colors.primary[600]} /> Registered Contacts
-        </Text>
-        {contactSuggestions.map((c) => (
-          <TouchableOpacity
-            key={c.id}
-            style={styles.tagItem}
-            onPress={() => handleContactSelect(c)}
-          >
-            <View style={[styles.tagIndicator, { backgroundColor: Colors.primary[100] }]}>
-              <AtSign size={12} color={Colors.primary[600]} />
-            </View>
-            <Text style={styles.tagName}>{c.full_name || c.email}</Text>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
-    </View>
-  )}
+    <View style={{ position: "relative", width: "100%" }}>
+      <TextInput
+      style={styles.descriptionInput}
+      value={initialDescription}
+      onChangeText={(text) => {
+        const tokensUsed = Math.round(text.trim().split(/\s+/).length * 1.5);
+        if (tokensUsed <= 150) {
+          handleDescriptionChange(text);
+        } else {
+          // Block further typing when limit reached (no alert spam)
+        }
+      }}
+      onSelectionChange={(event) => {
+        setDescriptionCursorPos(event.nativeEvent.selection.start);
+      }}
+      placeholder="Describe the situation … (use @ or # tags)"
+      placeholderTextColor={Colors.text.tertiary}
+      multiline
+      maxLength={800}
+    />
 
-  {/* # Dropdown */}
-  {showTagDropdown === '#' && hashSuggestions.length > 0 && (
-    <View style={styles.tagDropdownContainer}>
-      <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled={true}>
-        <Text style={styles.tagDropdownHeader}>
-          <Hash size={12} color={Colors.warning[600]} /> People/Groups (not in app)
-        </Text>
-        {hashSuggestions.map((tag, idx) => (
-          <TouchableOpacity
-            key={idx}
-            style={styles.tagItem}
-            onPress={() => handleHashTagSelect(tag)}
-          >
-            <View style={[styles.tagIndicator, { backgroundColor: Colors.warning[100] }]}>
-              <Hash size={12} color={Colors.warning[600]} />
-            </View>
-            <Text style={styles.tagName}>#{tag}</Text>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
-    </View>
-  )}
-</View>
 
-<View style={{ marginTop: 4, alignItems: "flex-end" }}>
-  <Text
-  style={[
-    styles.tokenCounter,
-    Math.max(0, 150 - Math.round(initialDescription.trim().split(/\s+/).length * 1.5)) === 0
-      ? { color: Colors.error[600] }
-      : { color: Colors.success[600] },
-  ]}
->
+    {/* Pronoun Dropdown */}
+    {showPronounDropdown && (
+      <View style={styles.tagDropdownContainer}>
+        <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled={true}>
+          <Text style={styles.tagDropdownHeader}>
+            Select Pronouns
+          </Text>
+          {(showPronounDropdown === '#' 
+            ? ['he/him', 'she/her', 'they/them', 'it/its']
+            : ['he/him', 'she/her', 'they/them']
+          ).map((pronoun) => (
+            <TouchableOpacity
+              key={pronoun}
+              style={styles.tagItem}
+              onPress={() => handlePronounSelect(pronoun)}
+            >
+              <View style={[styles.tagIndicator, { backgroundColor: Colors.primary[100] }]}>
+                <Text style={{ fontSize: 12, color: Colors.primary[600] }}>⚧</Text>
+              </View>
+              <Text style={styles.tagName}>{pronoun}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      </View>
+    )}
+
+    {/* @ Dropdown */}
+    {showTagDropdown === '@' && contactSuggestions.length > 0 && (
+      <View style={styles.tagDropdownContainer}>
+        <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled={true}>
+          <Text style={styles.tagDropdownHeader}>
+            <AtSign size={12} color={Colors.primary[600]} /> Registered Contacts
+          </Text>
+          {contactSuggestions.map((c) => (
+            <TouchableOpacity
+              key={c.id}
+              style={styles.tagItem}
+              onPress={() => handleContactSelect(c)}
+            >
+              <View style={[styles.tagIndicator, { backgroundColor: Colors.primary[100] }]}>
+                <AtSign size={12} color={Colors.primary[600]} />
+              </View>
+              <Text style={styles.tagName}>{c.full_name || c.email}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      </View>
+    )}
+
+    {/* # Dropdown */}
+    {showTagDropdown === '#' && hashSuggestions.length > 0 && (
+      <View style={styles.tagDropdownContainer}>
+        <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled={true}>
+          <Text style={styles.tagDropdownHeader}>
+            <Hash size={12} color={Colors.warning[600]} /> People/Groups (not in app)
+          </Text>
+          {hashSuggestions.map((tag, idx) => (
+            <TouchableOpacity
+              key={idx}
+              style={styles.tagItem}
+              onPress={() => handleHashTagSelect(tag)}
+            >
+              <View style={[styles.tagIndicator, { backgroundColor: Colors.warning[100] }]}>
+                <Hash size={12} color={Colors.warning[600]} />
+              </View>
+              <Text style={styles.tagName}>#{tag}</Text>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      </View>
+    )}
+  </View>
+
+  <View style={{ marginTop: 4, alignItems: "flex-end" }}>
+    <Text
+    style={[
+      styles.tokenCounter,
+      Math.max(0, 150 - Math.round(initialDescription.trim().split(/\s+/).length * 1.5)) === 0
+        ? { color: Colors.error[600] }
+        : { color: Colors.success[600] },
+    ]}
+  >
   {Math.max(0, 150 - Math.round(initialDescription.trim().split(/\s+/).length * 1.5))} tokens left 💬
 </Text>
 
 
-  {initialDescription.trim().split(/\s+/).length > 100 && (
-    <Text
-      style={{
-        fontSize: Typography.fontSize.xs,
-        color:
-          initialDescription.trim().split(/\s+/).length > 100
-            ? Colors.error[600]
-            : Colors.warning[600],
-        fontStyle: "italic",
-      }}
-    >
-      {initialDescription.trim().split(/\s+/).length > 100
-        ? "Let's simplify it a bit ❤️"
-        : "Try to keep it short and clear 💛"}
-    </Text>
-  )}
-</View>
+    {initialDescription.trim().split(/\s+/).length > 100 && (
+      <Text
+        style={{
+          fontSize: Typography.fontSize.xs,
+          color:
+            initialDescription.trim().split(/\s+/).length > 100
+              ? Colors.error[600]
+              : Colors.warning[600],
+          fontStyle: "italic",
+        }}
+      >
+        {initialDescription.trim().split(/\s+/).length > 100
+          ? "Let's simplify it a bit ❤️"
+          : "Try to keep it short and clear 💛"}
+      </Text>
+    )}
+  </View>
 
 
 
@@ -3083,40 +3148,40 @@ Respond ONLY with valid JSON:
 
     
    {/* bottom buttons */}
-<View style={styles.buttonColumn}>
-  <TouchableOpacity
-    style={[styles.fullWidthButton, styles.secondaryButton]}
-    onPress={() => router.push('/(tabs)/chats')}
-  >
-    <Text style={styles.secondaryButtonText}>Go to Chats Home</Text>
-  </TouchableOpacity>
+  <View style={styles.buttonColumn}>
+    <TouchableOpacity
+      style={[styles.fullWidthButton, styles.secondaryButton]}
+      onPress={() => router.push('/(tabs)/chats')}
+    >
+      <Text style={styles.secondaryButtonText}>Go to Chats Home</Text>
+    </TouchableOpacity>
 
-  <TouchableOpacity
-    style={[styles.fullWidthButton, styles.secondaryButton]}
-    onPress={() => router.push('/(tabs)/soulroom')}
-  >
-    <Text style={styles.secondaryButtonText}>Open Soulroom</Text>
-  </TouchableOpacity>
+    <TouchableOpacity
+      style={[styles.fullWidthButton, styles.secondaryButton]}
+      onPress={() => router.push('/(tabs)/soulroom')}
+    >
+      <Text style={styles.secondaryButtonText}>Open Soulroom</Text>
+    </TouchableOpacity>
 
-  <TouchableOpacity
-    style={[styles.fullWidthButton, styles.secondaryButton]}
-    onPress={() => router.push("/(tabs)/contacts?mode=ai_chat")}
-  >
-    <Text style={styles.secondaryButtonText}>Choose Different Contact</Text>
-  </TouchableOpacity>
+    <TouchableOpacity
+      style={[styles.fullWidthButton, styles.secondaryButton]}
+      onPress={() => router.push("/(tabs)/contacts?mode=ai_chat")}
+    >
+      <Text style={styles.secondaryButtonText}>Choose Different Contact</Text>
+    </TouchableOpacity>
 
-  <TouchableOpacity
-    style={[styles.fullWidthButton, styles.primaryButton, loading && styles.primaryButtonDisabled]}
-    onPress={handleWelcomeSubmit}
-    disabled={loading || !initialDescription.trim()}
-  >
-    {loading ? (
-      <ActivityIndicator color="#fff" />
-    ) : (
-      <Text style={styles.primaryButtonText}>Continue</Text>
-    )}
-  </TouchableOpacity>
-</View>
+    <TouchableOpacity
+      style={[styles.fullWidthButton, styles.primaryButton, loading && styles.primaryButtonDisabled]}
+      onPress={handleWelcomeSubmit}
+      disabled={loading || !initialDescription.trim()}
+    >
+      {loading ? (
+        <ActivityIndicator color="#fff" />
+      ) : (
+        <Text style={styles.primaryButtonText}>Continue</Text>
+      )}
+    </TouchableOpacity>
+  </View>
 
   </View>
 );
@@ -4492,6 +4557,33 @@ halfButton: {
     fontSize: Typography.fontSize.xs,
     color: Colors.warning[700],
     fontStyle: 'italic',
+  },
+
+  inputGroup: {
+    marginBottom: Spacing.md,
+  },
+  inputLabel: {
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.semibold,
+    color: Colors.text.primary,
+    marginBottom: Spacing.xs,
+  },
+  titleInput: {
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+    borderRadius: BorderRadius.md,
+    padding: Spacing.sm,
+    fontSize: Typography.fontSize.base,
+    backgroundColor: Colors.surface,
+    minHeight: 40,
+    textAlignVertical: "top",
+    marginBottom: Spacing.xs,
+    ...Shadows.small,
+  },
+  inputHelper: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.text.tertiary,
+    marginBottom: Spacing.xs,
   },
 
 });
