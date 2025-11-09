@@ -18,7 +18,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { useAuth } from '@/contexts/AuthContext';
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/Colors';
 import { supabase } from '@/lib/supabase';
-import { Heart, Plus, CreditCard as Edit3, Trash2, Calendar, X, Sparkles, Mic, Square, Play, Pause, Share2 } from 'lucide-react-native';
+import { Heart, Plus, CreditCard as Edit3, Trash2, X, Sparkles, Mic, Square, Play, Pause, Share2, ChevronDown, Check, Calendar } from 'lucide-react-native';
 import MoodTrendChart, { MoodTrendPoint } from '@/components/MoodTrendChart';
 
 interface SoulroomEntry {
@@ -137,6 +137,280 @@ const POSITIVE_WORDS = [
   'balance',
 ];
 
+const CALM_MOODS = new Set(['peaceful', 'grateful', 'happy', 'relieved', 'calm']);
+
+type AchievementFlags = {
+  reflection_streak_5: boolean;
+  calm_weeks_3: boolean;
+};
+
+type ReflectionSignalPreset = {
+  emotionIntent: string;
+  emotionalLayer: string;
+  confidence: number;
+  sentiment: 'positive' | 'negative' | 'neutral' | 'uncertain';
+  closure?: number;
+};
+
+type ReflectionSignal = {
+  emotionIntent: string;
+  emotionalLayer: string;
+  confidence: number;
+  sentiment: 'positive' | 'negative' | 'neutral' | 'uncertain';
+  closureScore: number;
+  reasoning: string;
+};
+
+const REFLECTION_SIGNAL_PRESETS: Record<string, ReflectionSignalPreset> = {
+  happy: {
+    emotionIntent: 'sharing_joy',
+    emotionalLayer: 'warm_empathic',
+    confidence: 0.72,
+    sentiment: 'positive',
+    closure: 0.75,
+  },
+  grateful: {
+    emotionIntent: 'expressing_gratitude',
+    emotionalLayer: 'warm_empathic',
+    confidence: 0.74,
+    sentiment: 'positive',
+    closure: 0.78,
+  },
+  peaceful: {
+    emotionIntent: 'maintaining_harmony',
+    emotionalLayer: 'reflective_growth',
+    confidence: 0.7,
+    sentiment: 'positive',
+    closure: 0.8,
+  },
+  sad: {
+    emotionIntent: 'processing_hurt',
+    emotionalLayer: 'vulnerable_healing',
+    confidence: 0.62,
+    sentiment: 'negative',
+    closure: 0.45,
+  },
+  angry: {
+    emotionIntent: 'asserting_boundaries',
+    emotionalLayer: 'tense_honest',
+    confidence: 0.6,
+    sentiment: 'negative',
+    closure: 0.35,
+  },
+  anxious: {
+    emotionIntent: 'seeking_reassurance',
+    emotionalLayer: 'tense_honest',
+    confidence: 0.63,
+    sentiment: 'uncertain',
+    closure: 0.4,
+  },
+  frustrated: {
+    emotionIntent: 'processing_conflict',
+    emotionalLayer: 'tense_honest',
+    confidence: 0.61,
+    sentiment: 'negative',
+    closure: 0.38,
+  },
+  confused: {
+    emotionIntent: 'seeking_clarity',
+    emotionalLayer: 'reflective_growth',
+    confidence: 0.58,
+    sentiment: 'uncertain',
+    closure: 0.48,
+  },
+  relieved: {
+    emotionIntent: 'acknowledging_progress',
+    emotionalLayer: 'warm_empathic',
+    confidence: 0.7,
+    sentiment: 'positive',
+    closure: 0.76,
+  },
+  default: {
+    emotionIntent: 'reflective_processing',
+    emotionalLayer: 'reflective_growth',
+    confidence: 0.55,
+    sentiment: 'neutral',
+    closure: 0.5,
+  },
+};
+
+const getISOWeekIdentifier = (date: Date): number => {
+  const utcDate = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const dayNumber = utcDate.getUTCDay() || 7;
+  utcDate.setUTCDate(utcDate.getUTCDate() + 4 - dayNumber);
+  const yearStart = new Date(Date.UTC(utcDate.getUTCFullYear(), 0, 1));
+  const weekNumber = Math.ceil(((utcDate.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+  return utcDate.getUTCFullYear() * 100 + weekNumber;
+};
+
+const calculateAchievementFlags = (entries: SoulroomEntry[]): AchievementFlags => {
+  if (!entries.length) {
+    return {
+      reflection_streak_5: false,
+      calm_weeks_3: false,
+    };
+  }
+
+  const dateKeys = Array.from(
+    new Set(
+      entries
+        .map((entry) => entry.created_at?.slice(0, 10))
+        .filter((value): value is string => Boolean(value)),
+    ),
+  ).sort();
+
+  let maxStreak = 0;
+  let currentStreak = 0;
+  let previousDate: Date | null = null;
+
+  dateKeys.forEach((key) => {
+    const currentDate = new Date(`${key}T00:00:00Z`);
+    if (!previousDate) {
+      currentStreak = 1;
+    } else {
+      const diffDays = Math.round((currentDate.getTime() - previousDate.getTime()) / 86400000);
+      currentStreak = diffDays === 1 ? currentStreak + 1 : 1;
+    }
+    maxStreak = Math.max(maxStreak, currentStreak);
+    previousDate = currentDate;
+  });
+
+  const weeklyCalmMap = new Map<number, boolean>();
+  entries.forEach((entry) => {
+    if (!entry.created_at) return;
+    const moodValue = (entry.mood || entry.emotion_tag || '').toLowerCase();
+    const weekId = getISOWeekIdentifier(new Date(entry.created_at));
+    if (!weeklyCalmMap.has(weekId)) {
+      weeklyCalmMap.set(weekId, false);
+    }
+    if (CALM_MOODS.has(moodValue)) {
+      weeklyCalmMap.set(weekId, true);
+    }
+  });
+
+  const sortedWeeks = Array.from(weeklyCalmMap.keys()).sort((a, b) => a - b);
+  let calmRun = 0;
+  let previousWeek: number | null = null;
+  let calmWeeksUnlocked = false;
+
+  sortedWeeks.forEach((weekKey) => {
+    const isCalm = weeklyCalmMap.get(weekKey) ?? false;
+    if (!isCalm) {
+      calmRun = 0;
+      previousWeek = weekKey;
+      return;
+    }
+    if (previousWeek !== null && weekKey === previousWeek + 1) {
+      calmRun += 1;
+    } else {
+      calmRun = 1;
+    }
+    if (calmRun >= 3) {
+      calmWeeksUnlocked = true;
+    }
+    previousWeek = weekKey;
+  });
+
+  return {
+    reflection_streak_5: maxStreak >= 5,
+    calm_weeks_3: calmWeeksUnlocked,
+  };
+};
+
+const deriveReflectionSignals = (mood: string | null, content: string): ReflectionSignal => {
+  const normalizedMood = (mood || '').toLowerCase();
+  const preset = REFLECTION_SIGNAL_PRESETS[normalizedMood] || REFLECTION_SIGNAL_PRESETS.default;
+  const wordCount = content.trim().length
+    ? content
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean).length
+    : 0;
+  const confidenceBoost = Math.min(0.12, Math.max(0, wordCount - 40) / 400);
+  const confidence = Math.min(0.95, preset.confidence + confidenceBoost);
+  const closureScore = preset.closure ?? preset.confidence;
+
+  return {
+    emotionIntent: preset.emotionIntent,
+    emotionalLayer: preset.emotionalLayer,
+    sentiment: preset.sentiment,
+    confidence,
+    closureScore,
+    reasoning: `Reflection recorded a ${normalizedMood || 'mixed'} mood with ${wordCount} words.`,
+  };
+};
+
+const WELLNESS_CHECK_OPTIONS = [
+  { value: 1, label: 'low', emoji: '😔', description: 'Feeling low' },
+  { value: 2, label: 'wobbly', emoji: '😟', description: 'Not great' },
+  { value: 3, label: 'steady', emoji: '🙂', description: 'Holding steady' },
+  { value: 4, label: 'hopeful', emoji: '😊', description: 'Feeling hopeful' },
+  { value: 5, label: 'bright', emoji: '😄', description: 'Feeling bright' },
+];
+
+const REFLECTION_CARD_VARIANTS = [
+  {
+    container: {
+      backgroundColor: '#ffffff',
+      borderColor: '#e5e7eb',
+    },
+    summaryCard: {
+      backgroundColor: '#eff6ff',
+      borderColor: '#bfdbfe',
+    },
+    summaryTitle: { color: '#1d4ed8' },
+    summaryChip: {
+      backgroundColor: '#fff',
+      color: '#1d4ed8',
+    },
+    tagChip: {
+      backgroundColor: '#e0f2fe',
+      borderColor: '#bae6fd',
+    },
+    tagChipText: { color: '#0369a1' },
+  },
+  {
+    container: {
+      backgroundColor: '#f5f3ff',
+      borderColor: '#ddd6fe',
+    },
+    summaryCard: {
+      backgroundColor: '#ede9fe',
+      borderColor: '#c4b5fd',
+    },
+    summaryTitle: { color: '#6d28d9' },
+    summaryChip: {
+      backgroundColor: '#fff',
+      color: '#6d28d9',
+    },
+    tagChip: {
+      backgroundColor: '#f3e8ff',
+      borderColor: '#e9d5ff',
+    },
+    tagChipText: { color: '#5b21b6' },
+  },
+  {
+    container: {
+      backgroundColor: '#fff7ed',
+      borderColor: '#fed7aa',
+    },
+    summaryCard: {
+      backgroundColor: '#fef3c7',
+      borderColor: '#fde68a',
+    },
+    summaryTitle: { color: '#c2410c' },
+    summaryChip: {
+      backgroundColor: '#fff7ed',
+      color: '#c2410c',
+    },
+    tagChip: {
+      backgroundColor: '#ffedd5',
+      borderColor: '#fed7aa',
+    },
+    tagChipText: { color: '#b45309' },
+  },
+];
+
 function SoulroomScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
@@ -169,6 +443,27 @@ function SoulroomScreen() {
   const [voicePlaybackUrls, setVoicePlaybackUrls] = useState<Record<string, string>>({});
   const [currentlyPlayingId, setCurrentlyPlayingId] = useState<string | null>(null);
   const playbackRef = useRef<any>(null);
+  const achievementsSignatureRef = useRef<string | null>(null);
+  const [aiInsight, setAiInsight] = useState<{ id: string; headline: string; insight: string; generated_at: string } | null>(null);
+  const [aiInsightLoading, setAiInsightLoading] = useState(false);
+  const [aiInsightError, setAiInsightError] = useState<string | null>(null);
+  const [wellnessSelection, setWellnessSelection] = useState<number | null>(null);
+  const [wellnessSaving, setWellnessSaving] = useState(false);
+  const [wellnessUpdatedAt, setWellnessUpdatedAt] = useState<string | null>(null);
+  const [showTimeline, setShowTimeline] = useState(true);
+  const [showOverview, setShowOverview] = useState(true);
+  const [showWellness, setShowWellness] = useState(true);
+  const [showCoach, setShowCoach] = useState(true);
+  const [showDigest, setShowDigest] = useState(true);
+  const [showInsight, setShowInsight] = useState(true);
+  const [activeTab, setActiveTab] = useState<'overview' | 'reflections'>('overview');
+  const [reflectionMultiSelect, setReflectionMultiSelect] = useState(false);
+  const [selectedReflectionIds, setSelectedReflectionIds] = useState<string[]>([]);
+  const [bulkDeletingReflections, setBulkDeletingReflections] = useState(false);
+  const tabOptions = [
+    { key: 'overview' as const, label: 'Overview' },
+    { key: 'reflections' as const, label: 'Reflections' },
+  ];
 
   useEffect(() => {
     if (user) {
@@ -229,6 +524,403 @@ function SoulroomScreen() {
     };
   }, [user?.id]);
 
+  useEffect(() => {
+    if (activeTab !== 'reflections' && reflectionMultiSelect) {
+      setReflectionMultiSelect(false);
+      setSelectedReflectionIds([]);
+    }
+  }, [activeTab, reflectionMultiSelect]);
+
+  useEffect(() => {
+    if (!selectedReflectionIds.length) return;
+    setSelectedReflectionIds((prev) => {
+      const validIds = prev.filter((id) => entries.some((entry) => entry.id === id));
+      if (validIds.length !== prev.length) {
+        if (validIds.length === 0) {
+          setReflectionMultiSelect(false);
+        }
+        return validIds;
+      }
+      return prev;
+    });
+  }, [entries]);
+
+  const updateAchievements = useCallback(
+    async (entriesList: SoulroomEntry[]) => {
+      if (!user?.id) {
+        return;
+      }
+      const flags = calculateAchievementFlags(entriesList);
+      const signature = JSON.stringify(flags);
+
+      if (!entriesList.length) {
+        achievementsSignatureRef.current = signature;
+        return;
+      }
+
+      if (achievementsSignatureRef.current === signature) {
+        return;
+      }
+
+      try {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('user_preferences')
+          .eq('id', user.id)
+          .single();
+
+        if (error) throw error;
+
+        const currentPreferences = data?.user_preferences || {};
+        const existingAchievements = currentPreferences.achievements || {};
+        let hasChange = false;
+        const updatedAchievements = { ...existingAchievements };
+
+        Object.entries(flags).forEach(([key, unlocked]) => {
+          const previous = existingAchievements[key];
+          if (unlocked) {
+            if (!previous?.unlocked) {
+              updatedAchievements[key] = {
+                unlocked: true,
+                unlocked_at: new Date().toISOString(),
+              };
+              hasChange = true;
+            }
+          } else if (!previous) {
+            updatedAchievements[key] = { unlocked: false };
+            hasChange = true;
+          }
+        });
+
+        if (!hasChange) {
+          achievementsSignatureRef.current = signature;
+          return;
+        }
+
+        const { error: updateError } = await supabase
+          .from('profiles')
+          .update({
+            user_preferences: {
+              ...currentPreferences,
+              achievements: updatedAchievements,
+            },
+          })
+          .eq('id', user.id);
+
+        if (updateError) throw updateError;
+        achievementsSignatureRef.current = signature;
+      } catch (error) {
+        console.warn('⚠️ Skipping achievement update:', error);
+      }
+    },
+    [user?.id],
+  );
+
+  const computeLocalInsight = useCallback(() => {
+    if (!entries.length) {
+      return {
+        headline: 'Keep reflecting gently',
+        insight: "I'm still learning from your space. Take a moment to breathe and write down one feeling that's present.",
+      };
+    }
+    const recent = entries[0];
+    const moodLabel = recent.mood || recent.emotion_tag || 'reflective';
+    const preview = recent.content.length > 140 ? `${recent.content.slice(0, 140)}…` : recent.content;
+    return {
+      headline: `Honor your ${moodLabel.toLowerCase()} tone`,
+      insight: `Your latest reflection shows a ${moodLabel.toLowerCase()} voice: " ${preview} ". Stay with that energy and let it guide your next chat—soft, honest, and steady.`,
+    };
+  }, [entries]);
+
+  const fetchAiInsight = useCallback(
+    async (forceRefresh = false) => {
+      if (!user?.id) return;
+      try {
+        setAiInsightLoading(true);
+        setAiInsightError(null);
+
+        const { data, error } = await supabase
+          .from('soul_ai_insights')
+          .select('id, headline, insight, generated_at')
+          .eq('user_id', user.id)
+          .order('generated_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (error) throw error;
+
+        let shouldGenerate = forceRefresh;
+        if (!data) {
+          shouldGenerate = true;
+        } else {
+          setAiInsight({
+            id: data.id,
+            headline: data.headline,
+            insight: data.insight,
+            generated_at: data.generated_at,
+          });
+          if (!forceRefresh) {
+            const generatedAt = data.generated_at ? new Date(data.generated_at) : null;
+            if (generatedAt) {
+              const diffDays = (Date.now() - generatedAt.getTime()) / 86400000;
+              if (diffDays > 6.5) {
+                shouldGenerate = true;
+              }
+            }
+          }
+        }
+
+        if (!shouldGenerate) {
+          setAiInsightLoading(false);
+          return;
+        }
+
+        const { error: invokeError } = await supabase.functions.invoke('generate-ai-insight', {
+          body: { userId: user.id },
+        });
+        if (invokeError) throw invokeError;
+
+        const { data: refreshed, error: refreshError } = await supabase
+          .from('soul_ai_insights')
+          .select('id, headline, insight, generated_at')
+          .eq('user_id', user.id)
+          .order('generated_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (refreshError) throw refreshError;
+        if (refreshed) {
+          setAiInsight({
+            id: refreshed.id,
+            headline: refreshed.headline,
+            insight: refreshed.insight,
+            generated_at: refreshed.generated_at,
+          });
+        }
+      } catch (error) {
+        console.error('AI insight error:', error);
+        const fallback = computeLocalInsight();
+        setAiInsight({
+          id: 'local-fallback',
+          headline: fallback.headline,
+          insight: fallback.insight,
+          generated_at: new Date().toISOString(),
+        });
+        setAiInsightError(null);
+      } finally {
+        setAiInsightLoading(false);
+      }
+    },
+    [user?.id, computeLocalInsight],
+  );
+
+  const fetchDailyWellness = useCallback(async () => {
+    if (!user?.id) return;
+    try {
+      const todayISO = new Date().toISOString().slice(0, 10);
+      const { data, error } = await supabase
+        .from('wellness_daily_checkins')
+        .select('mood_score, mood_label, recorded_date')
+        .eq('user_id', user.id)
+        .eq('recorded_date', todayISO)
+        .maybeSingle();
+      if (error) throw error;
+      if (data) {
+        setWellnessSelection(data.mood_score);
+        setWellnessUpdatedAt(data.recorded_date);
+      } else {
+        setWellnessSelection(null);
+        setWellnessUpdatedAt(null);
+      }
+    } catch (error) {
+      console.warn('⚠️ Wellness check fetch skipped:', error);
+    }
+  }, [user?.id]);
+
+  const syncReflectionWithAI = useCallback(
+    async ({
+      reflectionId,
+      mood,
+      content,
+      tags,
+      contactId,
+      isEdit,
+    }: {
+      reflectionId: string | null;
+      mood: string | null;
+      content: string;
+      tags: string[];
+      contactId: string | null;
+      isEdit: boolean;
+    }) => {
+      if (!user?.id || !reflectionId) {
+        return;
+      }
+
+      try {
+        const signals = deriveReflectionSignals(mood, content);
+        const chatTag = tags.find((tag) => tag.startsWith('chat:'));
+        const relatedChatId = chatTag ? chatTag.split(':')[1] : null;
+        const metadata = {
+          source: 'soulroom_reflection',
+          updated: isEdit,
+          mode: tags.some((tag) => tag.startsWith('voice:')) ? 'voice' : 'text',
+        };
+
+        const historyPayload = {
+          user_id: user.id,
+          reflection_id: reflectionId,
+          chat_id: relatedChatId ?? null,
+          contact_id: contactId ?? null,
+          emotion_intent: signals.emotionIntent,
+          emotional_layer: signals.emotionalLayer,
+          reflection_mood: mood ?? null,
+          message_source: 'soulroom',
+          message_content: content.slice(0, 500),
+          intent_confidence: signals.confidence,
+          transition_from: 'reflection_entry',
+          transition_quality: 'self_reported',
+          hint_present: false,
+          hint_text: null,
+          metadata,
+        };
+
+        const orchestrationPayload = {
+          user_id: user.id,
+          chat_id: relatedChatId ?? null,
+          reflection_id: reflectionId,
+          source: 'reflection',
+          current_emotion_intent: signals.emotionIntent,
+          current_emotional_layer: signals.emotionalLayer,
+          reasoning: signals.reasoning,
+          confidence_score: signals.confidence,
+          detected_sentiment: signals.sentiment,
+          hint_integration_status: 'not_applicable',
+          relationship_context: contactId ? { contact_id: contactId } : null,
+          closure_readiness_score: signals.closureScore,
+          metadata,
+        };
+
+        const decisionPayload = {
+          user_id: user.id,
+          chat_id: relatedChatId ?? null,
+          reflection_id: reflectionId,
+          decision_type: 'reflection_sync',
+          agent_name: 'soulroom_sync',
+          input_data: {
+            mood,
+            tags,
+            content_preview: content.slice(0, 160),
+          },
+          reasoning_steps: [
+            `Synced reflection mood "${mood || 'unspecified'}" with AI assistant context.`,
+            `Updated emotion intent to ${signals.emotionIntent} and layer ${signals.emotionalLayer}.`,
+          ],
+          decision_output: {
+            emotionIntent: signals.emotionIntent,
+            emotionalLayer: signals.emotionalLayer,
+            closureScore: signals.closureScore,
+            sentiment: signals.sentiment,
+          },
+          confidence_score: signals.confidence,
+          execution_time_ms: 0,
+          success: true,
+          metadata,
+        };
+
+        const { error: historyError } = await supabase
+          .from('emotion_intent_history')
+          .insert(historyPayload);
+        if (historyError) throw historyError;
+
+        const { error: orchestrationError } = await supabase
+          .from('conversation_orchestration')
+          .insert(orchestrationPayload);
+        if (orchestrationError) throw orchestrationError;
+
+        const { error: decisionError } = await supabase
+          .from('agent_decisions')
+          .insert(decisionPayload);
+        if (decisionError) throw decisionError;
+      } catch (error) {
+        console.warn('⚠️ Reflection sync skipped:', error);
+      }
+    },
+    [user?.id],
+  );
+
+  const handleWellnessCheckin = useCallback(
+    async (option: { value: number; label: string; emoji: string }) => {
+      if (!user?.id || wellnessSaving) return;
+      try {
+        setWellnessSaving(true);
+        const todayISO = new Date().toISOString().slice(0, 10);
+        const checkinPayload = {
+          user_id: user.id,
+          mood_score: option.value,
+          mood_label: option.label,
+          emoji: option.emoji,
+          recorded_date: todayISO,
+        };
+        const { error: upsertError } = await supabase
+          .from('wellness_daily_checkins')
+          .upsert(checkinPayload, { onConflict: 'user_id, recorded_date' });
+        if (upsertError) throw upsertError;
+
+        const { data, error: prefsError } = await supabase
+          .from('profiles')
+          .select('user_preferences')
+          .eq('id', user.id)
+          .single();
+        if (prefsError) throw prefsError;
+
+        const preferences = data?.user_preferences || {};
+        const updatedPreferences = {
+          ...preferences,
+          mood_baseline: {
+            score: option.value,
+            label: option.label,
+            emoji: option.emoji,
+            updated_at: new Date().toISOString(),
+          },
+        };
+
+        const { error: updatePrefsError } = await supabase
+          .from('profiles')
+          .update({ user_preferences: updatedPreferences })
+          .eq('id', user.id);
+        if (updatePrefsError) throw updatePrefsError;
+
+        await supabase.from('agent_decisions').insert({
+          user_id: user.id,
+          decision_type: 'wellness_check',
+          agent_name: 'soulroom_wellness',
+          input_data: {
+            moodScore: option.value,
+            moodLabel: option.label,
+            emoji: option.emoji,
+          },
+          reasoning_steps: [`Updated baseline mood to ${option.label} via daily check-in.`],
+          decision_output: {
+            baselineMood: option.label,
+            baselineScore: option.value,
+          },
+          confidence_score: option.value / 5,
+          success: true,
+          metadata: { recorded_date: todayISO },
+        });
+
+        setWellnessSelection(option.value);
+        setWellnessUpdatedAt(todayISO);
+      } catch (error) {
+        console.error('Error saving wellness check-in:', error);
+        Alert.alert('Error', 'Unable to save your mood check-in right now.');
+      } finally {
+        setWellnessSaving(false);
+      }
+    },
+    [user?.id, wellnessSaving],
+  );
+
   const fetchConversationStats = async () => {
     if (!user?.id) return;
     try {
@@ -286,6 +978,20 @@ function SoulroomScreen() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (!user?.id) return;
+    updateAchievements(entries);
+  }, [entries, updateAchievements, user?.id]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    fetchAiInsight();
+  }, [user?.id, fetchAiInsight]);
+
+  useEffect(() => {
+    fetchDailyWellness();
+  }, [fetchDailyWellness]);
 
   useEffect(() => {
     if (!entries.length || !user?.id) {
@@ -548,16 +1254,16 @@ function SoulroomScreen() {
       return;
     }
 
-    if (contacts.length) {
+    if (!contacts.length) {
       setPickerMode('share');
       setPendingShareMessage(prefill);
-      setContactPickerVisible(true);
-    } else {
-      Alert.alert(
-        'No contacts yet',
-        'Link at least one reflection to a contact before sharing the digest. You can do this inside the reflection details.',
-      );
+      router.push('/(tabs)/contacts');
+      return;
     }
+
+    setPickerMode('share');
+    setPendingShareMessage(prefill);
+    setContactPickerVisible(true);
   }, [growthDigest, contacts, router]);
 
   const summarizeReflection = async (entryId: string, reflectionText: string) => {
@@ -602,43 +1308,51 @@ function SoulroomScreen() {
             !tag.startsWith('contact:')
           )
         : [];
-      const entryData: any = {
-        user_id: user?.id,
-        title: title.trim() || null,
-        content: content.trim(),
-        mood: selectedMood,
-        tags: [...baseTags],
-      };
-
+      const sanitizedTags: string[] = [...baseTags];
       if (voiceMode && voiceStoragePath) {
-        entryData.tags = [...entryData.tags, `voice:${voiceStoragePath}`];
+        sanitizedTags.push(`voice:${voiceStoragePath}`);
       }
       if (voiceMode && voiceKeywords.length) {
-        entryData.tags = [
-          ...entryData.tags,
-          ...voiceKeywords.map((word) => `mood:${word}`),
-        ];
+        voiceKeywords.forEach((word) => sanitizedTags.push(`mood:${word}`));
       }
       if (linkedContactId) {
-        entryData.tags = [...entryData.tags, `contact:${linkedContactId}`];
+        sanitizedTags.push(`contact:${linkedContactId}`);
       }
 
-      entryData.tags = entryData.tags.length
-        ? Array.from(new Set(entryData.tags))
-        : null;
+      const uniqueTags = sanitizedTags.length ? Array.from(new Set(sanitizedTags)) : null;
+      const resolvedMood = selectedMood || editingEntry?.mood || 'reflective';
+      const sharedPayload = {
+        title: title.trim() || null,
+        content: content.trim(),
+        mood: resolvedMood,
+        tags: uniqueTags,
+      };
+
       let targetEntryId: string | null = editingEntry?.id ?? null;
 
       if (editingEntry) {
         const { error } = await supabase
           .from('soulroom_entries')
-          .update({ ...entryData, ai_summary: null, emotion_tag: voiceMode ? selectedMood : null })
-          .eq('id', editingEntry.id);
+          .update({
+            ...sharedPayload,
+            ai_summary: null,
+            emotion_tag: voiceMode ? resolvedMood : editingEntry.emotion_tag ?? null,
+          })
+          .eq('id', editingEntry.id)
+          .eq('user_id', user?.id ?? '');
 
         if (error) throw error;
       } else {
+        const insertPayload = {
+          ...sharedPayload,
+          user_id: user?.id,
+          ai_summary: null,
+          emotion_tag: voiceMode ? resolvedMood : null,
+        };
+
         const { data, error } = await supabase
           .from('soulroom_entries')
-          .insert(entryData)
+          .insert(insertPayload)
           .select('id')
           .single();
 
@@ -646,12 +1360,23 @@ function SoulroomScreen() {
         targetEntryId = data?.id ?? null;
       }
 
+      const effectiveContactId = linkedContactId || (editingEntry ? getLinkedContactId(editingEntry) : null);
+      const finalTags = uniqueTags ?? [];
+
       if (targetEntryId) {
         try {
-          await summarizeReflection(targetEntryId, entryData.content);
+          await summarizeReflection(targetEntryId, sharedPayload.content);
         } catch (summaryError) {
           console.error('Summary generation failed:', summaryError);
         }
+        await syncReflectionWithAI({
+          reflectionId: targetEntryId,
+          mood: resolvedMood,
+          content: sharedPayload.content,
+          tags: finalTags,
+          contactId: effectiveContactId,
+          isEdit: Boolean(editingEntry),
+        });
       }
 
       await fetchEntries();
@@ -690,6 +1415,69 @@ function SoulroomScreen() {
         },
       ]
     );
+  };
+
+  const handleReflectionLongPress = (entryId: string) => {
+    if (!reflectionMultiSelect) {
+      setReflectionMultiSelect(true);
+      setSelectedReflectionIds([entryId]);
+    } else {
+      toggleReflectionSelection(entryId);
+    }
+  };
+
+  const toggleReflectionSelection = (entryId: string) => {
+    setSelectedReflectionIds((prev) => {
+      const hasId = prev.includes(entryId);
+      const next = hasId ? prev.filter((id) => id !== entryId) : [...prev, entryId];
+      if (next.length === 0) {
+        setReflectionMultiSelect(false);
+      }
+      return next;
+    });
+  };
+
+  const cancelReflectionSelection = () => {
+    setReflectionMultiSelect(false);
+    setSelectedReflectionIds([]);
+  };
+
+  const confirmBulkDeleteReflections = () => {
+    if (!selectedReflectionIds.length || bulkDeletingReflections) {
+      return;
+    }
+    Alert.alert(
+      'Delete reflections',
+      `Delete ${selectedReflectionIds.length} reflection${selectedReflectionIds.length > 1 ? 's' : ''}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: bulkDeleteReflections,
+        },
+      ]
+    );
+  };
+
+  const bulkDeleteReflections = async () => {
+    try {
+      if (!selectedReflectionIds.length) return;
+      setBulkDeletingReflections(true);
+      const { error } = await supabase
+        .from('soulroom_entries')
+        .delete()
+        .in('id', selectedReflectionIds);
+
+      if (error) throw error;
+      await fetchEntries();
+      cancelReflectionSelection();
+    } catch (error) {
+      console.error('Error deleting reflections:', error);
+      Alert.alert('Error', 'Failed to delete selected reflections');
+    } finally {
+      setBulkDeletingReflections(false);
+    }
   };
 
   const formatDate = (timestamp: string) => {
@@ -943,13 +1731,21 @@ const base64ToUint8Array = (base64: string) => {
     }
   }, [recordingUri]);
 
-  const openNewEntry = () => {
+  const openNewEntry = (initialMode: 'type' | 'voice' = 'type') => {
     setEditingEntry(null);
     setTitle('');
     setContent('');
     setSelectedMood(null);
     setLinkedContactId(null);
-    resetVoiceState();
+    if (initialMode === 'voice') {
+      setVoiceMode(true);
+      setVoiceStoragePath(null);
+      setRecordingUri(null);
+      setVoiceKeywords([]);
+    } else {
+      resetVoiceState();
+      setVoiceMode(false);
+    }
     setShowModal(true);
   };
 
@@ -1001,6 +1797,18 @@ const base64ToUint8Array = (base64: string) => {
     });
   }, [entries]);
 
+  const coachMessageDisplay = useMemo(() => {
+    if (!coachNudge?.message) return null;
+    const trimmed = coachNudge.message.trim();
+    if (trimmed.length <= 220) return trimmed;
+    return `${trimmed.slice(0, 217).trim()}…`;
+  }, [coachNudge?.message]);
+
+  const coachPromptsDisplay = useMemo(() => {
+    if (!coachNudge?.prompts) return [] as string[];
+    return coachNudge.prompts.filter(Boolean).slice(0, 2);
+  }, [coachNudge?.prompts]);
+
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
@@ -1036,275 +1844,544 @@ const base64ToUint8Array = (base64: string) => {
         </TouchableOpacity>
       </View>
 
-      <ScrollView style={styles.entriesList} contentContainerStyle={styles.entriesContent}>
-        {timelineData.length > 0 ? (
-          <View style={styles.timelineCard}>
-            <View style={styles.timelineHeader}>
-              <Text style={styles.sectionTitle}>Mood Trend</Text>
-              <Text style={styles.timelineHint}>Tap a point to see what was happening</Text>
-            </View>
-            <MoodTrendChart data={timelineData} onSelectPoint={handleSelectPoint} />
-          </View>
-        ) : null}
-        <View style={styles.overviewCard}>
-          <Text style={styles.sectionHeading}>Stay grounded before you talk</Text>
-          <Text style={styles.overviewSubtitle}>
-            Soulroom keeps your private reflections synced with every AI-assisted conversation.
-          </Text>
-          <View style={styles.statsRow}>
-            <View style={styles.statBadge}>
-              <Text style={styles.statValue}>{conversationStats.myTalks}</Text>
-              <Text style={styles.statLabel}>Active My Talks</Text>
-            </View>
-            <View style={styles.statBadge}>
-              <Text style={styles.statValue}>{conversationStats.pendingAI}</Text>
-              <Text style={styles.statLabel}>AI Sessions Waiting</Text>
-            </View>
-            {topMoodInfo ? (
-              <View style={[styles.statBadge, { borderColor: topMoodInfo.color }]}> 
-                <Text style={[styles.statValue, { color: topMoodInfo.color }]}> 
-                  {topMoodInfo.count}
-                </Text>
-                <Text style={styles.statLabel}>Most Logged Mood</Text>
-                <Text style={[styles.moodBadgeLabel, { color: topMoodInfo.color }]}>{topMoodInfo.label}</Text>
-              </View>
-            ) : (
-              <View style={styles.statBadge}>
-                <Text style={styles.statValue}>{entries.length}</Text>
-                <Text style={styles.statLabel}>Saved Reflections</Text>
-              </View>
-            )}
-          </View>
-          {statsLoading && (
-            <Text style={styles.statHint}>Refreshing conversation stats…</Text>
-          )}
-          <View style={styles.quickActionsRow}>
-            <TouchableOpacity style={styles.quickActionButton} onPress={openNewEntry}>
-              <Text style={styles.quickActionText}>New Reflection</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.quickActionButton} onPress={() => router.push('/ai-assistant')}>
-              <Text style={styles.quickActionText}>Plan with AI Assistant</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.quickActionButton} onPress={() => router.push('/(tabs)/chats')}>
-              <Text style={styles.quickActionText}>Open My Talks</Text>
-            </TouchableOpacity>
+      <ScrollView
+        style={styles.entriesList}
+        stickyHeaderIndices={[0]}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.stickyTabWrapper}>
+          <View style={styles.tabRow}>
+            {tabOptions.map((tab) => {
+              const isActive = activeTab === tab.key;
+              return (
+                <TouchableOpacity
+                  key={tab.key}
+                  style={[styles.tabButton, isActive && styles.tabButtonActive]}
+                  onPress={() => setActiveTab(tab.key)}
+                >
+                  <Text style={[styles.tabButtonText, isActive && styles.tabButtonTextActive]}>
+                    {tab.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
           </View>
         </View>
 
-        <View style={styles.coachCardWrapper}>
-          {coachLoading ? (
-            <View style={styles.coachCard}> 
-              <ActivityIndicator color={Colors.primary[500]} />
-              <Text style={styles.coachHeadline}>Gathering your weekly nudge…</Text>
-            </View>
-          ) : coachNudge ? (
-            <View style={styles.coachCard}>
-              <View style={styles.coachHeader}>
-                <Sparkles size={18} color={Colors.primary[600]} />
-                <Text style={styles.coachHeadline}>{coachNudge.headline}</Text>
-              </View>
-              <Text style={styles.coachMessage}>{coachNudge.message}</Text>
-              {coachNudge.prompts?.length ? (
-                <View style={styles.coachPromptList}>
-                  {coachNudge.prompts.map((prompt, idx) => (
-                    <Text key={`prompt-${idx}`} style={styles.coachPrompt}>
-                      • {prompt}
-                    </Text>
-                  ))}
+        <View
+          style={[
+            styles.entriesContent,
+            reflectionMultiSelect && { paddingBottom: Spacing.xl * 2 + insets.bottom },
+          ]}
+        >
+          {activeTab === 'overview' ? (
+            <>
+              {timelineData.length > 0 ? (
+                <View style={styles.sectionCard}>
+                  <TouchableOpacity
+                    style={styles.sectionToggle}
+                    onPress={() => setShowTimeline((prev) => !prev)}
+                  >
+                    <Text style={styles.sectionToggleText}>Mood trend</Text>
+                    <ChevronDown
+                      size={18}
+                      color={Colors.text.secondary}
+                      style={{ transform: [{ rotate: showTimeline ? '0deg' : '-90deg' }] }}
+                    />
+                  </TouchableOpacity>
+                  {showTimeline ? (
+                    <View style={styles.timelineCard}>
+                      <View style={styles.timelineHeader}>
+                        <Text style={styles.sectionTitle}>Mood Trend</Text>
+                        <Text style={styles.timelineHint}>Tap a point to see what was happening</Text>
+                      </View>
+                      <MoodTrendChart data={timelineData} onSelectPoint={handleSelectPoint} />
+                    </View>
+                  ) : null}
                 </View>
               ) : null}
-            </View>
-          ) : coachError ? (
-            <View style={styles.coachCard}>
-              <Text style={styles.coachHeadline}>We\'ll try again soon</Text>
-              <Text style={styles.coachMessage}>{coachError}</Text>
-            </View>
-          ) : null}
-        </View>
 
-        {growthDigest ? (
-          <View style={styles.digestCard}>
-            <View style={styles.digestHeader}>
-              <Text style={styles.sectionTitle}>Weekly Mood Digest</Text>
-              <Text style={styles.digestSubhead}>Last {growthDigest.entryCount} reflections</Text>
-            </View>
-            <View style={styles.digestRow}>
-              <Text style={styles.digestLabel}>Dominant emotion</Text>
-              <Text style={styles.digestValue}>{growthDigest.topEmotionLabel || 'Still observing'}</Text>
-            </View>
-            <View style={styles.digestRow}>
-              <Text style={styles.digestLabel}>Word you leaned on</Text>
-              <Text style={styles.digestValue}>{growthDigest.positiveWord || '—'}</Text>
-            </View>
-            <View style={styles.digestRow}>
-              <Text style={styles.digestLabel}>Contact on your mind</Text>
-              <Text style={styles.digestValue}>{growthDigest.contactLabel || 'Keeping it private'}</Text>
-            </View>
-            <TouchableOpacity style={styles.shareButton} onPress={handleShareDigest}>
-              <Share2 size={16} color={Colors.primary[700]} />
-              <Text style={styles.shareButtonText}>
-                {growthDigest.contactLabel
-                  ? `Help me express this to ${growthDigest.contactLabel}`
-                  : 'Help me express this with AI'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        ) : null}
- 
-        {entries.length === 0 ? (
-          <View style={styles.emptyState}>
-            <Heart size={48} color="#ef4444" />
-            <Text style={styles.emptyTitle}>Your personal space</Text>
-            <Text style={styles.emptyDescription}>
-              Start reflecting on your emotions and track your wellness journey
-            </Text>
-            <TouchableOpacity style={styles.startButton} onPress={openNewEntry}>
-              <Plus size={20} color="#ffffff" />
-              <Text style={styles.startButtonText}>Write First Reflection</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          entries.map((entry) => {
-            const moodInfo = getMoodInfo(entry.mood);
-            const contactTag = entry.tags?.find((tag) => tag.startsWith('contact:')) || null;
-            const contactIdFromTag = contactTag ? contactTag.split(':')[1] : null;
-            const displayTags = (entry.tags || [])
-              .map((tag) => {
-                if (tag.startsWith('contact:')) {
-                  const contactIdFromTag = tag.split(':')[1];
-                  if (contactIdFromTag) {
-                    return contactLookup[contactIdFromTag] || 'Linked contact';
-                  }
-                  return null;
-                }
-                if (tag === 'pre_conversation') return 'Pre-conversation';
-                if (tag === 'closure') return 'Closure saved';
-                if (tag.startsWith('voice:')) return null;
-                if (tag.startsWith('mood:')) return null;
-                return tag.replace(/_/g, ' ');
-              })
-              .filter((label): label is string => Boolean(label));
-            return (
-              <View key={entry.id} style={styles.entryCard}>
-                <View style={styles.entryHeader}>
-                  <View style={styles.entryInfo}>
-                    {entry.title && (
-                      <Text style={styles.entryTitle}>{entry.title}</Text>
-                    )}
-                    <View style={styles.entryMeta}>
-                      <Calendar size={14} color="#9ca3af" />
-                      <Text style={styles.entryDate}>{formatDate(entry.created_at)}</Text>
-                      {moodInfo && (
-                        <>
-                          <Text style={styles.metaSeparator}>•</Text>
-                          <Text style={[styles.entryMood, { color: moodInfo.color }]}>
-                            {moodInfo.label}
+              <View style={styles.sectionCard}>
+                <TouchableOpacity
+                  style={styles.sectionToggle}
+                  onPress={() => setShowOverview((prev) => !prev)}
+                >
+                  <Text style={styles.sectionToggleText}>Conversation snapshot</Text>
+                  <ChevronDown
+                    size={18}
+                    color={Colors.text.secondary}
+                    style={{ transform: [{ rotate: showOverview ? '0deg' : '-90deg' }] }}
+                  />
+                </TouchableOpacity>
+                {showOverview ? (
+                  <View style={styles.overviewCard}>
+                    <Text style={styles.sectionHeading}>Stay grounded before you talk</Text>
+                    <Text style={styles.overviewSubtitle}>
+                      Soulroom keeps your private reflections synced with every AI-assisted conversation.
+                    </Text>
+                    <View style={styles.statsRow}>
+                      <View style={styles.statBadge}>
+                        <Text style={styles.statValue}>{conversationStats.myTalks}</Text>
+                        <Text style={styles.statLabel}>Active My Talks</Text>
+                      </View>
+                      <View style={styles.statBadge}>
+                        <Text style={styles.statValue}>{conversationStats.pendingAI}</Text>
+                        <Text style={styles.statLabel}>AI Sessions Waiting</Text>
+                      </View>
+                      {topMoodInfo ? (
+                        <View style={[styles.statBadge, { borderColor: topMoodInfo.color }]}> 
+                          <Text style={[styles.statValue, { color: topMoodInfo.color }]}> 
+                            {topMoodInfo.count}
                           </Text>
-                        </>
+                          <Text style={styles.statLabel}>Most Logged Mood</Text>
+                          <Text style={[styles.moodBadgeLabel, { color: topMoodInfo.color }]}>{topMoodInfo.label}</Text>
+                        </View>
+                      ) : (
+                        <View style={styles.statBadge}>
+                          <Text style={styles.statValue}>{entries.length}</Text>
+                          <Text style={styles.statLabel}>Saved Reflections</Text>
+                        </View>
                       )}
                     </View>
-                  </View>
-                  <View style={styles.entryActions}>
-                    <TouchableOpacity
-                      style={styles.actionButton}
-                      onPress={() => openEditEntry(entry)}
-                    >
-                      <Edit3 size={16} color="#6b7280" />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.actionButton}
-                      onPress={() => deleteEntry(entry)}
-                    >
-                      <Trash2 size={16} color="#ef4444" />
-                    </TouchableOpacity>
-                  </View>
-                </View>
-                <Text style={styles.entryContent} numberOfLines={3}>
-                  {entry.content}
-                </Text>
-                {entry.ai_summary ? (
-                  <View style={styles.summaryCard}>
-                    <View style={styles.summaryHeader}>
-                      <Sparkles size={14} color={Colors.primary[600]} />
-                      <Text style={styles.summaryTitle}>AI Reflection Summary</Text>
-                      {entry.emotion_tag ? (
-                        <Text style={styles.summaryChip}>{entry.emotion_tag}</Text>
-                      ) : null}
+                    {statsLoading && (
+                      <Text style={styles.statHint}>Refreshing conversation stats…</Text>
+                    )}
+                    <View style={styles.quickActionsRow}>
+                      <TouchableOpacity style={styles.quickActionButton} onPress={() => openNewEntry('type')}>
+                        <Text style={styles.quickActionText}>Write Reflection</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={styles.quickActionButton} onPress={() => openNewEntry('voice')}>
+                        <Text style={styles.quickActionText}>Voice Reflection</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity style={styles.quickActionButton} onPress={() => router.push('/ai-assistant')}>
+                        <Text style={styles.quickActionText}>Plan with AI Assistant</Text>
+                      </TouchableOpacity>
                     </View>
-                    <Text style={styles.summaryBody}>{entry.ai_summary}</Text>
                   </View>
                 ) : null}
-                {(() => {
-                  const voicePath = getVoicePathFromEntry(entry);
-                  if (!voicePath) {
-                    return null;
-                  }
-                  const playbackUri = voicePlaybackUrls[entry.id];
-                  const keywords = getStoredVoiceKeywords(entry);
-                  return (
-                  <View style={styles.voiceCard}>
-                    <TouchableOpacity
-                      style={[styles.voiceButton, !playbackUri && styles.voiceButtonDisabled]}
-                      onPress={() => {
-                        if (playbackUri) {
-                          togglePlaybackForEntry(entry.id, playbackUri);
-                        }
-                      }}
-                      disabled={!playbackUri}
-                    >
-                      {currentlyPlayingId === entry.id ? (
-                        <Pause size={16} color={Colors.primary[700]} />
-                      ) : playbackUri ? (
-                        <Play size={16} color={Colors.primary[700]} />
-                      ) : (
+              </View>
+
+              <View style={styles.sectionCard}>
+                <TouchableOpacity
+                  style={styles.sectionToggle}
+                  onPress={() => setShowWellness((prev) => !prev)}
+                >
+                  <Text style={styles.sectionToggleText}>Wellness pulse</Text>
+                  <ChevronDown
+                    size={18}
+                    color={Colors.text.secondary}
+                    style={{ transform: [{ rotate: showWellness ? '0deg' : '-90deg' }] }}
+                  />
+                </TouchableOpacity>
+                {showWellness ? (
+                  <View style={styles.wellnessCard}>
+                    <View style={styles.wellnessStatus}>
+                      {wellnessSaving ? (
                         <ActivityIndicator size="small" color={Colors.primary[500]} />
+                      ) : wellnessUpdatedAt ? (
+                        <Text style={styles.wellnessStatusText}>Logged today</Text>
+                      ) : (
+                        <Text style={styles.wellnessStatusText}>Tap how you feel</Text>
                       )}
-                      <Text style={styles.voiceButtonText}>
-                        {currentlyPlayingId === entry.id ? 'Pause voice note' : 'Play voice note'}
-                      </Text>
-                    </TouchableOpacity>
-                    {keywords.length ? (
-                      <View style={styles.keywordRow}>
-                        {keywords.slice(0, 4).map((keyword, idx) => (
-                          <View key={`${entry.id}-keyword-${idx}`} style={styles.keywordChip}>
-                            <Text style={styles.keywordChipText}>{keyword}</Text>
+                    </View>
+                    <View style={styles.wellnessOptionsRow}>
+                      {WELLNESS_CHECK_OPTIONS.map((option) => {
+                        const isSelected = wellnessSelection === option.value;
+                        return (
+                          <TouchableOpacity
+                            key={option.value}
+                            style={[
+                              styles.wellnessOption,
+                              isSelected && styles.wellnessOptionSelected,
+                              wellnessSaving && styles.wellnessOptionDisabled,
+                            ]}
+                            disabled={wellnessSaving}
+                            onPress={() => handleWellnessCheckin(option)}
+                          >
+                            <Text style={styles.wellnessEmoji}>{option.emoji}</Text>
+                            <Text style={styles.wellnessLabel}>{option.description}</Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </View>
+                ) : null}
+              </View>
+
+              <View style={styles.sectionCard}>
+                <TouchableOpacity
+                  style={styles.sectionToggle}
+                  onPress={() => setShowCoach((prev) => !prev)}
+                >
+                  <Text style={styles.sectionToggleText}>AI weekly nudge</Text>
+                  <ChevronDown
+                    size={18}
+                    color={Colors.text.secondary}
+                    style={{ transform: [{ rotate: showCoach ? '0deg' : '-90deg' }] }}
+                  />
+                </TouchableOpacity>
+                {showCoach ? (
+                  <View style={styles.coachCardWrapper}>
+                    {coachLoading ? (
+                      <View style={styles.coachCard}> 
+                        <ActivityIndicator color={Colors.primary[500]} />
+                        <Text style={styles.coachHeadline}>Gathering your weekly nudge…</Text>
+                      </View>
+                    ) : coachNudge ? (
+                      <View style={styles.coachCard}>
+                        <View style={styles.coachHeader}>
+                          <Sparkles size={18} color={Colors.primary[600]} />
+                          <Text style={styles.coachHeadline}>{coachNudge.headline}</Text>
+                        </View>
+                        {coachMessageDisplay ? (
+                          <Text style={styles.coachMessage}>{coachMessageDisplay}</Text>
+                        ) : null}
+                        {coachPromptsDisplay.length ? (
+                          <View style={styles.coachPromptList}>
+                            {coachPromptsDisplay.map((prompt, idx) => (
+                              <Text key={`prompt-${idx}`} style={styles.coachPrompt}>
+                                • {prompt}
+                              </Text>
+                            ))}
                           </View>
-                        ))}
+                        ) : null}
+                      </View>
+                    ) : coachError ? (
+                      <View style={styles.coachCard}>
+                        <Text style={styles.coachHeadline}>We\'ll try again soon</Text>
+                        <Text style={styles.coachMessage}>{coachError}</Text>
                       </View>
                     ) : null}
                   </View>
-                  );
-                })()}
-                {displayTags.length > 0 && (
-                  <View style={styles.entryTagRow}>
-                    {displayTags.map((label, idx) => (
-                      <View key={`${entry.id}-tag-${idx}`} style={styles.tagChip}>
-                        <Text style={styles.tagChipText}>{label}</Text>
-                      </View>
-                    ))}
-                  </View>
-                )}
+                ) : null}
+              </View>
 
-                {contactIdFromTag && (
-                  <View style={styles.entryActionRow}>
-                    <TouchableOpacity
-                      style={styles.entryActionButton}
-                      onPress={() => router.push(`/ai-assistant?contactId=${contactIdFromTag}`)}
-                    >
-                      <Text style={styles.entryActionButtonText}>Plan next conversation</Text>
+              {growthDigest ? (
+                <View style={styles.sectionCard}>
+                  <TouchableOpacity
+                    style={styles.sectionToggle}
+                    onPress={() => setShowDigest((prev) => !prev)}
+                  >
+                    <Text style={styles.sectionToggleText}>Weekly mood digest</Text>
+                    <ChevronDown
+                      size={18}
+                      color={Colors.text.secondary}
+                      style={{ transform: [{ rotate: showDigest ? '0deg' : '-90deg' }] }}
+                    />
+                  </TouchableOpacity>
+                  {showDigest ? (
+                    <View style={styles.digestCard}>
+                      <View style={styles.digestHeader}>
+                        <Text style={styles.sectionTitle}>Weekly Mood Digest</Text>
+                        <Text style={styles.digestSubhead}>Last {growthDigest.entryCount} reflections</Text>
+                      </View>
+                      <View style={styles.digestRow}>
+                        <Text style={styles.digestLabel}>Dominant emotion</Text>
+                        <Text style={styles.digestValue}>{growthDigest.topEmotionLabel || 'Still observing'}</Text>
+                      </View>
+                      <View style={styles.digestRow}>
+                        <Text style={styles.digestLabel}>Word you leaned on</Text>
+                        <Text style={styles.digestValue}>{growthDigest.positiveWord || '—'}</Text>
+                      </View>
+                      <View style={styles.digestRow}>
+                        <Text style={styles.digestLabel}>Contact on your mind</Text>
+                        <Text style={styles.digestValue}>{growthDigest.contactLabel || 'Keeping it private'}</Text>
+                      </View>
+                      <TouchableOpacity style={styles.shareButton} onPress={handleShareDigest}>
+                        <Share2 size={16} color={Colors.primary[700]} />
+                        <Text style={styles.shareButtonText}>
+                          {growthDigest.contactLabel
+                            ? `Help me express this to ${growthDigest.contactLabel}`
+                            : 'Help me express this with AI'}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : null}
+                </View>
+              ) : null}
+
+              <View style={styles.sectionCard}>
+                <TouchableOpacity
+                  style={styles.sectionToggle}
+                  onPress={() => setShowInsight((prev) => !prev)}
+                >
+                  <Text style={styles.sectionToggleText}>AI insight of the week</Text>
+                  <ChevronDown
+                    size={18}
+                    color={Colors.text.secondary}
+                    style={{ transform: [{ rotate: showInsight ? '0deg' : '-90deg' }] }}
+                  />
+                </TouchableOpacity>
+                {showInsight ? (
+                  <View style={styles.insightCardWrapper}>
+                    {aiInsightLoading ? (
+                      <View style={styles.insightCard}>
+                        <ActivityIndicator color={Colors.primary[500]} />
+                        <Text style={styles.insightHeadline}>Listening to your week…</Text>
+                      </View>
+                    ) : aiInsight ? (
+                      <View style={styles.insightCard}>
+                        <View style={styles.insightHeader}>
+                          <Sparkles size={16} color={Colors.primary[600]} />
+                          <Text style={styles.insightTitle}>AI Insight of the Week</Text>
+                          <TouchableOpacity style={styles.insightRefresh} onPress={() => fetchAiInsight(true)}>
+                            <Text style={styles.insightRefreshText}>Refresh</Text>
+                          </TouchableOpacity>
+                        </View>
+                        <Text style={styles.insightBody}>{aiInsight.insight}</Text>
+                        <Text style={styles.insightTimestamp}>
+                          {aiInsight.generated_at
+                            ? `Updated ${new Date(aiInsight.generated_at).toLocaleDateString()}`
+                            : 'Updated recently'}
+                        </Text>
+                      </View>
+                    ) : null}
+                  </View>
+                ) : null}
+              </View>
+            </>
+          ) : (
+            <>
+              <View style={styles.sectionCard}>
+                <View style={styles.sectionHeaderRow}>
+                  <Text style={styles.sectionTitle}>Your reflections</Text>
+                  <Text style={styles.sectionSubtitle}>{entries.length} total</Text>
+                </View>
+                {entries.length === 0 ? (
+                  <View style={styles.emptyState}>
+                    <Heart size={48} color="#ef4444" />
+                    <Text style={styles.emptyTitle}>Your personal space</Text>
+                    <Text style={styles.emptyDescription}>
+                      Start reflecting on your emotions and track your wellness journey
+                    </Text>
+                    <TouchableOpacity style={styles.startButton} onPress={() => openNewEntry('type')}>
+                      <Plus size={20} color="#ffffff" />
+                      <Text style={styles.startButtonText}>Write First Reflection</Text>
                     </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.entryActionButtonSecondary}
-                      onPress={() => router.push('/(tabs)/chats')}
-                    >
-                      <Text style={styles.entryActionButtonSecondaryText}>View My Talks</Text>
-                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <View style={styles.reflectionList}>
+                    {(() => {
+                      let previousDateKey: string | null = null;
+                      return entries.map((entry, index) => {
+                        const moodInfo = getMoodInfo(entry.mood);
+                        const contactTag = entry.tags?.find((tag) => tag.startsWith('contact:')) || null;
+                        const contactIdFromTag = contactTag ? contactTag.split(':')[1] : null;
+                        const chatTag = entry.tags?.find((tag) => tag.startsWith('chat:')) || null;
+                        const chatIdFromTag = chatTag ? chatTag.split(':')[1] : null;
+                        const displayTags = (entry.tags || [])
+                          .map((tag) => {
+                            if (tag.startsWith('contact:')) {
+                              const contactIdRef = tag.split(':')[1];
+                              if (contactIdRef) {
+                                return contactLookup[contactIdRef] || 'Linked contact';
+                              }
+                              return null;
+                            }
+                            if (tag === 'pre_conversation') return 'Pre-conversation';
+                            if (tag === 'closure') return 'Closure saved';
+                            if (tag.startsWith('voice:')) return null;
+                            if (tag.startsWith('mood:')) return null;
+                            return tag.replace(/_/g, ' ');
+                          })
+                          .filter((label): label is string => Boolean(label));
+
+                        const dateKey = entry.created_at ? entry.created_at.slice(0, 10) : null;
+                        const showDateHeading = Boolean(dateKey && dateKey !== previousDateKey);
+                        if (dateKey) {
+                          previousDateKey = dateKey;
+                        }
+
+                        const variant = REFLECTION_CARD_VARIANTS[index % REFLECTION_CARD_VARIANTS.length];
+                        const isSelected = selectedReflectionIds.includes(entry.id);
+
+                        return (
+                          <View key={entry.id} style={styles.reflectionItem}>
+                            {showDateHeading && (
+                              <Text style={styles.entryDateHeading}>{formatDate(entry.created_at)}</Text>
+                            )}
+                            <TouchableOpacity
+                              activeOpacity={0.95}
+                              onLongPress={() => handleReflectionLongPress(entry.id)}
+                              onPress={() => {
+                                if (reflectionMultiSelect) {
+                                  toggleReflectionSelection(entry.id);
+                                }
+                              }}
+                            >
+                              <View
+                                style={[
+                                  styles.entryCard,
+                                  variant.container,
+                                  reflectionMultiSelect && styles.entryCardMultiSelect,
+                                  isSelected && styles.entryCardSelected,
+                                ]}
+                              >
+                                <View style={styles.entryHeader}>
+                                  <View style={styles.entryInfo}>
+                                    {entry.title && (
+                                      <Text style={styles.entryTitle}>{entry.title}</Text>
+                                    )}
+                                    <View style={styles.entryMeta}>
+                                      <Calendar size={14} color="#9ca3af" />
+                                      <Text style={styles.entryDate}>{formatDate(entry.created_at)}</Text>
+                                      {moodInfo && (
+                                        <>
+                                          <Text style={styles.metaSeparator}>•</Text>
+                                          <Text style={[styles.entryMood, { color: moodInfo.color }]}
+                                          >
+                                            {moodInfo.label}
+                                          </Text>
+                                        </>
+                                      )}
+                                    </View>
+                                  </View>
+                                  <View style={styles.entryActions}>
+                                    {reflectionMultiSelect ? (
+                                      <View
+                                        style={[
+                                          styles.selectionBadge,
+                                          isSelected && styles.selectionBadgeSelected,
+                                        ]}
+                                      >
+                                        {isSelected && <Check size={14} color={Colors.primary[600]} />}
+                                      </View>
+                                    ) : (
+                                      <>
+                                        <TouchableOpacity
+                                          style={styles.actionButton}
+                                          onPress={() => openEditEntry(entry)}
+                                        >
+                                          <Edit3 size={16} color="#6b7280" />
+                                        </TouchableOpacity>
+                                        <TouchableOpacity
+                                          style={styles.actionButton}
+                                          onPress={() => deleteEntry(entry)}
+                                        >
+                                          <Trash2 size={16} color="#ef4444" />
+                                        </TouchableOpacity>
+                                      </>
+                                    )}
+                                  </View>
+                                </View>
+                                <Text style={styles.entryContent} numberOfLines={3}>
+                                  {entry.content}
+                                </Text>
+                                {entry.ai_summary ? (
+                                  <View style={[styles.summaryCard, variant.summaryCard]}>
+                                    <View style={styles.summaryHeader}>
+                                      <Sparkles
+                                        size={14}
+                                        color={variant.summaryTitle?.color ?? Colors.primary[600]}
+                                      />
+                                      <Text style={[styles.summaryTitle, variant.summaryTitle]}>
+                                        AI Reflection Summary
+                                      </Text>
+                                      {entry.emotion_tag ? (
+                                        <Text style={[styles.summaryChip, variant.summaryChip]}>
+                                          {entry.emotion_tag}
+                                        </Text>
+                                      ) : null}
+                                    </View>
+                                    <Text style={styles.summaryBody}>{entry.ai_summary}</Text>
+                                  </View>
+                                ) : null}
+                                {(() => {
+                                  const voicePath = getVoicePathFromEntry(entry);
+                                  if (!voicePath) {
+                                    return null;
+                                  }
+                                  const playbackUri = voicePlaybackUrls[entry.id];
+                                  const keywords = getStoredVoiceKeywords(entry);
+                                  return (
+                                    <View style={styles.voiceCard}>
+                                      <TouchableOpacity
+                                        style={[styles.voiceButton, !playbackUri && styles.voiceButtonDisabled]}
+                                        onPress={() => {
+                                          if (playbackUri) {
+                                            togglePlaybackForEntry(entry.id, playbackUri);
+                                          }
+                                        }}
+                                        disabled={!playbackUri}
+                                      >
+                                        {currentlyPlayingId === entry.id ? (
+                                          <Pause size={16} color={Colors.primary[700]} />
+                                        ) : playbackUri ? (
+                                          <Play size={16} color={Colors.primary[700]} />
+                                        ) : (
+                                          <ActivityIndicator size="small" color={Colors.primary[500]} />
+                                        )}
+                                        <Text style={styles.voiceButtonText}>
+                                          {currentlyPlayingId === entry.id ? 'Pause voice note' : 'Play voice note'}
+                                        </Text>
+                                      </TouchableOpacity>
+                                      {keywords.length ? (
+                                        <View style={styles.keywordRow}>
+                                          {keywords.slice(0, 4).map((keyword, idx) => (
+                                            <View key={`${entry.id}-keyword-${idx}`} style={styles.keywordChip}>
+                                              <Text style={styles.keywordChipText}>{keyword}</Text>
+                                            </View>
+                                          ))}
+                                        </View>
+                                      ) : null}
+                                    </View>
+                                  );
+                                })()}
+                                {displayTags.length > 0 && (
+                                  <View style={styles.entryTagRow}>
+                                    {displayTags.map((label, idx) => (
+                                      <View
+                                        key={`${entry.id}-tag-${idx}`}
+                                        style={[styles.tagChip, variant.tagChip]}
+                                      >
+                                        <Text style={[styles.tagChipText, variant.tagChipText]}>{label}</Text>
+                                      </View>
+                                    ))}
+                                  </View>
+                                )}
+
+                                {contactIdFromTag && (
+                                  <View style={styles.entryActionRow}>
+                                    <TouchableOpacity
+                                      style={styles.entryActionButton}
+                                      onPress={() => router.push(`/ai-assistant?contactId=${contactIdFromTag}`)}
+                                    >
+                                      <Text style={styles.entryActionButtonText}>Plan next conversation</Text>
+                                    </TouchableOpacity>
+                                    <TouchableOpacity
+                                      style={styles.entryActionButtonSecondary}
+                                      onPress={() => {
+                                        if (chatIdFromTag) {
+                                          const params = [`chatId=${chatIdFromTag}`, 'isOngoing=true'];
+                                          if (contactIdFromTag) {
+                                            params.push(`contactId=${contactIdFromTag}`);
+                                          }
+                                          router.push(`/contact-chat?${params.join('&')}`);
+                                          return;
+                                        }
+                                        if (contactIdFromTag) {
+                                          router.push(`/contact-selection?contactId=${contactIdFromTag}`);
+                                          return;
+                                        }
+                                        router.push('/(tabs)/chats');
+                                      }}
+                                    >
+                                      <Text style={styles.entryActionButtonSecondaryText}>View My Talks</Text>
+                                    </TouchableOpacity>
+                                  </View>
+                                )}
+                              </View>
+                            </TouchableOpacity>
+                          </View>
+                        );
+                      });
+                    })()}
                   </View>
                 )}
               </View>
-            );
-          })
-        )}
+            </>
+          )}
+        </View>
       </ScrollView>
 
       <Modal
@@ -1592,6 +2669,91 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 16,
   },
+  entriesContentWithBar: {
+    paddingBottom: Spacing.xl * 2,
+  },
+  stickyTabWrapper: {
+    backgroundColor: Colors.background,
+    paddingHorizontal: 16,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.borderLight,
+    zIndex: 10,
+  },
+  tabRow: {
+    flexDirection: 'row',
+    backgroundColor: '#e5e7eb33',
+    borderRadius: BorderRadius.full,
+    padding: 4,
+    marginBottom: Spacing.md,
+  },
+  tabButton: {
+    flex: 1,
+    paddingVertical: Spacing.sm,
+    borderRadius: BorderRadius.full,
+    alignItems: 'center',
+  },
+  tabButtonActive: {
+    backgroundColor: Colors.primary[500],
+  },
+  tabButtonText: {
+    fontSize: Typography.fontSize.sm,
+    color: Colors.text.secondary,
+    fontWeight: Typography.fontWeight.medium,
+  },
+  tabButtonTextActive: {
+    color: '#ffffff',
+  },
+  multiSelectBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.sm,
+    backgroundColor: Colors.surface,
+    borderTopWidth: 1,
+    borderTopColor: Colors.borderLight,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
+    ...Shadows.small,
+  },
+  multiSelectActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  multiSelectButton: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 8,
+    borderRadius: BorderRadius.md,
+    backgroundColor: Colors.background,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+  },
+  multiSelectButtonDisabled: {
+    opacity: 0.5,
+  },
+  multiSelectButtonText: {
+    fontSize: Typography.fontSize.sm,
+    color: Colors.text.secondary,
+    fontWeight: Typography.fontWeight.medium,
+  },
+  multiSelectDeleteButton: {
+    backgroundColor: Colors.error[500],
+    borderColor: Colors.error[500],
+  },
+  multiSelectDeleteText: {
+    color: Colors.text.inverse,
+  },
+  multiSelectCount: {
+    fontSize: Typography.fontSize.sm,
+    color: Colors.text.primary,
+    fontWeight: Typography.fontWeight.semibold,
+  },
   overviewCard: {
     backgroundColor: Colors.surfaceElevated,
     borderRadius: BorderRadius.xl,
@@ -1610,6 +2772,61 @@ const styles = StyleSheet.create({
     fontSize: Typography.fontSize.sm,
     color: Colors.text.secondary,
     marginBottom: Spacing.md,
+  },
+  wellnessCard: {
+    marginTop: Spacing.lg,
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.lg,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+    ...Shadows.medium,
+  },
+  wellnessHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: Spacing.md,
+  },
+  wellnessStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  wellnessStatusText: {
+    fontSize: Typography.fontSize.sm,
+    color: Colors.text.secondary,
+  },
+  wellnessOptionsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: Spacing.sm,
+  },
+  wellnessOption: {
+    flex: 1,
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.lg,
+    paddingVertical: Spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+  },
+  wellnessOptionSelected: {
+    borderColor: Colors.primary[500],
+    backgroundColor: Colors.primary[50],
+  },
+  wellnessOptionDisabled: {
+    opacity: 0.6,
+  },
+  wellnessEmoji: {
+    fontSize: 24,
+    marginBottom: Spacing.xs,
+  },
+  wellnessLabel: {
+    fontSize: Typography.fontSize.sm,
+    color: Colors.text.secondary,
+    textAlign: 'center',
   },
   statsRow: {
     flexDirection: 'row',
@@ -1720,6 +2937,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.borderLight,
     ...Shadows.medium,
+  },
+  entryCardMultiSelect: {
+    opacity: 0.96,
+  },
+  entryCardSelected: {
+    borderColor: Colors.primary[400],
+    borderWidth: 2,
+    shadowColor: Colors.primary[200],
   },
   entryHeader: {
     flexDirection: 'row',
@@ -1851,6 +3076,20 @@ const styles = StyleSheet.create({
     color: Colors.text.secondary,
     fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.medium,
+  },
+  selectionBadge: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.surface,
+  },
+  selectionBadgeSelected: {
+    borderColor: Colors.primary[500],
+    backgroundColor: Colors.primary[50],
   },
   modalContainer: {
     flex: 1,
@@ -1992,21 +3231,72 @@ const styles = StyleSheet.create({
     gap: Spacing.xs,
   },
   coachHeadline: {
-    fontSize: Typography.fontSize.base,
-    fontWeight: Typography.fontWeight.semibold,
+    fontSize: Typography.fontSize.sm + 1,
+    fontWeight: Typography.fontWeight.medium,
     color: Colors.text.primary,
   },
   coachMessage: {
     fontSize: Typography.fontSize.sm,
     color: Colors.text.secondary,
-    lineHeight: 20,
+    lineHeight: 18,
   },
   coachPromptList: {
     gap: 4,
   },
   coachPrompt: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.text.tertiary,
+  },
+  insightCardWrapper: {
+    marginTop: Spacing.lg,
+  },
+  insightCard: {
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.lg,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+    ...Shadows.small,
+    gap: Spacing.md,
+  },
+  insightHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  insightTitle: {
+    flex: 1,
+    marginLeft: Spacing.xs,
+    fontSize: Typography.fontSize.base + 1,
+    fontWeight: Typography.fontWeight.semibold,
+    letterSpacing: 0.2,
+    color: Colors.text.primary,
+  },
+  insightHeadline: {
+    fontSize: Typography.fontSize.base,
+    color: Colors.text.primary,
+    fontWeight: Typography.fontWeight.semibold,
+  },
+  insightBody: {
+    fontSize: Typography.fontSize.sm + 1,
+    color: Colors.text.primary,
+    lineHeight: 22,
+    fontWeight: Typography.fontWeight.normal,
+  },
+  insightTimestamp: {
     fontSize: Typography.fontSize.sm,
     color: Colors.text.tertiary,
+  },
+  insightRefresh: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: Colors.primary[50],
+  },
+  insightRefreshText: {
+    color: Colors.primary[600],
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.semibold,
   },
   digestCard: {
     backgroundColor: Colors.surfaceElevated,
@@ -2273,6 +3563,51 @@ const styles = StyleSheet.create({
   pickerOptionMeta: {
     color: Colors.text.tertiary,
     fontSize: Typography.fontSize.xs,
+  },
+  reflectionList: {
+    gap: Spacing.md,
+    paddingBottom: Spacing.lg,
+  },
+  reflectionItem: {
+    gap: Spacing.xs,
+  },
+  entryDateHeading: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.text.tertiary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+    marginLeft: 4,
+  },
+  sectionCard: {
+    borderRadius: BorderRadius.xl,
+    backgroundColor: 'transparent',
+    gap: Spacing.xs,
+  },
+  sectionToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs,
+  },
+  sectionToggleText: {
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.semibold,
+    color: Colors.text.secondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: Spacing.xs,
+  },
+  sectionSubtitle: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.text.tertiary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
 });
 

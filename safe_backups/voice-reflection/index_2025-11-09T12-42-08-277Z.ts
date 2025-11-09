@@ -61,9 +61,7 @@ function denoServe() {
         return jsonResponse({ error: "audioBase64 is required" }, 400);
       }
 
-      const transcript = "The user recorded a short voice reflection about their emotions today.";
-
-
+      const transcript = await transcribeAudio(audioBase64, mimeType);
       if (!transcript.trim()) {
         return jsonResponse({ error: "Unable to transcribe the recording" }, 422);
       }

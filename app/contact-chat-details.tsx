@@ -3,7 +3,6 @@ import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   TouchableOpacity,
   Alert,
@@ -11,6 +10,7 @@ import {
   Modal,
   Animated,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LongPressGestureHandler, State } from 'react-native-gesture-handler';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
@@ -33,6 +33,14 @@ const formatTime = (timestamp: string | null) => {
   return date.toLocaleTimeString([], {
     hour: "2-digit",
     minute: "2-digit",
+  });
+};
+
+const formatDateLabel = (timestamp: string | null) => {
+  if (!timestamp) return '';
+  return new Date(timestamp).toLocaleDateString([], {
+    month: 'short',
+    day: 'numeric',
   });
 };
 
@@ -141,6 +149,7 @@ function ConfirmationDialog({
 
 function ContactChatDetailsScreen() {
   const { user } = useAuth();
+  const insets = useSafeAreaInsets();
   const { contactId, autoSwitchToHistory } = useLocalSearchParams<{ contactId: string; autoSwitchToHistory?: string }>();
   const [activeTab, setActiveTab] = useState<'ongoing' | 'history'>(autoSwitchToHistory === 'true' ? 'history' : 'ongoing');
   const [showYouHistory, setShowYouHistory] = useState(false);
@@ -620,7 +629,14 @@ function ContactChatDetailsScreen() {
 
   const renderChatCard = (chat: ContactChat, showOwnerTag: boolean = false) => {
     const isSelected = selectedChats.includes(chat.id);
-    const ownerTag = chat.user_id === user?.id ? 'You initiated' : `${contact?.full_name || 'Contact'} initiated`;
+    const ownerLabel = chat.user_id === user?.id ? 'My talk' : `${contact?.full_name || 'Contact'}'s talk`;
+    const summaryText = chat.context_data?.summary_a
+      || chat.context_data?.summary
+      || chat.last_message
+      || 'No messages yet';
+    const lastTouched = chat.last_message_at || chat.created_at;
+    const statusLabel = chat.is_resolved ? 'Resolved' : 'Active';
+    const categoryLabel = chat.context_data?.contact_category;
     
     return (
       <TouchableOpacity
@@ -633,40 +649,74 @@ function ContactChatDetailsScreen() {
         onPress={() => multiSelectMode ? handleChatSelect(chat.id) : continueChat(chat)}
       >
         <View style={styles.chatContent}>
-          <View style={styles.chatInfo}>
-            <View style={styles.chatDetails}>
-              <View style={styles.chatTitleRow}>
-                <Text style={styles.chatTitle}>
-                  {chat.title || 'Untitled Chat'}
-                </Text>
-                <Text style={styles.chatTime}>
-                  {formatTime(chat.last_message_at || chat.created_at)}
-                </Text>
-              </View>
+          <View style={styles.chatHeaderRow}>
+            <View style={styles.chatHeaderLeft}>
+              <Text style={styles.chatTitle} numberOfLines={1}>
+                {chat.title || 'Untitled Chat'}
+              </Text>
               {showOwnerTag && (
-                <Text style={styles.ownerTag}>{ownerTag}</Text>
+                <View
+                  style={[
+                    styles.ownerTag,
+                    chat.user_id === user?.id ? styles.ownerTagYou : styles.ownerTagContact,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.ownerTagText,
+                      chat.user_id === user?.id ? styles.ownerTagYouText : styles.ownerTagContactText,
+                    ]}
+                  >
+                    {ownerLabel}
+                  </Text>
+                </View>
               )}
-             <Text style={styles.lastMessage} numberOfLines={2}>
-  {chat.context_data?.summary_a
-    ? `🧠 ${chat.context_data.summary_a}`
-    : chat.last_message || 'No messages yet'}
-</Text>
-
             </View>
+            <Text style={styles.chatTime}>{formatTime(lastTouched)}</Text>
           </View>
-          <View style={styles.chatActions}>
-            {!chat.is_resolved && (
-              <View style={styles.activeBadge}>
-                <Text style={styles.activeBadgeText}>Active</Text>
+
+          <Text style={styles.chatSummary} numberOfLines={2}>
+            {summaryText}
+          </Text>
+
+          <View style={styles.chatMetaRow}>
+            <View style={styles.metaPill}>
+              <Clock size={12} color={Colors.text.secondary} />
+              <Text style={styles.metaPillText}>Started {formatDateLabel(chat.created_at)}</Text>
+            </View>
+            <View style={styles.metaPill}>
+              <History size={12} color={Colors.text.secondary} />
+              <Text style={styles.metaPillText}>Updated {formatDateLabel(lastTouched)}</Text>
+            </View>
+            {categoryLabel && (
+              <View style={styles.metaPill}>
+                <Text style={styles.metaPillText}>{categoryLabel}</Text>
               </View>
             )}
-            {multiSelectMode && (
-              <View style={styles.checkbox}>
-                {isSelected && <Check size={16} color={Colors.primary[500]} />}
-              </View>
+            <View
+              style={[styles.statusPill, chat.is_resolved ? styles.resolvedPill : styles.activePill]}
+            >
+              <Text
+                style={[styles.statusPillText, chat.is_resolved ? styles.resolvedPillText : styles.activePillText]}
+              >
+                {statusLabel}
+              </Text>
+            </View>
+            {!multiSelectMode && chat.user_id === user?.id && (
+              <TouchableOpacity
+                style={styles.metaIconButton}
+                onPress={() => deleteSingleChat(chat)}
+              >
+                <Trash2 size={14} color={Colors.error[500]} />
+              </TouchableOpacity>
             )}
           </View>
         </View>
+        {multiSelectMode && (
+          <View style={styles.checkbox}>
+            {isSelected && <Check size={16} color={Colors.primary[500]} />}
+          </View>
+        )}
       </TouchableOpacity>
     );
   };
@@ -678,241 +728,96 @@ function ContactChatDetailsScreen() {
     return historyChats;
   };
 
-  const handleChatPress = (chat: ContactChat) => {
-    if (multiSelectMode) {
-      handleChatSelect(chat.id);
-    } else {
-      router.push(`/contact-chat?chatId=${chat.id}&contactId=${contactId}&isOngoing=true`);
-    }
-  };
-
   const renderTabContent = () => {
     if (activeTab === 'ongoing') {
       return (
-        <View style={styles.tabContent}>
-          <View style={styles.ongoingContainer}>
-            {/* Your Ongoing Sessions */}
-            <View style={styles.sectionContainer}>
+        <ScrollView
+          style={styles.scrollArea}
+          contentContainerStyle={styles.scrollBody}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.sectionContainer}>
+            <View style={styles.sectionHeaderRow}>
               <Text style={styles.sectionTitle}>My Talks</Text>
-              {userOngoingChats.length === 0 ? (
-                <View style={styles.emptySectionState}>
-                  <Text style={styles.emptySectionText}>No ongoing sessions started by you</Text>
-                </View>
-              ) : (
-                <View style={styles.chatsContainer}>
-                  {userOngoingChats.slice(0, 3).map((chat) => (
-                    <TouchableOpacity
-                      key={chat.id}
-                      style={[
-                        styles.chatCard,
-                        multiSelectMode && selectedChats.includes(chat.id) && styles.selectedChatCard,
-                      ]}
-                      onLongPress={() => handleLongPress(chat.id)}
-                      onPress={() => handleChatPress(chat)}
-                    >
-                      <View style={styles.chatContent}>
-                        <View style={styles.chatInfo}>
-                          <View style={styles.chatDetails}>
-                            <View style={styles.chatTitleRow}>
-                              <Text style={styles.chatTitle}>
-                                {chat.title || 'Untitled Chat'}
-                              </Text>
-                              <View style={styles.ownerTag}>
-                                <Text style={styles.ownerTagText}>You</Text>
-                              </View>
-                            </View>
-                           <Text style={styles.lastMessage} numberOfLines={2}>
-  {chat.context_data?.summary_a
-    ? `🧠 ${chat.context_data.summary_a}`
-    : chat.last_message || 'No messages yet'}
-</Text>
-
-                          </View>
-                        </View>
-                        <View style={styles.chatMetaRight}>
-                          <Text style={styles.chatTime}>
-                            {formatTime(chat.last_message_at || chat.created_at)}
-                          </Text>
-                          <View style={styles.activeBadge}>
-                            <Text style={styles.activeBadgeText}>Active</Text>
-                          </View>
-                        </View>
-                      </View>
-                      {multiSelectMode && (
-                        <View style={styles.checkbox}>
-                          {selectedChats.includes(chat.id) && (
-                            <Check size={16} color="#6366f1" />
-                          )}
-                        </View>
-                      )}
-                    </TouchableOpacity>
-                  ))}
-                  {userOngoingChats.length > 3 && (
-                    <Text style={styles.moreChatsText}>
-                      +{userOngoingChats.length - 3} more conversations
-                    </Text>
-                  )}
-                </View>
+              {userOngoingChats.length > 3 && (
+                <Text style={styles.sectionSubLabel}>showing latest 3</Text>
               )}
             </View>
-
-            {/* Contact's Ongoing Sessions */}
-            <View style={styles.sectionContainer}>
-              <Text style={styles.sectionTitle}>{contact?.full_name || 'Contact'}'s Talks</Text>
-              {contactOngoingChats.length === 0 ? (
-                <View style={styles.emptySectionState}>
-                  <Text style={styles.emptySectionText}>
-                    No ongoing sessions started by {contact?.full_name || 'contact'}
+            {userOngoingChats.length === 0 ? (
+              <View style={styles.emptySectionState}>
+                <Text style={styles.emptySectionText}>No ongoing sessions started by you</Text>
+              </View>
+            ) : (
+              <View style={styles.chatsContainer}>
+                {userOngoingChats.slice(0, 3).map((chat) => renderChatCard(chat, true))}
+                {userOngoingChats.length > 3 && (
+                  <Text style={styles.moreChatsText}>
+                    +{userOngoingChats.length - 3} more conversations
                   </Text>
-                </View>
-              ) : (
-                <View style={styles.chatsContainer}>
-                  {contactOngoingChats.slice(0, 3).map((chat) => (
-                    <TouchableOpacity
-                      key={chat.id}
-                      style={[
-                        styles.chatCard,
-                        multiSelectMode && selectedChats.includes(chat.id) && styles.selectedChatCard,
-                      ]}
-                      onLongPress={() => handleLongPress(chat.id)}
-                      onPress={() => handleChatPress(chat)}
-                    >
-                      <View style={styles.chatContent}>
-                        <View style={styles.chatInfo}>
-                          <View style={styles.chatDetails}>
-                            <View style={styles.chatTitleRow}>
-                              <Text style={styles.chatTitle}>
-                                {chat.title || 'Untitled Chat'}
-                              </Text>
-                              <View style={[styles.ownerTag, styles.contactOwnerTag]}>
-                                <Text style={[styles.ownerTagText, styles.contactOwnerTagText]}>
-                                  {contact?.full_name || 'Contact'}
-                                </Text>
-                              </View>
-                            </View>
-                           <Text style={styles.lastMessage} numberOfLines={2}>
-  {chat.context_data?.summary_a
-    ? `🧠 ${chat.context_data.summary_a}`
-    : chat.last_message || 'No messages yet'}
-</Text>
-
-                          </View>
-                        </View>
-                        <View style={styles.chatMetaRight}>
-                          <Text style={styles.chatTime}>
-                            {formatTime(chat.last_message_at || chat.created_at)}
-                          </Text>
-                          <View style={styles.activeBadge}>
-                            <Text style={styles.activeBadgeText}>Active</Text>
-                          </View>
-                        </View>
-                      </View>
-                      {multiSelectMode && (
-                        <View style={styles.checkbox}>
-                          {selectedChats.includes(chat.id) && (
-                            <Check size={16} color="#6366f1" />
-                          )}
-                        </View>
-                      )}
-                    </TouchableOpacity>
-                  ))}
-                  {contactOngoingChats.length > 3 && (
-                    <Text style={styles.moreChatsText}>
-                      +{contactOngoingChats.length - 3} more conversations
-                    </Text>
-                  )}
-                </View>
-              )}
-            </View>
-
-            {/* Show empty state only if both sections are empty */}
-            {userOngoingChats.length === 0 && contactOngoingChats.length === 0 && (
-              <View style={styles.emptyState}>
-                <MessageCircle size={48} color="#9ca3af" />
-                <Text style={styles.emptyTitle}>No ongoing conversations</Text>
-                <Text style={styles.emptyDescription}>
-                  Start a new conversation to see it here
-                </Text>
+                )}
               </View>
             )}
           </View>
-        </View>
-      );
-    } else {
-      return (
-        <View style={styles.tabContent}>
-          {historyChats.length === 0 ? (
+
+          <View style={styles.sectionContainer}>
+            <View style={styles.sectionHeaderRow}>
+              <Text style={styles.sectionTitle}>{contact?.full_name || 'Contact'}'s Talks</Text>
+              {contactOngoingChats.length > 3 && (
+                <Text style={styles.sectionSubLabel}>showing latest 3</Text>
+              )}
+            </View>
+            {contactOngoingChats.length === 0 ? (
+              <View style={styles.emptySectionState}>
+                <Text style={styles.emptySectionText}>
+                  No ongoing sessions started by {contact?.full_name || 'contact'}
+                </Text>
+              </View>
+            ) : (
+              <View style={styles.chatsContainer}>
+                {contactOngoingChats.slice(0, 3).map((chat) => renderChatCard(chat, true))}
+                {contactOngoingChats.length > 3 && (
+                  <Text style={styles.moreChatsText}>
+                    +{contactOngoingChats.length - 3} more conversations
+                  </Text>
+                )}
+              </View>
+            )}
+          </View>
+
+          {userOngoingChats.length === 0 && contactOngoingChats.length === 0 && (
             <View style={styles.emptyState}>
-              <History size={48} color={Colors.text.tertiary} />
-              <Text style={styles.emptyTitle}>No conversation history</Text>
+              <MessageCircle size={48} color="#9ca3af" />
+              <Text style={styles.emptyTitle}>No ongoing conversations</Text>
               <Text style={styles.emptyDescription}>
-                Completed conversations will appear here
+                Start a new conversation to see it here
               </Text>
             </View>
-          ) : (
-            <ScrollView style={styles.chatsList}>
-              <View style={styles.chatsContainer}>
-                {historyChats.map((chat) => (
-                  <TouchableOpacity
-                    key={chat.id}
-                    style={[
-                      styles.chatCard,
-                      multiSelectMode && selectedChats.includes(chat.id) && styles.selectedChatCard,
-                    ]}
-                    onLongPress={() => handleLongPress(chat.id)}
-                    onPress={() => handleChatPress(chat)}
-                  >
-                    <View style={styles.chatContent}>
-                      <View style={styles.chatInfo}>
-                        <View style={styles.chatIcon}>
-                          <MessageCircle size={20} color="#6366f1" />
-                        </View>
-                        <View style={styles.chatDetails}>
-                          <View style={styles.chatTitleRow}>
-                            <Text style={styles.chatTitle}>
-                              {chat.title || 'Untitled Chat'}
-                            </Text>
-                            <View style={[
-                              styles.ownerTag,
-                              chat.owner_id !== user?.id && styles.contactOwnerTag
-                            ]}>
-                              <Text style={[
-                                styles.ownerTagText,
-                                chat.owner_id !== user?.id && styles.contactOwnerTagText
-                              ]}>
-                                {chat.owner_id === user?.id ? 'You' : contact?.full_name || 'Contact'}
-                              </Text>
-                            </View>
-                          </View>
-                         <Text style={styles.lastMessage} numberOfLines={2}>
-  {chat.context_data?.summary_a
-    ? `🧠 ${chat.context_data.summary_a}`
-    : chat.last_message || 'No messages yet'}
-</Text>
-
-                        </View>
-                      </View>
-                      <View style={styles.chatMeta}>
-                        <Text style={styles.chatTime}>
-                          {formatTime(chat.last_message_at || chat.created_at)}
-                        </Text>
-                      </View>
-                    </View>
-                    {multiSelectMode && (
-                      <View style={styles.checkbox}>
-                        {selectedChats.includes(chat.id) && (
-                          <Check size={16} color="#6366f1" />
-                        )}
-                      </View>
-                    )}
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </ScrollView>
           )}
-        </View>
+        </ScrollView>
       );
     }
+
+    return (
+      <ScrollView
+        style={styles.scrollArea}
+        contentContainerStyle={styles.scrollBody}
+        showsVerticalScrollIndicator={false}
+      >
+        {historyChats.length === 0 ? (
+          <View style={styles.emptyState}>
+            <History size={48} color={Colors.text.tertiary} />
+            <Text style={styles.emptyTitle}>No conversation history</Text>
+            <Text style={styles.emptyDescription}>
+              Completed conversations will appear here
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.chatsContainer}>
+            {historyChats.map((chat) => renderChatCard(chat, true))}
+          </View>
+        )}
+      </ScrollView>
+    );
   };
 
   const renderChatSection = (
@@ -1205,8 +1110,8 @@ function ContactChatDetailsScreen() {
         onDismiss={() => setNotification(prev => ({ ...prev, visible: false }))}
       />
       
-      <SafeAreaView style={styles.container}>
-        <View style={styles.header}>
+      <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+        <View style={[styles.header, { paddingTop: insets.top + Spacing.sm }]}>
           <TouchableOpacity
             style={styles.backButton}
             onPress={() => router.back()}
@@ -1353,8 +1258,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.lg,
+    paddingHorizontal: Spacing.md,
+    paddingBottom: Spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: Colors.borderLight,
     backgroundColor: Colors.surfaceElevated,
@@ -1395,33 +1300,78 @@ const styles = StyleSheet.create({
     padding: 4,
     ...Shadows.small,
   },
+  scrollArea: {
+    flex: 1,
+  },
+  scrollBody: {
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.xl,
+    gap: Spacing.lg,
+  },
+  sectionContainer: {
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    gap: Spacing.sm,
+    ...Shadows.small,
+  },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  sectionSubLabel: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.text.tertiary,
+  },
+  emptySectionState: {
+    paddingVertical: Spacing.lg,
+    paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.md,
+    backgroundColor: Colors.background,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  emptySectionText: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.text.secondary,
+    textAlign: 'center',
+  },
+  moreChatsText: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.text.tertiary,
+    textAlign: 'center',
+    fontStyle: 'italic',
+  },
   tab: {
-  flex: 1,
-  paddingVertical: Spacing.md,
-  paddingHorizontal: Spacing.sm,
-  borderRadius: BorderRadius.md,
-  alignItems: 'center',
- // borderWidth: 2,                      // 👈 add border
-  //borderColor: Colors.text.inverse,    // white border
-  backgroundColor: Colors.background,  // keep dark background
-},
+    flex: 1,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.sm,
+    borderRadius: BorderRadius.md,
+    alignItems: 'center',
+    backgroundColor: Colors.background,
+  },
 
-tabText: {
-  fontSize: Typography.fontSize.lg,
-  fontWeight: Typography.fontWeight.semibold,
-  color: Colors.secondary[700],        // 👈 blue text (pick from your palette)
-  textAlign: 'center',
-},
+  tabText: {
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.semibold,
+    color: Colors.secondary[700],
+    textAlign: 'center',
+  },
 
-activeTab: {
-  backgroundColor: '#0D47A1', // darker blue highlight
-  borderColor: Colors.text.inverse,       // white border still
-},
+  activeTab: {
+    backgroundColor: Colors.secondary[100],
+    borderColor: Colors.secondary[200],
+    borderWidth: 1,
+  },
 
-activeTabText: {
-  color: Colors.text.inverse,            // white text for contrast when active
-  fontWeight: Typography.fontWeight.bold,
-},
+  activeTabText: {
+    color: Colors.primary[600],
+    fontWeight: Typography.fontWeight.bold,
+  },
 
   tabContent: {
     flex: 1,
@@ -1466,11 +1416,6 @@ activeTabText: {
     paddingVertical: Spacing.xl,
     alignItems: 'center',
   },
-  emptySectionText: {
-    fontSize: Typography.fontSize.base,
-    color: Colors.text.secondary,
-    textAlign: 'center',
-  },
   chatItem: {
     backgroundColor: Colors.surfaceElevated,
     borderRadius: BorderRadius.xl,
@@ -1499,12 +1444,6 @@ activeTabText: {
     marginRight: Spacing.md,
     marginTop: 2,
   },
-  chatContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    minHeight: 44,
-  },
   chatHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1522,12 +1461,6 @@ activeTabText: {
     fontSize: 11,
     color: Colors.text.tertiary,
     fontWeight: Typography.fontWeight.normal,
-  },
-  ownerTag: {
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-    borderRadius: BorderRadius.sm,
-    marginLeft: Spacing.xs,
   },
   lastMessage: {
     fontSize: Typography.fontSize.xs,
@@ -1855,18 +1788,17 @@ activeTabText: {
   aiAssistantButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: Colors.primary[500], // Keep yellow background
-    borderWidth: 3,
-    borderColor: Colors.secondary[600], // Blue border
+    justifyContent: 'center',
+    backgroundColor: Colors.primary[500],
+    borderWidth: 1,
+    borderColor: Colors.primary[400],
     marginHorizontal: Spacing.lg,
-    marginTop: Spacing.lg,
-    marginBottom: Spacing.md,
-    paddingVertical: Spacing.lg,
+    marginTop: Spacing.md,
+    marginBottom: Spacing.sm,
+    paddingVertical: Spacing.sm,
     paddingHorizontal: Spacing.lg,
-    borderRadius: BorderRadius.xl,
-  //  borderWidth: 1,
-  //  borderColor: Colors.primary[200],
-    ...Shadows.medium,
+    borderRadius: BorderRadius.lg,
+    ...Shadows.small,
   },
 
   aiAssistantEmoji: {
@@ -1874,12 +1806,9 @@ activeTabText: {
     marginRight: Spacing.md,
   },
   aiAssistantButtonText: {
-    fontSize: Typography.fontSize.lg,
-    fontWeight: Typography.fontWeight.bold,
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.semibold,
     color: '#FFFFFF',
-    textShadowColor: Colors.secondary[600],
-    textShadowOffset: { width: 1, height: 1 },
-    textShadowRadius: 2,
   },
   chatsList: {
     flex: 1,
@@ -1919,40 +1848,43 @@ activeTabText: {
     borderColor: Colors.primary[200],
     borderWidth: 2,
   },
-  chatInfo: {
-    flex: 1,
-    paddingRight: Spacing.sm,
+  chatContent: {
+    flexDirection: 'column',
+    gap: Spacing.xs,
   },
-  chatDetails: {
-    flex: 1,
-  },
-  chatTitleRow: {
+  chatHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 2,
+    justifyContent: 'space-between',
+    gap: Spacing.sm,
   },
-  chatActions: {
+  chatHeaderLeft: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.sm,
   },
-  ongoingContainer: {
-    flex: 1,
+  ownerTag: {
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: BorderRadius.sm,
+    marginLeft: Spacing.xs,
   },
-  sectionContainer: {
-   marginBottom: 32,          // more space after each section
-  paddingBottom: 12,         // ensures spacing before chats
+  ownerTagYou: {
+    backgroundColor: Colors.secondary[100],
   },
-  emptySectionState: {
-    paddingVertical: 20,
-    paddingHorizontal: 16,
-    backgroundColor: '#f9fafb',
-    borderRadius: 12,
-    alignItems: 'center',
+  ownerTagContact: {
+    backgroundColor: Colors.success[100],
   },
   ownerTagText: {
     fontSize: 10,
     fontWeight: Typography.fontWeight.semibold,
+  },
+  ownerTagYouText: {
+    color: Colors.secondary[700],
+  },
+  ownerTagContactText: {
+    color: Colors.success[700],
   },
   youTag: {
     backgroundColor: Colors.secondary[100],
@@ -1960,37 +1892,79 @@ activeTabText: {
   contactTag: {
     backgroundColor: Colors.success[100],
   },
-  youTagText: {
-    color: Colors.secondary[700],
-  },
-  contactTagText: {
-    color: Colors.success[700],
-  },
-  contactOwnerTag: {
-    backgroundColor: '#dcfce7',
-  },
-  contactOwnerTagText: {
-    color: '#166534',
-  },
-  moreChatsText: {
-    fontSize: 12,
-    color: '#6b7280',
-    textAlign: 'center',
-    fontStyle: 'italic',
-    marginTop: 8,
-    paddingVertical: 8,
-  },
   chatsContainer: {
-    gap: 20,
+    gap: Spacing.md,
   },
   chatIcon: {
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: '#f3f4f6',
+    backgroundColor: Colors.primary[100],
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
+  },
+  chatTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  chatSummary: {
+    fontSize: Typography.fontSize.sm,
+    color: Colors.text.secondary,
+    lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
+    marginBottom: Spacing.xs,
+  },
+  chatMetaRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.xs,
+    marginTop: Spacing.xs,
+  },
+  metaPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.surface,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: BorderRadius.sm,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+    ...Shadows.small,
+  },
+  metaPillText: {
+    fontSize: 11,
+    color: Colors.text.secondary,
+  },
+  statusPill: {
+    borderRadius: BorderRadius.full,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 2,
+  },
+  activePill: {
+    backgroundColor: Colors.success[100],
+  },
+  resolvedPill: {
+    backgroundColor: Colors.neutral ? Colors.neutral[200] : '#e5e7eb',
+  },
+  statusPillText: {
+    fontSize: 11,
+    fontWeight: Typography.fontWeight.semibold,
+  },
+  activePillText: {
+    color: Colors.success[700],
+  },
+  resolvedPillText: {
+    color: Colors.text.secondary,
+  },
+  metaIconButton: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 1,
+    borderColor: Colors.error[100],
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.background,
   },
 });
 

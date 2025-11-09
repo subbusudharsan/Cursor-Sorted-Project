@@ -8,13 +8,13 @@ import {
   TouchableOpacity,
   ScrollView,
   StyleSheet,
-  SafeAreaView,
   KeyboardAvoidingView,
   Platform,
   Alert,
   ActivityIndicator,
   Dimensions,
 } from "react-native";
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from "expo-router";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
@@ -58,6 +58,7 @@ type FlowStage = "welcome" | "qa" | "summary" | "ready";
 
 function AIChatScreen() {
   const { user } = useAuth();
+  const insets = useSafeAreaInsets();
   const {
     contactId,
     mode,
@@ -3898,23 +3899,7 @@ Respond ONLY with valid JSON:
   );
 
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity
-  style={styles.backButton}
-  onPress={() => router.push("/ai-assistant")}
->
-  <ArrowLeft size={24} color="#374151" />
-</TouchableOpacity>
-
-
-
-        <Text style={styles.headerTitle}>
-          AI Assistant: {contact?.full_name || contact?.email}
-        </Text>
-        <View style={styles.placeholder} />
-      </View>
-
+    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <KeyboardAvoidingView
         style={styles.content}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -3922,7 +3907,9 @@ Respond ONLY with valid JSON:
         <ScrollView
           ref={scrollViewRef}
           style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
+          contentInsetAdjustmentBehavior="automatic"
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={[styles.scrollContent, { paddingTop: Spacing.md }]}
         >
           {flowStage === "welcome" && renderWelcomeStage()}
           {flowStage === "qa" && renderQAStage()}
@@ -3943,7 +3930,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    padding: 16,
+    paddingHorizontal: Spacing.md,
+    paddingTop: Spacing.sm,
+    paddingBottom: Spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: "#e5e7eb",
   },
@@ -3952,7 +3941,10 @@ const styles = StyleSheet.create({
   placeholder: { width: 32 },
   content: { flex: 1 },
   scrollView: { flex: 1 },
-  scrollContent: { padding: Spacing.xl },
+  scrollContent: {
+    paddingHorizontal: Spacing.lg,
+    paddingBottom: Spacing.lg,
+  },
   loadingContainer: {
     flex: 1,
     justifyContent: "center",
@@ -3969,28 +3961,28 @@ const styles = StyleSheet.create({
   },
   headerSection: {
     alignItems: "center",
-    marginBottom: Spacing.xl,
+    marginBottom: Spacing.lg,
   },
   stageTitle: {
-  fontSize: Typography.fontSize.xl,
-  fontWeight: Typography.fontWeight.bold,
-  color: Colors.text.primary,
-  marginTop: Spacing.md,
-  textAlign: "center",
-},
-stageSubtitle: {
-  fontSize: Typography.fontSize.sm,
-  color: Colors.text.secondary,
-  marginTop: Spacing.xs,
-  textAlign: "center",
-  lineHeight: 20,
-},
-stageDescription: {
-  fontSize: Typography.fontSize.sm,
-  color: Colors.text.tertiary,
-  marginTop: 2,
-  textAlign: "center",
-},
+    fontSize: Typography.fontSize.lg,
+    fontWeight: Typography.fontWeight.semibold,
+    color: Colors.text.primary,
+    marginTop: Spacing.sm,
+    textAlign: "center",
+  },
+  stageSubtitle: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.text.secondary,
+    marginTop: Spacing.xs,
+    textAlign: "center",
+    lineHeight: 18,
+  },
+  stageDescription: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.text.tertiary,
+    marginTop: 2,
+    textAlign: "center",
+  },
   contactName: {
     fontWeight: Typography.fontWeight.bold,
     color: Colors.primary[600],
@@ -4000,11 +3992,11 @@ stageDescription: {
   borderColor: Colors.borderLight,
   borderRadius: BorderRadius.lg,
   padding: Spacing.md,
-  fontSize: Typography.fontSize.base,
+  fontSize: Typography.fontSize.sm,
   backgroundColor: Colors.surface,
-  minHeight: 160,
+  minHeight: 120,
   textAlignVertical: "top",
-  marginTop: Spacing.lg,
+  marginTop: Spacing.md,
   ...Shadows.small,
 },
   qaPairsContainer: {
@@ -4015,7 +4007,7 @@ stageDescription: {
   backgroundColor: Colors.surface,
   borderRadius: BorderRadius.lg,
   padding: Spacing.md,
-  marginBottom: Spacing.md,
+  marginBottom: Spacing.sm,
   borderWidth: 1,
   borderColor: Colors.borderLight,
   ...Shadows.small,
@@ -4037,7 +4029,7 @@ stageDescription: {
     textTransform: 'uppercase',
   },
  questionText: {
-  fontSize: Typography.fontSize.base,
+  fontSize: Typography.fontSize.sm,
   color: Colors.text.primary,
   fontWeight: Typography.fontWeight.semibold,
   lineHeight: 20,
@@ -4049,7 +4041,7 @@ stageDescription: {
     marginBottom: Spacing.xs,
   },
   answerText: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     color: Colors.text.primary,
     lineHeight: 22,
   },
@@ -4067,8 +4059,9 @@ stageDescription: {
     gap: Spacing.sm,
   },
   optionButton: {
-    padding: Spacing.md,
-    borderWidth: 2,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    borderWidth: 1,
     borderColor: Colors.borderLight,
     borderRadius: BorderRadius.md,
     backgroundColor: "#fff",
@@ -4087,11 +4080,11 @@ stageDescription: {
   },
   summaryCard: {
   backgroundColor: Colors.surface,
-  borderRadius: BorderRadius.xl,
-  padding: Spacing.lg,
+  borderRadius: BorderRadius.lg,
+  padding: Spacing.md,
   borderWidth: 1,
   borderColor: Colors.borderLight,
-  marginBottom: Spacing.lg,
+  marginBottom: Spacing.md,
   ...Shadows.small,
 },
 summaryLabel: {
@@ -4229,68 +4222,64 @@ tagDropdownScroll: {
     justifyContent: "center",
     gap: Spacing.xs,
     backgroundColor: Colors.primary[500],
-    borderWidth: 3,
-    borderColor: Colors.secondary[600],
-    padding: Spacing.lg,
-    borderRadius: BorderRadius.xl,
-    ...Shadows.medium,
+    borderWidth: 1,
+    borderColor: Colors.primary[400],
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.lg,
+    borderRadius: BorderRadius.lg,
+    ...Shadows.small,
   },
   primaryButtonDisabled: {
     opacity: 0.6,
   },
   primaryButtonText: {
     color: "#fff",
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.semibold,
-    textShadowColor: Colors.secondary[600],
-    textShadowOffset: { width: 1, height: 1 },
-    textShadowRadius: 2,
   },
   secondaryButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: "center",
-    justifyContent: "center",
-    gap: Spacing.xs,
-    backgroundColor: Colors.surface,
-    borderWidth: 2,
-    borderColor: Colors.primary[300],
-    padding: Spacing.lg,
-    borderRadius: BorderRadius.xl,
-  },
-  secondaryButtonText: {
-    color: Colors.primary[600],
-    fontSize: Typography.fontSize.base,
-    fontWeight: Typography.fontWeight.semibold,
-  },
+     flex: 1,
+     flexDirection: 'row',
+     alignItems: "center",
+     justifyContent: "center",
+     gap: Spacing.xs,
+     backgroundColor: Colors.surface,
+     borderWidth: 1,
+     borderColor: Colors.primary[200],
+     paddingVertical: Spacing.sm,
+     paddingHorizontal: Spacing.lg,
+     borderRadius: BorderRadius.lg,
+   },
+   secondaryButtonText: {
+     color: Colors.primary[600],
+     fontSize: Typography.fontSize.sm,
+     fontWeight: Typography.fontWeight.semibold,
+   },
   readyMessage: {
-  fontSize: Typography.fontSize.base,
+  fontSize: Typography.fontSize.sm,
   fontWeight: Typography.fontWeight.semibold,
   color: Colors.text.primary,
-  marginTop: Spacing.lg,
-  marginBottom: Spacing.md,
+  marginTop: Spacing.md,
+  marginBottom: Spacing.sm,
   textAlign: "center",
 },
 readyButton: {
   flexDirection: "row",
   alignItems: "center",
   justifyContent: "center",
-  gap: Spacing.sm,
+  gap: Spacing.xs,
   backgroundColor: Colors.primary[500],
-  borderWidth: 2,
-  borderColor: Colors.secondary[600],
-  paddingVertical: Spacing.md,
+  borderWidth: 1,
+  borderColor: Colors.primary[400],
+  paddingVertical: Spacing.sm,
   paddingHorizontal: Spacing.lg,
-  borderRadius: BorderRadius.xl,
-  ...Shadows.medium,
+  borderRadius: BorderRadius.lg,
+  ...Shadows.small,
 },
 readyButtonText: {
   color: "#fff",
-  fontSize: Typography.fontSize.base,
-  fontWeight: Typography.fontWeight.bold,
-  textShadowColor: Colors.secondary[600],
-  textShadowOffset: { width: 1, height: 1 },
-  textShadowRadius: 2,
+  fontSize: Typography.fontSize.sm,
+  fontWeight: Typography.fontWeight.semibold,
 },
   loadingSubtext: {
     color: Colors.text.tertiary,

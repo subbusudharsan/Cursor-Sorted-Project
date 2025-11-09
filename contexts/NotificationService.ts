@@ -1,15 +1,30 @@
 import { Platform } from 'react-native';
 import { supabase } from '@/lib/supabase';
 
-// 👇 Safe import for Expo Go: dynamically load expo-notifications only when available
-let Notifications: any = {};
-if (Platform.OS !== 'web') {
-  try {
-    Notifications = require('expo-notifications');
-  } catch {
-    console.log('⚠️ Notifications module not available (Expo Go), skipping push setup.');
+// 👇 Prevent Expo Go crash by lazy-requiring only when actually needed
+let Notifications: any;
+function getNotifications() {
+  if (Platform.OS === 'web') return null;
+  if (!Notifications) {
+    try {
+      Notifications = require('expo-notifications');
+      if (Notifications?.setNotificationHandler) {
+        Notifications.setNotificationHandler({
+          handleNotification: async () => ({
+            shouldShowAlert: false,
+            shouldPlaySound: false,
+            shouldSetBadge: false,
+          }),
+        });
+      }
+    } catch (err) {
+      console.log('⚠️ Expo Notifications not available, skipping setup.', err);
+      return null;
+    }
   }
+  return Notifications;
 }
+
 
 if (Notifications?.setNotificationHandler) {
   Notifications.setNotificationHandler({

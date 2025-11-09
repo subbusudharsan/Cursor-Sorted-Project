@@ -2,7 +2,6 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { View, Text, ActivityIndicator, Platform } from 'react-native';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
-import { notificationService } from './NotificationService';
 
 interface AuthContextType {
   session: Session | null;
@@ -12,6 +11,8 @@ interface AuthContextType {
   signIn: (email: string, password: string) => Promise<any>;
   signOut: () => Promise<void>;
 }
+
+import { notificationService } from './NotificationService';
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -80,15 +81,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (event === "SIGNED_IN" && sess) {
         const { user } = sess;
-        if (notificationService?.initialize) {
-          (async () => {
-            try {
-              await notificationService.initialize(user.id);
-            } catch (err: any) {
-              console.log("⚠️ Notification init skipped:", err.message || err);
-            }
-          })();
-        }
+        (async () => {
+          try {
+            await notificationService.initialize(user.id);
+          } catch (err: any) {
+            console.log("⚠️ Notification init skipped:", err?.message || err);
+          }
+        })();
+
         (async () => {
           try {
             const { data: p, error: pErr } = await supabase
@@ -146,7 +146,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = async () => {
     const { error } = await supabase.auth.signOut();
-    notificationService.cancelAllNotifications();
+    try {
+      await notificationService.cancelAllNotifications?.();
+    } catch (err) {
+      console.log("⚠️ Notification cleanup skipped:", (err as Error)?.message || err);
+    }
+
     if (error) throw error;
   };
 
