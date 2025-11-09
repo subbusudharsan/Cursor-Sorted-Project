@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Platform, View } from 'react-native';
+import { InteractionManager, Platform, View } from 'react-native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -7,6 +7,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { NotificationProvider } from '@/contexts/NotificationContext';
 import { useFrameworkReady } from '@/hooks/useFrameworkReady';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -65,23 +66,23 @@ function RootLayout() {
   const [appReady, setAppReady] = useState(false);
 
   useEffect(() => {
-    async function prepare() {
-      try {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      } catch (e) {
-        console.warn(e);
-      } finally {
+    let cancelled = false;
+    const task = InteractionManager.runAfterInteractions(() => {
+      if (!cancelled) {
         setAppReady(true);
       }
-    }
-    prepare();
+    });
+    return () => {
+      cancelled = true;
+      task?.cancel?.();
+    };
   }, []);
 
   useEffect(() => {
-    if (appReady) {
-      SplashScreen.hideAsync();
-    }
-  }, [appReady]);
+    // ✅ Hide splash as soon as component mounts
+    SplashScreen.hideAsync();
+  }, []);
+  
 
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return;
@@ -103,23 +104,31 @@ function RootLayout() {
   }, []);
 
   if (!appReady) {
-    return null;
+    // 👇 Show lightweight fallback instantly
+    return (
+      <View style={{ flex: 1, backgroundColor: '#fff', justifyContent: 'center', alignItems: 'center' }}>
+        <StatusBar style="auto" />
+      </View>
+    );
   }
+  
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <AuthProvider>
-        <NotificationProvider>
-          <WebFocusRefresher />
-          <Stack key={`stack-${stackKey}`} screenOptions={{ headerShown: false }}>
-            <Stack.Screen name="index" />
-            <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-            <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-            <Stack.Screen name="+not-found" />
-          </Stack>
-          <StatusBar style="auto" />
-        </NotificationProvider>
-      </AuthProvider>
+      <SafeAreaProvider>
+        <AuthProvider>
+          <NotificationProvider>
+            <WebFocusRefresher />
+            <Stack key={`stack-${stackKey}`} screenOptions={{ headerShown: false }}>
+              <Stack.Screen name="index" />
+              <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+              <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+              <Stack.Screen name="+not-found" />
+            </Stack>
+            <StatusBar style="auto" />
+          </NotificationProvider>
+        </AuthProvider>
+      </SafeAreaProvider>
     </GestureHandlerRootView>
   );
 }

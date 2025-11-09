@@ -423,7 +423,7 @@ const fetchConversations = useCallback(async () => {
       <View style={[styles.header, { paddingTop: insets.top }]}>
         <TouchableOpacity
           style={styles.backButton}
-          onPress={() => router.back()}
+          onPress={() => router.push('/(tabs)/chats')}
         >
           <ArrowLeft size={24} color={Colors.text.secondary} />
         </TouchableOpacity>

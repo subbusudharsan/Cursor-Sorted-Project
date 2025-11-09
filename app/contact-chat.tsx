@@ -1018,7 +1018,7 @@ const sendMessage = async (messageContent: string) => {
     if (isSmiley) {
       const { data: chatData } = await supabase
         .from("chats")
-        .select("user_id, contact_id, user_a_smiley_sent, user_b_smiley_sent, closure_state")
+        .select("user_id, contact_id, context_data, user_a_smiley_sent, user_b_smiley_sent, closure_state")
         .eq("id", currentChatId)
         .single();
 
@@ -1063,13 +1063,20 @@ const sendMessage = async (messageContent: string) => {
 
         if (userASent && userBSent) {
           try {
-            const contactLabel = contact?.full_name || contact?.email || contactId || 'contact';
-            const perspectiveLines = [] as string[];
+            const contextData = (chatData as any)?.context_data ?? {};
+            const summaryA = contextData.summary_a || contextData.summary || '';
+            const thoughtsA = contextData.thoughts_a || contextData.thoughts || '';
+            const hintFromB = contextData.hint_from_b || contextData.hintToContact || null;
+
+            const perspectiveLines: string[] = [];
             if (summaryA) {
               perspectiveLines.push(`My perspective: ${summaryA}`);
             }
-            if (chatData?.context_data?.hint_from_b) {
-              perspectiveLines.push(`Their perspective: ${chatData.context_data.hint_from_b}`);
+            if (thoughtsA) {
+              perspectiveLines.push(`My thoughts: ${thoughtsA}`);
+            }
+            if (hintFromB) {
+              perspectiveLines.push(`Their perspective: ${hintFromB}`);
             }
             perspectiveLines.push(`Final note I sent: ${content}`);
 
@@ -1077,15 +1084,24 @@ const sendMessage = async (messageContent: string) => {
             if (contactId) {
               tags.push(`contact:${contactId}`);
             }
+            if (currentChatId) {
+              tags.push(`chat:${currentChatId}`);
+            }
+
+            const closureMood = typeof contextData.closure_mood === 'string' && contextData.closure_mood.trim()
+              ? contextData.closure_mood.trim().toLowerCase()
+              : 'peaceful';
 
             await supabase
               .from('soulroom_entries')
               .insert({
                 user_id: user?.id,
-                title: `Closure with ${contactLabel}`,
+                title: `Post-conversation note`,
                 content: perspectiveLines.join('\n\n'),
-                mood: 'peaceful',
+                mood: closureMood,
                 tags,
+                ai_summary: null,
+                emotion_tag: 'relieved',
               });
           } catch (closureLogError) {
             console.warn('⚠️ Failed to log closure in Soulroom:', closureLogError);

@@ -58,7 +58,24 @@ type FlowStage = "welcome" | "qa" | "summary" | "ready";
 
 function AIChatScreen() {
   const { user } = useAuth();
-  const { contactId, mode, chatId, fromContactChat, sent, returnStage } = useLocalSearchParams();
+  const {
+    contactId,
+    mode,
+    chatId,
+    fromContactChat,
+    sent,
+    returnStage,
+    prefillDescription,
+  } = useLocalSearchParams();
+
+  const contactIdValue = Array.isArray(contactId) ? contactId[0] : contactId;
+  const chatIdValue = Array.isArray(chatId) ? chatId[0] : chatId;
+  const fromContactChatValue = Array.isArray(fromContactChat) ? fromContactChat[0] : fromContactChat;
+  const sentValue = Array.isArray(sent) ? sent[0] : sent;
+  const returnStageValue = Array.isArray(returnStage) ? returnStage[0] : returnStage;
+  const prefillDescriptionValue = Array.isArray(prefillDescription)
+    ? prefillDescription[0]
+    : prefillDescription;
 
   const [flowStage, setFlowStage] = useState<FlowStage>("welcome");
   const [contact, setContact] = useState<Contact | null>(null);
@@ -74,6 +91,7 @@ function AIChatScreen() {
   const [summary, setSummary] = useState("");
   const [thoughts, setThoughts] = useState("");
   const [initialDescription, setInitialDescription] = useState("");
+  const [prefillApplied, setPrefillApplied] = useState(false);
   const [questionCount, setQuestionCount] = useState(0);
   const [isEditingMode, setIsEditingMode] = useState(false);
   const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
@@ -146,6 +164,8 @@ function AIChatScreen() {
     textField?: string;
   } | null>(null);
 
+  const resolvedContactId = contact?.id ?? contactIdValue ?? null;
+
 
   const scrollViewRef = useRef<ScrollView>(null);
 
@@ -194,38 +214,50 @@ function AIChatScreen() {
   };
 
   useEffect(() => {
-    console.log('🎯 AI Chat mounted:', { contactId, chatId, userId: user?.id, mode });
+    console.log('🎯 AI Chat mounted:', {
+      contactId: contactIdValue,
+      chatId: chatIdValue,
+      userId: user?.id,
+      mode,
+    });
+    let kickedOff = false;
     if (user) {
       // If returning from contact chat, prioritize showing Stage 4 (Ready)
-      const comingBack = String(fromContactChat || '') === '1';
-      const hasSent = String(sent || '') === '1';
+      const comingBack = String(fromContactChatValue || '') === '1';
+      const hasSent = String(sentValue || '') === '1';
       if (comingBack && !hasSent) {
+        kickedOff = true;
         setShowReturnFromChatBanner(true);
         setFlowStage('ready');
         // Skip initialization to avoid jumping back to Stage 1
-      } else if (mode === 'continue' && chatId) {
+      } else if (mode === 'continue' && chatIdValue) {
+        kickedOff = true;
         loadExistingChat();
-      } else if (contactId) {
+      } else if (contactIdValue) {
+        kickedOff = true;
         initializeChat();
       }
       fetchContacts();
       fetchUserHashtags();
       // Load entity registry cache if chatId exists
-      if (chatId) {
-        loadEntityRegistryCache(Array.isArray(chatId) ? chatId[0] : chatId);
+      if (chatIdValue) {
+        loadEntityRegistryCache(chatIdValue);
       }
     }
-  }, [contactId, chatId, user, mode]);
+    if (!kickedOff) {
+      setInitializing(false);
+    }
+  }, [contactIdValue, chatIdValue, user, mode, fromContactChatValue, sentValue]);
 
   // Define initializeChat before it's used in useEffect
   const initializeChat = async () => {
-    if (!contactId || !user) {
+    if (!contactIdValue || !user) {
       console.log('❌ Missing contactId or user');
       setInitializing(false);
       return;
     }
 
-    console.log('🚀 Initializing AI chat for contactId:', contactId);
+    console.log('🚀 Initializing AI chat for contactId:', contactIdValue);
     setInitializing(true);
 
     try {
@@ -233,7 +265,7 @@ function AIChatScreen() {
         .from("contacts")
         .select("contact_id")
         .eq("user_id", user.id)
-        .eq("contact_id", contactId)
+        .eq("contact_id", contactIdValue)
         .maybeSingle();
 
       if (contactError) {
@@ -249,7 +281,7 @@ function AIChatScreen() {
       const { data: contactProfile, error: profileError } = await supabase
         .from("profiles")
         .select("id, email, full_name")
-        .eq("id", contactId)
+        .eq("id", contactIdValue)
         .single();
 
       if (profileError) {
@@ -275,7 +307,7 @@ function AIChatScreen() {
           session_name: `Discussion about ${contactProfile?.full_name || contactProfile?.email}`,
           last_message: "Starting new session...",
           last_message_at: new Date().toISOString(),
-          context_contact_id: contactId,
+          context_contact_id: contactIdValue,
           is_resolved: false,
           context_data: {
             contact_backup: {
@@ -428,7 +460,7 @@ const loadEntityRegistryCache = async (chatIdParam: string) => {
     setHashSuggestions([]);
     setShowTagDropdown('@');
 
-    const userBContact = availableContacts.filter(c => c.id === contactId);
+    const userBContact = availableContacts.filter(c => c.id === resolvedContactId);
     setContactSuggestions(userBContact);
   } else if (typingTag.type === '#') {
     // Show pronoun list immediately when # is typed (no extra character needed)
@@ -513,7 +545,7 @@ const loadEntityRegistryCache = async (chatIdParam: string) => {
     const typingTag = getLastTypingTag(initialDescription, descriptionCursorPos);
     if (typingTag.type === '@') {
       // Check if selected contact is the current chat contact (User B)
-      const isCurrentChatContact = contact.id === contactId;
+    const isCurrentChatContact = contact.id === resolvedContactId;
       const contactName = contact.full_name || contact.email;
       
       if (isCurrentChatContact) {
@@ -678,7 +710,7 @@ const handlePronounSelect = async (pronoun: string) => {
   if (tagType === '@' && pendingContact) {
     // For @ tags: Contact name is already inserted, just save with pronoun
     const contactName = pendingContact.full_name || pendingContact.email;
-    const isCurrentChatContact = pendingContact.id === contactId;
+    const isCurrentChatContact = pendingContact.id === resolvedContactId;
     
     // Get current text and setters based on stage
     let currentText = '';
@@ -856,7 +888,7 @@ const createStructuredTaggedEntity = (
   if (type === 'registered') {
     baseEntity.entity_type = 'registered_contact';
     baseEntity.user_id = contact?.id;
-    baseEntity.contactId = contact?.id; // Keep for backward compatibility
+    baseEntity.contactId = contact?.id || contactIdValue || null; // Keep for backward compatibility
     baseEntity.name = entityName; // Keep for backward compatibility
     
     if (isUserB) {
@@ -908,7 +940,7 @@ const inferEntityCategory = (name: string): string => {
       setShowPronounDropdown(null);
       setAnswerHashSuggestions([]);
       setShowAnswerTagDropdown('@');
-      const userBContact = availableContacts.filter(c => c.id === contactId);
+      const userBContact = availableContacts.filter(c => c.id === resolvedContactId);
       setAnswerContactSuggestions(userBContact);
     } else if (typingTag.type === '#') {
       // Show pronoun list immediately when # is typed
@@ -966,7 +998,7 @@ const inferEntityCategory = (name: string): string => {
       setShowPronounDropdown(null);
       setAdditionalInfoHashSuggestions([]);
       setShowAdditionalInfoTagDropdown('@');
-      const userBContact = availableContacts.filter(c => c.id === contactId);
+      const userBContact = availableContacts.filter(c => c.id === resolvedContactId);
       setAdditionalInfoContactSuggestions(userBContact);
     } else if (typingTag.type === '#') {
       const hasPronounSelected = pronounSelectionContext?.pendingHashTag?.includes(':');
@@ -1053,7 +1085,7 @@ const inferEntityCategory = (name: string): string => {
   const handleAnswerContactSelect = async (contact: any) => {
     const typingTag = getLastTypingTag(currentAnswer, currentAnswerCursorPos);
     if (typingTag.type === '@') {
-      const isCurrentChatContact = contact.id === contactId;
+      const isCurrentChatContact = contact.id === resolvedContactId;
       const contactName = contact.full_name || contact.email;
       
       if (isCurrentChatContact) {
@@ -1217,7 +1249,7 @@ const inferEntityCategory = (name: string): string => {
       // Show ONLY User B (the current chat contact) in dropdown
       // Close # dropdown first
       setEditModeHashSuggestions([]);
-      const userBContact = availableContacts.filter(c => c.id === contactId);
+      const userBContact = availableContacts.filter(c => c.id === resolvedContactId);
       setEditModeContactSuggestions(userBContact);
     } else if (typingTag.type === '#') {
       // Close @ dropdown first
@@ -1247,7 +1279,7 @@ const inferEntityCategory = (name: string): string => {
   const handleAdditionalInfoContactSelect = async (contact: any) => {
     const typingTag = getLastTypingTag(additionalInfo, additionalInfoCursorPos);
     if (typingTag.type === '@') {
-      const isCurrentChatContact = contact.id === contactId;
+      const isCurrentChatContact = contact.id === resolvedContactId;
       const contactName = contact.full_name || contact.email;
       
       if (isCurrentChatContact) {
@@ -1341,8 +1373,7 @@ const inferEntityCategory = (name: string): string => {
       return;
     }
 
-    const chatIdParam = Array.isArray(chatId) ? chatId[0] : chatId;
-    if (!chatIdParam) {
+    if (!chatIdValue) {
       console.log('❌ Missing chatId for continue mode');
       setInitializing(false);
       Alert.alert('Error', 'Chat session not found');
@@ -1350,14 +1381,14 @@ const inferEntityCategory = (name: string): string => {
       return;
     }
 
-    console.log('🔄 Loading existing chat:', chatIdParam);
+    console.log('🔄 Loading existing chat:', chatIdValue);
     setInitializing(true);
 
     try {
       const { data: chatData, error: chatError } = await supabase
         .from('chats')
         .select('*, context_data')
-        .eq('id', chatIdParam)
+        .eq('id', chatIdValue)
         .eq('user_id', user.id)
         .eq('chat_type', 'ai_assistant')
         .single();
@@ -1378,7 +1409,7 @@ const inferEntityCategory = (name: string): string => {
       let contactError = null;
 
       try {
-        const contactIdToLoad = chatData.context_contact_id || contactId;
+        const contactIdToLoad = chatData.context_contact_id || contactIdValue;
         console.log('🔍 Loading contact profile for:', contactIdToLoad);
 
         if (!contactIdToLoad) {
@@ -1466,14 +1497,30 @@ const inferEntityCategory = (name: string): string => {
 
   // If explicitly asked to show a particular stage on return (e.g., from contact-selection)
   useEffect(() => {
-    if (returnStage === 'ready') {
+    if (returnStageValue === 'ready') {
       setFlowStage('ready');
       setShowReturnFromChatBanner(true);
     }
-  }, [returnStage]);
+  }, [returnStageValue]);
+
+  useEffect(() => {
+    if (prefillApplied) return;
+    if (typeof prefillDescriptionValue === 'string' && prefillDescriptionValue.length) {
+      try {
+        const decoded = decodeURIComponent(prefillDescriptionValue);
+        if (decoded.trim().length) {
+          setInitialDescription((prev) => (prev && prev.trim().length ? prev : decoded.trim()));
+        }
+      } catch (error) {
+        console.warn('Failed to decode prefillDescription', error);
+      } finally {
+        setPrefillApplied(true);
+      }
+    }
+  }, [prefillDescriptionValue, prefillApplied]);
 
   // Early returns for loading and error states - MUST come after all hooks
-  if (initializing && returnStage !== 'ready') {
+  if (initializing && returnStageValue !== 'ready') {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.loadingContainer}>
@@ -1486,7 +1533,7 @@ const inferEntityCategory = (name: string): string => {
     );
   }
 
-  if (!contact && returnStage !== 'ready') {
+  if (!contact && returnStageValue !== 'ready') {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.loadingContainer}>
@@ -2102,7 +2149,7 @@ Return only two labeled sections exactly in this order:
   let protectionIndex = 0;
   
   // Extract and protect all existing @ and # tags
-  rawContent = rawContent.replace(/(@[\w]+|#[\w]+)/g, (match) => {
+  rawContent = rawContent.replace(/(@[\w]+|#[\w]+)/g, (match: string): string => {
     const placeholder = `__TAG_PROTECT_${protectionIndex}__`;
     tagProtectionMap[placeholder] = match;
     existingTags.add(match);
@@ -2139,10 +2186,10 @@ Return only two labeled sections exactly in this order:
           // Only replace name if it's not already protected as a tag
           new RegExp(`\\b${fullName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b(?!\\s*(?:__TAG_PROTECT|said|told|asked))`, 'gi'),
         ];
-        patterns.forEach(pattern => {
-          rawContent = rawContent.replace(pattern, (match, offset, string) => {
-            const before = string.substring(Math.max(0, offset - 10), offset);
-            const after = string.substring(offset + match.length, Math.min(string.length, offset + match.length + 10));
+        patterns.forEach((pattern) => {
+          rawContent = rawContent.replace(pattern, (match: string, offset: number, original: string): string => {
+            const before = original.substring(Math.max(0, offset - 10), offset);
+            const after = original.substring(offset + match.length, Math.min(original.length, offset + match.length + 10));
             if (before.includes('__TAG_PROTECT') || after.includes('__TAG_PROTECT')) {
               return match;
             }
@@ -2168,7 +2215,7 @@ Return only two labeled sections exactly in this order:
           new RegExp(`\\bthe recipient\\b`, 'gi'),
           new RegExp(`(?!__TAG_PROTECT)\\b${escapedName}\\b(?!\\s*(?:__TAG_PROTECT))`, 'gi'),
         ];
-        patterns.forEach(pattern => {
+        patterns.forEach((pattern) => {
           rawContent = rawContent.replace(pattern, tag);
         });
       }
@@ -2482,7 +2529,7 @@ Return only two labeled sections exactly in this order:
   let protectionIndex = 0;
   
   // Extract and protect all existing @ and # tags
-  rawContent = rawContent.replace(/(@[\w]+|#[\w]+)/g, (match) => {
+  rawContent = rawContent.replace(/(@[\w]+|#[\w]+)/g, (match: string): string => {
     const placeholder = `__TAG_PROTECT_${protectionIndex}__`;
     tagProtectionMap[placeholder] = match;
     existingTags.add(match);
@@ -2513,10 +2560,10 @@ Return only two labeled sections exactly in this order:
           new RegExp(`\\bthe person writing\\b`, 'gi'),
           new RegExp(`\\b${fullName}\\b(?!\\s*(?:@|#|said|told|asked))`, 'gi'),
         ];
-        patterns.forEach(pattern => {
-          rawContent = rawContent.replace(pattern, (match, offset, string) => {
-            const before = string.substring(Math.max(0, offset - 5), offset);
-            const after = string.substring(offset + match.length, Math.min(string.length, offset + match.length + 5));
+        patterns.forEach((pattern) => {
+          rawContent = rawContent.replace(pattern, (match: string, offset: number, original: string): string => {
+            const before = original.substring(Math.max(0, offset - 5), offset);
+            const after = original.substring(offset + match.length, Math.min(original.length, offset + match.length + 5));
             if (before.includes('@') || before.includes('#') || after.includes('@') || after.includes('#')) {
               return match;
             }
@@ -2543,7 +2590,7 @@ Return only two labeled sections exactly in this order:
           new RegExp(`\\bthe recipient\\b`, 'gi'),
           new RegExp(`(?!@)\\b${fullName}\\b(?!\\s*(?:@|#))`, 'gi'),
         ];
-        patterns.forEach(pattern => {
+        patterns.forEach((pattern) => {
           rawContent = rawContent.replace(pattern, tag);
         });
       }
@@ -2665,7 +2712,7 @@ Return only two labeled sections exactly in this order:
   };
 
   const handleReadyToChat = async () => {
-    if (!user || !currentChatId || !contactId) return;
+    if (!user || !currentChatId || !contactIdValue) return;
 
     setLoading(true);
     try {
@@ -2673,7 +2720,7 @@ Return only two labeled sections exactly in this order:
         .from("contacts")
         .select("category")
         .eq("user_id", user.id)
-        .eq("contact_id", contactId)
+        .eq("contact_id", contactIdValue)
         .maybeSingle();
 
       const contactCategory = contactData?.category || "General";
@@ -2742,9 +2789,9 @@ Respond ONLY with valid JSON:
         .from("chats")
         .insert({
           user_id: user.id,
-          contact_id: contactId,
+          contact_id: contactIdValue,
           chat_type: "contact_chat",
-          participants: [user.id, contactId],
+          participants: [user.id, contactIdValue],
           is_resolved: false,
           ai_source_chat_id: currentChatId,
           ai_confidence_level: "high",
@@ -2764,6 +2811,55 @@ Respond ONLY with valid JSON:
         .select("id")
         .single();
       contactChatId = newChat?.id;
+
+      // Auto add a Soulroom reflection for this chat start
+      try {
+        const inferMoodFromText = (text?: string | null): string => {
+          if (!text) return 'reflective';
+          const lower = text.toLowerCase();
+          if (/(calm|relieved|peaceful|steady)/.test(lower)) return 'peaceful';
+          if (/(anxious|nervous|worried|tense)/.test(lower)) return 'anxious';
+          if (/(sad|down|low|blue)/.test(lower)) return 'sad';
+          if (/(angry|mad|upset|frustrated)/.test(lower)) return 'frustrated';
+          if (/(happy|grateful|hopeful|excited)/.test(lower)) return 'grateful';
+          return 'reflective';
+        };
+
+        const reflectionLines: string[] = [];
+        if (summary) {
+          reflectionLines.push(`Summary: ${summary}`);
+        }
+        if (thoughts) {
+          reflectionLines.push(`My thoughts: ${thoughts}`);
+        }
+        if (!summary && initialDescription) {
+          reflectionLines.push(`Context: ${initialDescription}`);
+        }
+
+        const moodPrefill = inferMoodFromText(thoughts || summary || initialDescription);
+
+        const tags = ['post_conversation'];
+        if (contactIdValue) {
+          tags.push(`contact:${contactIdValue}`);
+        }
+        if (contactChatId) {
+          tags.push(`chat:${contactChatId}`);
+        }
+ 
+        await supabase
+          .from('soulroom_entries')
+          .insert({
+            user_id: user.id,
+            title: 'Post-conversation note',
+            content: reflectionLines.join('\n\n') || 'Processing what I want to share.',
+            mood: moodPrefill,
+            tags,
+            ai_summary: null,
+            emotion_tag: null,
+          });
+      } catch (soulLogError) {
+        console.warn('⚠️ Failed to create Soulroom auto note:', soulLogError);
+      }
 
       await supabase
         .from("chats")
@@ -2811,7 +2907,7 @@ Respond ONLY with valid JSON:
       }
 
       await supabase.from("notifications").insert({
-        user_id: contactId,
+        user_id: contactIdValue,
         type: "chat_request",
         title: `${user.email?.split('@')[0] || 'Someone'} wants to talk`,
         message: hintToContact.full_text,
@@ -2826,7 +2922,7 @@ Respond ONLY with valid JSON:
       });
 
       router.push(
-        `/contact-chat?chatId=${contactChatId}&contactId=${contactId}&isOngoing=true`
+        `/contact-chat?chatId=${contactChatId}&contactId=${contactIdValue}&isOngoing=true`
       );
     } catch (err) {
       console.error("Error in handleReadyToChat:", err);
@@ -3422,7 +3518,7 @@ Respond ONLY with valid JSON:
       })()}
       <TouchableOpacity
         style={styles.secondaryButton}
-        onPress={() => router.push("/(tabs)/ai-assistant")}
+        onPress={() => router.push('/ai-assistant')}
       >
         <Text style={styles.secondaryButtonText}>Cancel</Text>
       </TouchableOpacity>
@@ -4377,7 +4473,37 @@ halfButton: {
     fontWeight: Typography.fontWeight.semibold,
   },
 
-
+  quickActionsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.md,
+  },
+  quickTipBox: {
+    backgroundColor: Colors.warning[50],
+    borderColor: Colors.warning[200],
+    borderWidth: 1,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    gap: Spacing.xs,
+  },
+  quickTipTitle: {
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.semibold,
+    color: Colors.warning[800],
+  },
+  quickTipText: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.warning[800],
+  },
+  quickTipItem: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.warning[900],
+  },
+  quickTipHint: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.warning[700],
+    fontStyle: 'italic',
+  },
 
 });
 
