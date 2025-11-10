@@ -5,51 +5,149 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Sorted – Terms of Use</title>
   <style>
+    /* ===== Sorted App Theme ===== */
+    :root {
+      --primary: #5a6af0;
+      --secondary: #7d8bff;
+      --text-primary: #222;
+      --text-secondary: #555;
+      --background: #f7f8fc;
+      --surface: #ffffff;
+      --radius: 16px;
+      --shadow: 0 3px 10px rgba(0,0,0,0.06);
+    }
+
     body {
       font-family: "Inter", "Helvetica Neue", Helvetica, Arial, sans-serif;
-      max-width: 800px;
-      margin: 40px auto;
-      padding: 20px;
-      line-height: 1.6;
-      color: #333;
-      background-color: #fafafa;
+      background: var(--background);
+      margin: 0;
+      padding: 0;
+      color: var(--text-primary);
+      line-height: 1.7;
     }
-    h1 { text-align: center; color: #2c2c2c; }
-    h2, strong { color: #444; }
-    a { color: #0077cc; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    hr { margin-top: 40px; border: none; border-top: 1px solid #ddd; }
+
+    header {
+      background: linear-gradient(120deg, var(--primary), var(--secondary));
+      color: white;
+      text-align: center;
+      padding: 2.5rem 1rem 2rem;
+      box-shadow: var(--shadow);
+    }
+
+    header h1 {
+      font-size: 1.9rem;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      margin: 0;
+    }
+
+    main {
+      max-width: 800px;
+      margin: 2rem auto;
+      background: var(--surface);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 2rem 2.5rem;
+    }
+
+    h2 {
+      color: var(--primary);
+      font-size: 1.25rem;
+      margin-top: 2rem;
+      margin-bottom: 0.5rem;
+    }
+
+    p, li {
+      font-size: 1rem;
+      color: var(--text-secondary);
+    }
+
+    ul {
+      margin-left: 1.5rem;
+    }
+
+    a {
+      color: var(--primary);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    footer {
+      text-align: center;
+      color: #888;
+      font-size: 0.9rem;
+      margin: 3rem 0 2rem;
+    }
+
+    @media (prefers-reduced-motion: no-preference) {
+      main {
+        animation: fadeIn 0.5s ease-out;
+      }
+      @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+    }
   </style>
 </head>
+
 <body>
-  <h1>Terms of Use</h1>
+  <header>
+    <h1>Terms of Use</h1>
+  </header>
 
-  <p>Welcome to <strong>Sorted</strong>. These Terms of Use (“Terms”) govern your use of the Sorted mobile application (“Application”) provided by <strong>Subbulakshmi Arunachalam</strong> (“Service Provider”). By downloading or using the Application, you agree to these Terms.</p>
+  <main>
+    <p>
+      Welcome to <strong>Sorted</strong>. These Terms of Use (“Terms”) govern your use of the Sorted mobile application (“Application”) provided by <strong>Subbulakshmi Arunachalam</strong> (“Service Provider”). By downloading or using the Application, you agree to these Terms.
+    </p>
 
-  <h2>Use of the Application</h2>
-  <p>The Application is provided for personal, non-commercial use. You must not copy, modify, distribute, or reverse engineer any part of it. All intellectual property rights remain with the Service Provider.</p>
+    <h2>Use of the Application</h2>
+    <p>
+      The Application is provided for personal, non-commercial use. You must not copy, modify, distribute, or reverse engineer any part of it. All intellectual property rights remain with the Service Provider.
+    </p>
 
-  <h2>Data and Privacy</h2>
-  <p>The Application processes limited personal data as described in the Privacy Policy. By using the Application, you consent to that processing and agree to keep your device secure and your account credentials confidential.</p>
+    <h2>Data and Privacy</h2>
+    <p>
+      The Application processes limited personal data as described in the Privacy Policy. By using the Application, you consent to that processing and agree to keep your device secure and your account credentials confidential.
+    </p>
 
-  <h2>Connectivity and Charges</h2>
-  <p>Certain features may require an active internet connection. You are responsible for any data charges from your network provider. The Service Provider is not liable for limited functionality caused by connectivity issues or data restrictions.</p>
+    <h2>Connectivity and Charges</h2>
+    <p>
+      Certain features may require an active internet connection. You are responsible for any data charges from your network provider. The Service Provider is not liable for limited functionality caused by connectivity issues or data restrictions.
+    </p>
 
-  <h2>Updates and Maintenance</h2>
-  <p>The Service Provider may update or modify the Application at any time to enhance performance or security. Some updates may be required to continue using the Application. The Service Provider may also discontinue the Application without prior notice.</p>
+    <h2>Updates and Maintenance</h2>
+    <p>
+      The Service Provider may update or modify the Application at any time to enhance performance or security. Some updates may be required to continue using the Application. The Service Provider may also discontinue the Application without prior notice.
+    </p>
 
-  <h2>Limitation of Liability</h2>
-  <p>The Application is provided “AS IS,” without warranties of any kind. The Service Provider will not be liable for any direct or indirect damages arising from your use of the Application, including loss of data, profits, or device malfunction.</p>
+    <h2>Limitation of Liability</h2>
+    <p>
+      The Application is provided “AS IS,” without warranties of any kind. The Service Provider will not be liable for any direct or indirect damages arising from your use of the Application, including loss of data, profits, or device malfunction.
+    </p>
 
-  <h2>Termination</h2>
-  <p>Violation of these Terms may result in immediate termination of your access to the Application. Upon termination, you must stop using and uninstall the Application.</p>
+    <h2>Termination</h2>
+    <p>
+      Violation of these Terms may result in immediate termination of your access to the Application. Upon termination, you must stop using and uninstall the Application.
+    </p>
 
-  <h2>Changes to These Terms</h2>
-  <p>The Service Provider may revise these Terms from time to time. Updates will be posted within the Application or on this page. Continued use of the Application after revisions indicates your acceptance of the new Terms.</p>
+    <h2>Changes to These Terms</h2>
+    <p>
+      The Service Provider may revise these Terms from time to time. Updates will be posted within the Application or on this page. Continued use of the Application after revisions indicates your acceptance of the new Terms.
+    </p>
 
-  <h2>Contact</h2>
-  <p>If you have any questions regarding these Terms, please contact the Service Provider at <a href="mailto:sortedchatapp@gmail.com">sortedchatapp@gmail.com</a>.</p>
+    <h2>Contact</h2>
+    <p>
+      If you have any questions regarding these Terms, please contact the Service Provider at
+      <a href="mailto:sortedchatapp@gmail.com">sortedchatapp@gmail.com</a>.
+    </p>
 
-  <p><strong>Effective Date:</strong> November 7, 2025</p>
+    <p><strong>Effective Date:</strong> November 7, 2025</p>
+  </main>
+
+  <footer>© 2025 Sorted. All rights reserved.</footer>
 </body>
 </html>

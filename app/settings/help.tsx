@@ -108,11 +108,11 @@ export default function HelpSupportScreen() {
   };
 
   const openPrivacyPolicy = () => {
-    Linking.openURL('https://doc-hosting.flycricket.io/sorted-privacy-policy/1568dbc0-d11d-48b1-b85e-7e5b1aaac64e/privacy');
+    Linking.openURL('https://subbusudharsan.github.io/Cursor-Sorted-Project/legal/privacy.html');
   };
 
   const openTermsOfService = () => {
-    Linking.openURL('https://doc-hosting.flycricket.io/sorted-terms-of-use/39b52541-4a24-470e-a611-b796984adb4d/terms');
+    Linking.openURL('https://subbusudharsan.github.io/Cursor-Sorted-Project/legal/terms.html');
   };
 
   return (
