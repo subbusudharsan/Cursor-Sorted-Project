@@ -50,7 +50,8 @@ module.exports = {
       },
       serviceWorker: {
         register: false
-      }
+      },
+      ssr: false
     },
     jsEngine: "hermes",
     plugins: [

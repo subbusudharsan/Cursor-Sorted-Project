@@ -34,7 +34,7 @@
     "check:secrets": "node check-secrets.mjs",
     "verify:setup": "node verify-setup.mjs",
     "setup:hooks": "bash setup-git-hooks.sh",
-    "postinstall": "bash setup-git-hooks.sh 2>/dev/null || true && node ensure-watcher.mjs 2>/dev/null || true",
+    "postinstall": "node ensure-watcher.mjs || echo 'Watcher setup skipped'",
     "init:watcher": "node init-watcher-system.mjs"
   },
   "dependencies": {

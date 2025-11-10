@@ -1,0 +1,8 @@
+{
+  "ignore_dirs": [
+    "logs",
+    "safe_backups",
+    "supabase/functions",
+    "supabase/schemas"
+  ]
+}

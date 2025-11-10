@@ -1916,7 +1916,7 @@ Minimum 2 questions answered. Consider sufficient if we understand: what happene
       
       // Collect all tagged entities from initial description and answers
       const allTaggedEntities = [...taggedEntities];
-      pairs.forEach(p => {
+      pairs.forEach((p: QAPair) => {
         const contacts = availableContacts.map(c => ({ id: c.id, name: c.full_name || c.email }));
         const answerEntities = parseTaggedEntities(p.answer, contacts);
         answerEntities.forEach(e => {
@@ -2169,8 +2169,8 @@ CRITICAL RULES FOR PRONOUNS AND TAGS:
 2. PRONOUNS AND TAGS:
    - User A (the person writing) → Use "I / me / my" ONLY (keep first-person perspective)
    - User B (the person they're talking to) → ALWAYS use their @tag (e.g., "@aradhya") - NEVER use "you/your"
-   - Third-party people → ALWAYS use their tag (@name for registered, #name for unregistered) - NEVER use pronouns like "he/she/they/them/their"
-   - CRITICAL: Replace ALL pronouns (you, he, she, they, them, their) with explicit tags
+   - Third-party people → Use their @/# tag ONLY if that tag already appears in the provided content. NEVER invent new names or tags. If no tag exists, refer to them generically (e.g., "a coworker") without guessing a name.
+   - CRITICAL: Replace ALL pronouns (you, he, she, they, them, their) with explicit tags when a tag exists in the input
    - Example: "you were upset" → "@aradhya was upset", "she felt ignored" → "#Mom felt ignored", "they thought it was rude" → "#Vikram and #Raja thought it was rude"
 
 3. TAGS: 
@@ -2228,6 +2228,43 @@ Return only two labeled sections exactly in this order:
       const result = await response.json();
 
      if (result?.content) {
+  const userBEntity = entitiesFromRegistry?.find((e: any) => e.role_in_conversation === 'User B' || (e.is_participant && e.participant_slot === 'B'));
+  const allowedTagSet = new Set<string>();
+  const tagRegex = /[@#][A-Za-z0-9_\-]+/g;
+  const recordAllowedTag = (tag: string) => {
+    if (!tag) return;
+    allowedTagSet.add(tag);
+    allowedTagSet.add(tag.toLowerCase());
+  };
+  const addTagsFromText = (text?: string | null) => {
+    if (!text) return;
+    const matches = text.match(tagRegex);
+    if (matches) {
+      matches.forEach(recordAllowedTag);
+    }
+  };
+
+  addTagsFromText(initialDescription);
+  pairs.forEach((pair: QAPair) => {
+    addTagsFromText(pair.question);
+    addTagsFromText(pair.answer);
+  });
+  addTagsFromText(structuredAnswersText);
+  addTagsFromText(additionalInfo);
+  (taggedEntities || []).forEach((entity) => {
+    if (entity?.tag) {
+      recordAllowedTag(entity.tag);
+    }
+  });
+  (additionalInfoTags || []).forEach((entity) => {
+    if (entity?.tag) {
+      recordAllowedTag(entity.tag);
+    }
+  });
+  if (userBEntity?.entity_name) {
+    recordAllowedTag(`@${userBEntity.entity_name}`);
+  }
+
   let rawContent = result.content;
   
   // First, protect existing tags to avoid partial replacements (e.g., #S should not become #Sneha if #S exists)
@@ -2551,8 +2588,8 @@ CRITICAL RULES FOR PRONOUNS AND TAGS:
 2. PRONOUNS AND TAGS:
    - User A (the person writing) → Use "I / me / my" ONLY (keep first-person perspective)
    - User B (the person they're talking to) → ALWAYS use their @tag (e.g., "@aradhya") - NEVER use "you/your"
-   - Third-party people → ALWAYS use their tag (@name for registered, #name for unregistered) - NEVER use pronouns like "he/she/they/them/their"
-   - CRITICAL: Replace ALL pronouns (you, he, she, they, them, their) with explicit tags
+   - Third-party people → Use their @/# tag ONLY if that tag already appears in the provided content. NEVER invent new names or tags. If no tag exists, refer to them generically (e.g., "a coworker") without guessing a name.
+   - CRITICAL: Replace ALL pronouns (you, he, she, they, them, their) with explicit tags when a tag exists in the input
    - Example: "you were upset" → "@aradhya was upset", "she felt ignored" → "#Mom felt ignored", "they thought it was rude" → "#Vikram and #Raja thought it was rude"
 
 3. TAGS: 
@@ -2608,6 +2645,43 @@ Return only two labeled sections exactly in this order:
       const result = await response.json();
 
      if (result?.content) {
+  const userBEntity = entitiesFromRegistry?.find((e: any) => e.role_in_conversation === 'User B' || (e.is_participant && e.participant_slot === 'B'));
+  const allowedTagSet = new Set<string>();
+  const tagRegex = /[@#][A-Za-z0-9_\-]+/g;
+  const recordAllowedTag = (tag: string) => {
+    if (!tag) return;
+    allowedTagSet.add(tag);
+    allowedTagSet.add(tag.toLowerCase());
+  };
+  const addTagsFromText = (text?: string | null) => {
+    if (!text) return;
+    const matches = text.match(tagRegex);
+    if (matches) {
+      matches.forEach(recordAllowedTag);
+    }
+  };
+
+  addTagsFromText(initialDescription);
+  editedQAPairs.forEach((pair: QAPair) => {
+    addTagsFromText(pair.question);
+    addTagsFromText(pair.answer);
+  });
+  addTagsFromText(structuredAnswersText);
+  addTagsFromText(additionalInfo);
+  (taggedEntities || []).forEach((entity) => {
+    if (entity?.tag) {
+      recordAllowedTag(entity.tag);
+    }
+  });
+  (additionalInfoTags || []).forEach((entity) => {
+    if (entity?.tag) {
+      recordAllowedTag(entity.tag);
+    }
+  });
+  if (userBEntity?.entity_name) {
+    recordAllowedTag(`@${userBEntity.entity_name}`);
+  }
+
   let rawContent = result.content;
   
   // First, protect existing tags to avoid partial replacements (same as generateSummary)

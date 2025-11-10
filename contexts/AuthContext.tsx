@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { View, Text, ActivityIndicator, Platform } from 'react-native';
+import { View, Text, ActivityIndicator, Platform, InteractionManager } from 'react-native';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 
@@ -22,7 +22,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const restoreSession = async () => {
+    let cancelled = false;
+    let interactionHandle: ReturnType<typeof InteractionManager.runAfterInteractions> | null = null;
+
+    const runRestoreSession = async () => {
+      if (cancelled) return;
       console.log("🔄 restoreSession() start");
       try {
         const { data, error } = await supabase.auth.getSession();
@@ -31,53 +35,71 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (error) {
           console.warn("⚠️ restoreSession error:", error.message);
           await supabase.auth.signOut();
-          setSession(null);
-          setUser(null);
+          if (!cancelled) {
+            setSession(null);
+            setUser(null);
+          }
           return;
         }
 
         if (data?.session) {
-          setSession(data.session);
-          setUser(data.session.user);
+          if (!cancelled) {
+            setSession(data.session);
+            setUser(data.session.user);
+          }
         } else {
           console.log("❎ No session data in this tab");
-          setSession(null);
-          setUser(null);
+          if (!cancelled) {
+            setSession(null);
+            setUser(null);
+          }
         }
       } catch (err) {
         console.error("❌ restoreSession exception:", err);
       } finally {
-        setLoading(false);
-        console.log("✅ restoreSession ended, loading=false");
+        if (!cancelled) {
+          setLoading(false);
+          console.log("✅ restoreSession ended, loading=false");
+        }
       }
     };
 
+    const scheduleRestoreSession = () => {
+      if (Platform.OS === "web") {
+        runRestoreSession();
+        return;
+      }
+      interactionHandle?.cancel?.();
+      interactionHandle = InteractionManager.runAfterInteractions(() => {
+        runRestoreSession();
+      });
+    };
 
-// ...
+    const webFocusHandler = () => scheduleRestoreSession();
+    const visibilityHandler = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") {
+        scheduleRestoreSession();
+      }
+    };
 
-    // ✅ Add event listeners only for web (to avoid mobile crash)
     if (
       Platform.OS === "web" &&
       typeof window !== "undefined" &&
       typeof window.addEventListener === "function"
     ) {
-      window.addEventListener("focus", restoreSession);
-      window.addEventListener("visibilitychange", () => {
-        if (typeof document !== "undefined" && document.visibilityState === "visible") {
-          restoreSession();
-        }
-      });
+      window.addEventListener("focus", webFocusHandler);
+      window.addEventListener("visibilitychange", visibilityHandler);
     }
 
-
-
-    restoreSession();
+    scheduleRestoreSession();
 
     const { data: listener } = supabase.auth.onAuthStateChange((event, sess) => {
       console.log("🔔 onAuthStateChange:", event, sess);
-      setSession(sess);
-      setUser(sess?.user ?? null);
-      setLoading(false);
+      if (!cancelled) {
+        setSession(sess);
+        setUser(sess?.user ?? null);
+        setLoading(false);
+      }
 
       if (event === "SIGNED_IN" && sess) {
         const { user } = sess;
@@ -112,13 +134,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     return () => {
+      cancelled = true;
+      interactionHandle?.cancel?.();
       listener.subscription.unsubscribe();
       if (
         Platform.OS === "web" &&
         typeof window !== "undefined" &&
         typeof window.removeEventListener === "function"
       ) {
-        window.removeEventListener("focus", restoreSession);
+        window.removeEventListener("focus", webFocusHandler);
+        window.removeEventListener("visibilitychange", visibilityHandler);
       }
     };
   }, []);

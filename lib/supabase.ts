@@ -1,10 +1,10 @@
+// lib/supabase.ts
 import 'react-native-url-polyfill/auto';
 import { createClient } from '@supabase/supabase-js';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
 
-// ---- Load environment vars safely ----
+// ⚙️ Load environment variables safely
 const getEnvVariable = (key: string): string => {
   if (process.env[key]) return process.env[key]!;
   if (Constants.expoConfig?.extra?.[key]) return Constants.expoConfig.extra[key];
@@ -23,41 +23,40 @@ if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('❌ Missing Supabase credentials.');
 }
 
-// ---- Make every tab truly independent ----
-// Each tab gets a persistent random ID stored in sessionStorage.
-// This ensures Supabase never shares in-memory tokens across tabs.
-const tabId = (() => {
-  try {
-    // ✅ Works on web only
-    if (typeof window !== 'undefined' && typeof sessionStorage !== 'undefined') {
-      let id = sessionStorage.getItem('sorted_tab_id');
-      if (!id) {
-        id = crypto.randomUUID?.() || Math.random().toString(36).substring(2, 10);
-        sessionStorage.setItem('sorted_tab_id', id);
-      }
-      return id;
-    }
-    // ✅ Fallback for React Native
-    return 'native-' + Math.random().toString(36).substring(2, 10);
-  } catch {
-    return 'native-fallback';
+// 🧭 Detect environment
+const isWeb = typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+
+let storage: any = undefined;
+if (!isWeb) {
+  const { default: AsyncStorage } = require('@react-native-async-storage/async-storage');
+  storage = AsyncStorage;
+}
+
+const getStorageAdapter = () => {
+  if (isWeb) {
+    return window.localStorage;
   }
-})();
+  if (storage) {
+    return {
+      getItem: (key: string) => storage.getItem(key),
+      setItem: (key: string, value: string) => storage.setItem(key, value),
+      removeItem: (key: string) => storage.removeItem(key),
+    };
+  }
+  return undefined;
+};
 
-const storageKey = `sorted_supabase_auth_${tabId}`;
-
-// ---- Create client ----
+// ✅ Create client safely
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
-    storage: Platform.OS === 'web' ? window.sessionStorage : AsyncStorage,
-    storageKey,
+    storage: getStorageAdapter(),
     autoRefreshToken: true,
     persistSession: true,
-    detectSessionInUrl: true,
+    detectSessionInUrl: isWeb,
   },
   global: {
-    headers: { 'X-Client-Info': 'sorted-web' },
+    headers: { 'X-Client-Info': 'sorted-app' },
   },
 });
 
-console.log(`🧭 Supabase initialized using storage key: ${storageKey}`);
+console.log(`✅ Supabase initialized for ${isWeb ? 'web' : 'native'}`);
