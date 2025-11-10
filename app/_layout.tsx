@@ -9,7 +9,9 @@ import { NotificationProvider } from '@/contexts/NotificationContext';
 import { useFrameworkReady } from '@/hooks/useFrameworkReady';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
-SplashScreen.preventAutoHideAsync();
+if (Platform.OS !== 'web') {
+  SplashScreen.preventAutoHideAsync();
+}
 
 // ✅ Load Reanimated only on native
 if (Platform.OS !== 'web') {
@@ -67,6 +69,13 @@ function RootLayout() {
 
   useEffect(() => {
     let cancelled = false;
+    if (Platform.OS === 'web') {
+      setAppReady(true);
+      return () => {
+        cancelled = true;
+      };
+    }
+
     const task = InteractionManager.runAfterInteractions(() => {
       if (!cancelled) {
         setAppReady(true);
@@ -79,8 +88,10 @@ function RootLayout() {
   }, []);
 
   useEffect(() => {
-    // ✅ Hide splash as soon as component mounts
-    SplashScreen.hideAsync();
+    if (Platform.OS !== 'web') {
+      // ✅ Hide splash as soon as component mounts
+      SplashScreen.hideAsync();
+    }
   }, []);
   
 

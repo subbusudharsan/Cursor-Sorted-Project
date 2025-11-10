@@ -4,18 +4,20 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { router } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/Colors';
-import { Heart, MessageCircle, Users, Shield, Headphones, Smile } from 'lucide-react-native';
 import Button from '@/components/ui/Button';
 import LoadingSpinner from '@/components/ui/LoadingSpinner';
-import { LinearGradient } from 'expo-linear-gradient';
-import * as WebBrowser from 'expo-web-browser';
 import { InteractionManager } from 'react-native';
 
-
+const isWebPlatform = Platform.OS === 'web';
+const webShadows = {
+  small: { boxShadow: '0px 2px 6px rgba(13, 27, 42, 0.08)' },
+  medium: { boxShadow: '0px 8px 20px rgba(13, 27, 42, 0.12)' },
+  large: { boxShadow: '0px 14px 32px rgba(13, 27, 42, 0.16)' },
+};
 
 export default function LandingExperience() {
   const insets = useSafeAreaInsets();
-  const { session, loading } = useAuth();
+  const { loading } = useAuth();
   const fadeAnim = React.useRef(new Animated.Value(0)).current;
   const slideAnim = React.useRef(new Animated.Value(50)).current;
   const pulseAnim = React.useRef(new Animated.Value(1)).current;
@@ -23,9 +25,10 @@ export default function LandingExperience() {
   const textScaleAnim = React.useRef(new Animated.Value(0.8)).current;
   const textGlowAnim = React.useRef(new Animated.Value(1)).current;
   const textColorAnim = React.useRef(new Animated.Value(0)).current;
-  const initialTextRotationAnim = React.useRef(new Animated.Value(0)).current;
   const singleRotationAnim = React.useRef(new Animated.Value(0)).current;
   const logoScaleAnim = React.useRef(new Animated.Value(1)).current;
+  const nativeDriver = Platform.OS !== 'web';
+  const combinedScaleAnim = Animated.multiply(pulseAnim, logoScaleAnim);
   
   // Individual rotation animations for each shape
   const hexagonOuterRotateAnim = React.useRef(new Animated.Value(0)).current;
@@ -39,98 +42,99 @@ export default function LandingExperience() {
   const floatingDot4RotateAnim = React.useRef(new Animated.Value(0)).current;
   const accentDotsRotateAnim = React.useRef(new Animated.Value(0)).current;
   
-  const [applyCounterRotation, setApplyCounterRotation] = useState(false);
   const [textIsStationary, setTextIsStationary] = useState(false);
+  const textIsStationaryRef = React.useRef(false);
 
   useEffect(() => {
-    const task = InteractionManager.runAfterInteractions(() => {
+    const startAnimations = () => {
       // Fade + slide-in animations
       Animated.parallel([
         Animated.timing(fadeAnim, {
           toValue: 1,
           duration: 800,
-          useNativeDriver: true,
+          useNativeDriver: nativeDriver,
         }),
         Animated.timing(slideAnim, {
           toValue: 0,
           duration: 800,
-          useNativeDriver: true,
+          useNativeDriver: nativeDriver,
         }),
       ]).start();
-  
+
       // Beautiful single rotation animation - all elements come together
       Animated.parallel([
         Animated.timing(textFadeAnim, {
           toValue: 1,
           duration: 800,
-          useNativeDriver: true,
+          useNativeDriver: nativeDriver,
         }),
         Animated.spring(textScaleAnim, {
           toValue: 1,
           tension: 100,
           friction: 8,
-          useNativeDriver: true,
+          useNativeDriver: nativeDriver,
         }),
         Animated.timing(hexagonOuterRotateAnim, {
           toValue: 1,
           duration: 3000,
-          useNativeDriver: true,
+          useNativeDriver: nativeDriver,
         }),
         Animated.timing(hexagonMiddleRotateAnim, {
           toValue: 1,
           duration: 3200,
-          useNativeDriver: true,
+          useNativeDriver: nativeDriver,
         }),
         Animated.timing(hexagonInnerRotateAnim, {
           toValue: 1,
           duration: 2800,
-          useNativeDriver: true,
+          useNativeDriver: nativeDriver,
         }),
         Animated.timing(ring1RotateAnim, {
           toValue: 1,
           duration: 3400,
-          useNativeDriver: true,
+          useNativeDriver: nativeDriver,
         }),
         Animated.timing(ring2RotateAnim, {
           toValue: 1,
           duration: 2600,
-          useNativeDriver: true,
+          useNativeDriver: nativeDriver,
         }),
         Animated.timing(floatingDot1RotateAnim, {
           toValue: 1,
           duration: 3600,
-          useNativeDriver: true,
+          useNativeDriver: nativeDriver,
         }),
         Animated.timing(floatingDot2RotateAnim, {
           toValue: 1,
           duration: 2400,
-          useNativeDriver: true,
+          useNativeDriver: nativeDriver,
         }),
         Animated.timing(floatingDot3RotateAnim, {
           toValue: 1,
           duration: 3800,
-          useNativeDriver: true,
+          useNativeDriver: nativeDriver,
         }),
         Animated.timing(floatingDot4RotateAnim, {
           toValue: 1,
           duration: 2200,
-          useNativeDriver: true,
+          useNativeDriver: nativeDriver,
         }),
         Animated.timing(accentDotsRotateAnim, {
           toValue: 1,
           duration: 3300,
-          useNativeDriver: true,
+          useNativeDriver: nativeDriver,
         }),
         Animated.timing(singleRotationAnim, {
           toValue: 1,
           duration: 3000,
-          useNativeDriver: true,
+          useNativeDriver: nativeDriver,
         }),
       ]).start(() => {
         setTextIsStationary(true);
+        textIsStationaryRef.current = true;
         console.log('✨ Beautiful rotation animation completed - all shapes unified!');
       });
-  
+
       // Text color + glow + pulse animations
       Animated.timing(textColorAnim, {
         toValue: 1,
@@ -143,23 +147,23 @@ export default function LandingExperience() {
           useNativeDriver: false,
         }).start();
       });
-  
+
       const pulse = () => {
         Animated.sequence([
           Animated.timing(pulseAnim, {
             toValue: 1.02,
             duration: 2000,
-            useNativeDriver: true,
+            useNativeDriver: nativeDriver,
           }),
           Animated.timing(pulseAnim, {
             toValue: 1,
             duration: 2000,
-            useNativeDriver: true,
+            useNativeDriver: nativeDriver,
           }),
         ]).start(() => pulse());
       };
       pulse();
-  
+
       const glowPulse = () => {
         Animated.sequence([
           Animated.timing(textGlowAnim, {
@@ -173,31 +177,37 @@ export default function LandingExperience() {
             useNativeDriver: false,
           }),
         ]).start(() => {
-          if (!textIsStationary) glowPulse();
+          if (!textIsStationaryRef.current) glowPulse();
         });
       };
       glowPulse();
-  
+
       const logoScaleAnimation = () => {
         Animated.sequence([
           Animated.timing(logoScaleAnim, {
             toValue: 1.05,
             duration: 1500,
-            useNativeDriver: true,
+            useNativeDriver: nativeDriver,
           }),
           Animated.timing(logoScaleAnim, {
             toValue: 1,
             duration: 1500,
-            useNativeDriver: true,
+            useNativeDriver: nativeDriver,
           }),
         ]).start(() => {
-          if (!textIsStationary) logoScaleAnimation();
+          if (!textIsStationaryRef.current) logoScaleAnimation();
         });
       };
       logoScaleAnimation();
-    });
-  
-    return () => task.cancel();
+    };
+
+    if (isWebPlatform) {
+      startAnimations();
+      return () => undefined;
+    }
+
+    const task = InteractionManager.runAfterInteractions(startAnimations);
+    return () => task?.cancel?.();
   }, []);
   
 
@@ -295,11 +305,8 @@ export default function LandingExperience() {
               style={[
                 styles.logoCard,
                 {
-                  transform: [{ scale: pulseAnim }],
-                },
-                {
                   transform: [
-                    { scale: logoScaleAnim },
+                    { scale: combinedScaleAnim },
                     { rotate: singleRotate },
                   ],
                 },
@@ -417,12 +424,12 @@ export default function LandingExperience() {
                     <Animated.Text 
                       style={[
                         styles.logoTextOutline,
-                        {
-                          color: textOutlineColor,
+                        { color: textOutlineColor },
+                        !isWebPlatform && {
                           textShadowRadius: textGlowAnim.interpolate({
-  inputRange: [1, 1.5],
-  outputRange: [8, 12], // adjust if you want more/less glow
-})
+                            inputRange: [1, 1.5],
+                            outputRange: [8, 12], // adjust if you want more/less glow
+                          }),
                         },
                       ]}
                     >
@@ -431,13 +438,12 @@ export default function LandingExperience() {
                     <Animated.Text 
                       style={[
                         styles.logoTextGlow,
-                        {
-                          color: textGlowColor,
+                        { color: textGlowColor },
+                        !isWebPlatform && {
                           textShadowRadius: textGlowAnim.interpolate({
-  inputRange: [1, 1.5],
-  outputRange: [12, 18], 
-})
-
+                            inputRange: [1, 1.5],
+                            outputRange: [12, 18],
+                          }),
                         },
                       ]}
                     >
@@ -586,12 +592,16 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primary[100],
     transform: [{ rotate: '30deg' }],
     borderRadius: 20,
-    ...Shadows.large,
-    shadowColor: Colors.primary[500],
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.3,
-    shadowRadius: 20,
-    elevation: 15,
+    ...(isWebPlatform ? webShadows.large : Shadows.large),
+    ...(isWebPlatform
+      ? {}
+      : {
+          shadowColor: Colors.primary[500],
+          shadowOffset: { width: 0, height: 12 },
+          shadowOpacity: 0.3,
+          shadowRadius: 20,
+          elevation: 15,
+        }),
   },
   hexagonMiddle: {
     position: 'absolute',
@@ -600,12 +610,16 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.secondary[50],
     transform: [{ rotate: '0deg' }],
     borderRadius: 18,
-    ...Shadows.medium,
-    shadowColor: Colors.secondary[400],
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.2,
-    shadowRadius: 12,
-    elevation: 10,
+    ...(isWebPlatform ? webShadows.medium : Shadows.medium),
+    ...(isWebPlatform
+      ? {}
+      : {
+          shadowColor: Colors.secondary[400],
+          shadowOffset: { width: 0, height: 8 },
+          shadowOpacity: 0.2,
+          shadowRadius: 12,
+          elevation: 10,
+        }),
   },
   hexagonInner: {
     position: 'absolute',
@@ -616,7 +630,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 1,
     borderColor: 'rgba(255, 235, 59, 0.4)',
-    ...Shadows.small,
+    ...(isWebPlatform ? webShadows.small : Shadows.small),
   },
   gradientBackground: {
     position: 'absolute',
@@ -651,7 +665,7 @@ const styles = StyleSheet.create({
     height: 12,
     borderRadius: 6,
     backgroundColor: Colors.primary[500],
-    ...Shadows.small,
+    ...(isWebPlatform ? webShadows.small : Shadows.small),
   },
   floatingDot2: {
     position: 'absolute',
@@ -661,7 +675,7 @@ const styles = StyleSheet.create({
     height: 8,
     borderRadius: 4,
     backgroundColor: Colors.secondary[400],
-    ...Shadows.small,
+    ...(isWebPlatform ? webShadows.small : Shadows.small),
   },
   floatingDot3: {
     position: 'absolute',
@@ -680,7 +694,7 @@ const styles = StyleSheet.create({
     height: 10,
     borderRadius: 5,
     backgroundColor: Colors.warning[400],
-    ...Shadows.small,
+    ...(isWebPlatform ? webShadows.small : Shadows.small),
   },
   accentRings: {
     position: 'absolute',
@@ -711,7 +725,7 @@ const styles = StyleSheet.create({
     height: 100,
     borderRadius: 50,
     backgroundColor: 'rgba(255, 235, 59, 0.1)',
-    ...Shadows.medium,
+    ...(isWebPlatform ? webShadows.medium : Shadows.medium),
   },
   accentDots: {
     flexDirection: 'row',
@@ -724,7 +738,7 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    ...Shadows.small,
+    ...(isWebPlatform ? webShadows.small : Shadows.small),
   },
   dot1: {
     backgroundColor: Colors.primary[500],
@@ -745,7 +759,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.secondary[400],
     borderRadius: 1,
     opacity: 0.8,
-    ...Shadows.small,
+    ...(isWebPlatform ? webShadows.small : Shadows.small),
   },
   sparklyTextContainer: {
     position: 'absolute',
@@ -763,9 +777,13 @@ const styles = StyleSheet.create({
     fontFamily: Platform.OS === 'ios' ? 'Avenir-Heavy' : 'sans-serif-condensed',
     // Color now animated via textOutlineColor
     transform: [{ scale: 1.0 }],
-    textShadowColor: '#0D47A1', // Dark blue shadow
-    textShadowOffset: { width: 2, height: 2 },
-    textShadowRadius: 8,
+    ...(isWebPlatform
+      ? { textShadow: '2px 2px 6px rgba(13, 71, 161, 0.4)' }
+      : {
+          textShadowColor: '#0D47A1', // Dark blue shadow
+          textShadowOffset: { width: 2, height: 2 },
+          textShadowRadius: 8,
+        }),
     textAlign: 'center',
   },
   logoTextGlow: {
@@ -775,9 +793,13 @@ const styles = StyleSheet.create({
     fontFamily: Platform.OS === 'ios' ? 'Avenir-Heavy' : 'sans-serif-condensed',
     // Color now animated via textGlowColor
     transform: [{ scale: 1.0 }],
-    textShadowColor: '#F57F17', // Yellow shadow for glow
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 12,
+    ...(isWebPlatform
+      ? { textShadow: '0px 0px 12px rgba(245, 127, 23, 0.65)' }
+      : {
+          textShadowColor: '#F57F17', // Yellow shadow for glow
+          textShadowOffset: { width: 0, height: 0 },
+          textShadowRadius: 12,
+        }),
     textAlign: 'center',
   },
   logoTextMain: {
@@ -785,9 +807,13 @@ const styles = StyleSheet.create({
     fontWeight: Typography.fontWeight.bold,
     fontFamily: Platform.OS === 'ios' ? 'Avenir-Heavy' : 'sans-serif-condensed',
     color: '#FFFFFF', // White main text for contrast
-    textShadowColor: '#1565C0', // Blue shadow
-    textShadowOffset: { width: 1, height: 1 },
-    textShadowRadius: 6,
+    ...(isWebPlatform
+      ? { textShadow: '1px 1px 4px rgba(21, 101, 192, 0.45)' }
+      : {
+          textShadowColor: '#1565C0', // Blue shadow
+          textShadowOffset: { width: 1, height: 1 },
+          textShadowRadius: 6,
+        }),
   },
   tagline: {
     fontSize: Typography.fontSize.base,
@@ -823,14 +849,18 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
     borderRadius: BorderRadius.xl,
     padding: Spacing.md,
-    ...Shadows.medium,
+    ...(isWebPlatform ? webShadows.medium : Shadows.medium),
     borderWidth: 1,
     borderColor: Colors.borderLight,
-    shadowColor: Colors.primary[200],
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 12,
-    elevation: 6,
+    ...(isWebPlatform
+      ? {}
+      : {
+          shadowColor: Colors.primary[200],
+          shadowOffset: { width: 0, height: 4 },
+          shadowOpacity: 0.15,
+          shadowRadius: 12,
+          elevation: 6,
+        }),
   },
   featureIconContainer: {
     width: 36,
@@ -840,7 +870,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: Spacing.md,
-    ...Shadows.small,
+    ...(isWebPlatform ? webShadows.small : Shadows.small),
     borderWidth: 2,
     borderColor: Colors.primary[200],
   },
@@ -874,9 +904,13 @@ const styles = StyleSheet.create({
   primaryButtonText: {
     color: '#FFFFFF', // Pure white text
     fontWeight: Typography.fontWeight.bold,
-    textShadowColor: Colors.secondary[600],
-    textShadowOffset: { width: 1, height: 1 },
-    textShadowRadius: 2,
+    ...(isWebPlatform
+      ? { textShadow: '1px 1px 2px rgba(2, 119, 189, 0.45)' }
+      : {
+          textShadowColor: Colors.secondary[600],
+          textShadowOffset: { width: 1, height: 1 },
+          textShadowRadius: 2,
+        }),
   },
   signInContainer: {
     flexDirection: 'row',
