@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '@/contexts/AuthContext';
 import { useNotifications } from '@/contexts/NotificationContext';
 import { supabase } from '@/lib/supabase';
@@ -54,12 +55,17 @@ function ChatsScreen() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [userProfile, setUserProfile] = useState<{ 
     full_name: string | null; 
+    first_name: string | null;
     nickname: string | null;
   } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const fadeAnim = React.useRef(new Animated.Value(0)).current;
   const [multiSelectMode, setMultiSelectMode] = useState(false);
   const [selectedContactIds, setSelectedContactIds] = useState<string[]>([]);
+
+  const welcomeName = userProfile?.nickname
+    || userProfile?.first_name
+    || (userProfile?.full_name ? userProfile.full_name.split(' ')[0] : '');
 
   useEffect(() => {
     Animated.timing(fadeAnim, {
@@ -69,20 +75,11 @@ function ChatsScreen() {
     }).start();
   }, []);
 
-  useEffect(() => {
-    if (user) {
-      fetchUserProfile();
-      fetchAllChats();
-      setupRealtimeSubscription();
-      setupProfileSubscription();
-    }
-  }, [user]);
-
-  const fetchUserProfile = async () => {
+  const fetchUserProfile = useCallback(async () => {
     try {
       const { data, error } = await supabase
         .from('profiles')
-        .select('full_name, nickname')
+        .select('full_name, first_name, nickname')
         .eq('id', user?.id)
         .single();
 
@@ -91,7 +88,24 @@ function ChatsScreen() {
     } catch (error) {
       console.error('Error fetching user profile:', error);
     }
-  };
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (user) {
+      fetchUserProfile();
+      fetchAllChats();
+      setupRealtimeSubscription();
+      setupProfileSubscription();
+    }
+  }, [user, fetchUserProfile]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (user?.id) {
+        fetchUserProfile();
+      }
+    }, [user?.id, fetchUserProfile])
+  );
 
   const fetchAllChats = async () => {
     console.log('📥 Fetching all chats for user:', user?.id);
@@ -435,7 +449,7 @@ setContactChats(finalChats);
           {/* Welcome Section */}
           <View style={styles.welcomeSection}>
             <Text style={styles.welcomeText}>
-              Welcome back{userProfile?.nickname ? `, ${userProfile.nickname}` : userProfile?.full_name ? `, ${userProfile.full_name}` : ''}!
+              {`Welcome back${welcomeName ? `, ${welcomeName}` : ''}!`}
             </Text>
           </View>
 

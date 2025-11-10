@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '@/contexts/AuthContext';
 import { router } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '@/lib/supabase';
 import * as ImagePicker from 'expo-image-picker';
 import {
@@ -34,6 +35,8 @@ interface UserProfile {
   id: string;
   email: string;
   full_name: string | null;
+  first_name: string | null;
+  nickname: string | null;
   avatar_url: string | null;
 }
 
@@ -61,9 +64,27 @@ function SettingsScreen() {
     }).start();
   }, []);
 
+  const fetchProfile = useCallback(async () => {
+    if (!user?.id) return;
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single();
+
+      if (error) throw error;
+      setProfile(data);
+    } catch (error) {
+      console.error('Error fetching profile:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, [user?.id]);
+
   useEffect(() => {
     if (user) fetchProfile();
-  }, [user]);
+  }, [user, fetchProfile]);
 
   useEffect(() => {
     if (user) {
@@ -71,7 +92,13 @@ function SettingsScreen() {
       const cleanup = setupProfileSubscription();
       return cleanup;
     }
-  }, [user]);
+  }, [user, fetchProfile]);
+
+  useFocusEffect(
+    useCallback(() => {
+      fetchProfile();
+    }, [fetchProfile])
+  );
 
   const setupProfileSubscription = () => {
     if (!user?.id) return () => {};
@@ -100,23 +127,6 @@ function SettingsScreen() {
         console.error('Error cleaning up settings profile subscription:', error);
       }
     };
-  };
-
-  const fetchProfile = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', user?.id)
-        .single();
-
-      if (error) throw error;
-      setProfile(data);
-    } catch (error) {
-      console.error('Error fetching profile:', error);
-    } finally {
-      setLoading(false);
-    }
   };
 
   const showNotification = (
@@ -256,7 +266,7 @@ function SettingsScreen() {
                 )}
               </TouchableOpacity>
               <Text style={styles.userName}>
-                {profile?.full_name?.split(' ')[0] || 'User'}
+                {profile?.first_name || profile?.nickname || profile?.full_name?.split(' ')[0] || 'User'}
               </Text>
               <Text style={styles.userEmail}>{profile?.email || 'No email'}</Text>
             </View>

@@ -138,7 +138,7 @@ useEffect(() => {
       setTempFirstName(data.first_name || '');
       setTempLastName(data.last_name || '');
       setTempNickname(data.nickname || '');
-      setTempDOB(data.date_of_birth ? data.date_of_birth.split('-').join('/') : '');
+      setTempDOB(formatDOBForInput(data.date_of_birth));
       
       // Handle phone number
       const phoneNumber = data.phone_number || '';
@@ -151,7 +151,7 @@ useEffect(() => {
       setSelectedCountry(country || null);
       
       // Handle date
-      if (data.date_of_birth) setSelectedDate(new Date(data.date_of_birth));
+      setSelectedDate(data.date_of_birth ? new Date(data.date_of_birth) : null);
     } catch (err) {
       console.error('Error fetching profile:', err);
       showNotification('error', 'Load Failed', 'Could not load your profile information.');
@@ -217,6 +217,13 @@ try {
     }
   }
 
+  const isoDobFromInput = tempDOB.trim() ? parseDOBInputToISO(tempDOB.trim()) : null;
+  if (tempDOB.trim() && !isoDobFromInput) {
+    showNotification('error', 'Invalid Date of Birth', 'Please use MM/DD/YYYY format.');
+    setSaving(false);
+    return;
+  }
+
   const updates: any = {
     first_name: tempFirstName.trim() || null,
     last_name: tempLastName.trim() || null,
@@ -225,11 +232,7 @@ try {
       selectedPhoneCountry && tempPhone.trim()
         ? `${selectedPhoneCountry.dialCode}${tempPhone.trim()}`
         : null,
-    date_of_birth: tempDOB.trim()
-      ? tempDOB.split('/').join('-')
-      : selectedDate
-      ? selectedDate.toISOString().split('T')[0]
-      : null,
+    date_of_birth: isoDobFromInput,
     country_code: selectedCountry?.code || null,
   };
 
@@ -251,11 +254,7 @@ setTempPhone(
     ? updates.phone_number.replace(/^\+\d+/, '')
     : ''
 );
-setTempDOB(
-  updates.date_of_birth
-    ? updates.date_of_birth.split('-').join('/')
-    : ''
-);
+setTempDOB(formatDOBForInput(updates.date_of_birth));
 setSelectedCountry(
   COUNTRIES.find(c => c.code === updates.country_code) || null
 );
@@ -305,7 +304,7 @@ setHasUnsavedChanges(false);
   setTempFirstName(profile.first_name || '');
   setTempLastName(profile.last_name || '');
   setTempNickname(profile.nickname || '');
-  setTempDOB(profile.date_of_birth ? profile.date_of_birth.split('-').join('/') : '');
+  setTempDOB(formatDOBForInput(profile.date_of_birth));
   
   const phoneNumber = profile.phone_number || '';
   const phoneCountry = COUNTRIES.find(c => phoneNumber.startsWith(c.dialCode));
@@ -373,6 +372,37 @@ setHasUnsavedChanges(false);
       
       return `${month}/${day}/${year}`;
     }
+  };
+
+  const formatDOBForInput = (iso?: string | null) => {
+    if (!iso) return '';
+    try {
+      const date = new Date(iso);
+      if (Number.isNaN(date.getTime())) return '';
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      const year = date.getFullYear();
+      return `${month}/${day}/${year}`;
+    } catch {
+      return '';
+    }
+  };
+
+  const parseDOBInputToISO = (input: string): string | null => {
+    if (!input) return null;
+    const parts = input.split('/');
+    if (parts.length !== 3) return null;
+    const [mm, dd, yyyy] = parts;
+    if (mm.length !== 2 || dd.length !== 2 || yyyy.length !== 4) return null;
+    const month = parseInt(mm, 10);
+    const day = parseInt(dd, 10);
+    const year = parseInt(yyyy, 10);
+    if (Number.isNaN(month) || Number.isNaN(day) || Number.isNaN(year)) return null;
+    if (month < 1 || month > 12) return null;
+    if (day < 1 || day > 31) return null;
+    const candidate = new Date(year, month - 1, day);
+    if (Number.isNaN(candidate.getTime())) return null;
+    return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
   };
 
   const validateAge = (dateString: string): boolean => {
@@ -884,6 +914,15 @@ setHasUnsavedChanges(false);
          onChangeText={(text) => {
   const formatted = formatDateInput(text);
   setTempDOB(formatted);
+  if (formatted.length === 10) {
+    const [mm, dd, yyyy] = formatted.split('/');
+    const typedDate = new Date(parseInt(yyyy, 10), parseInt(mm, 10) - 1, parseInt(dd, 10));
+    if (!Number.isNaN(typedDate.getTime())) {
+      setSelectedDate(typedDate);
+    }
+  } else {
+    setSelectedDate(null);
+  }
   setHasUnsavedChanges(true);
   setIsSaveBarVisible(true);
 }}

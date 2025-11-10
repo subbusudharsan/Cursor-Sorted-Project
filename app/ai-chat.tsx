@@ -120,6 +120,33 @@ function AIChatScreen() {
 
   const [chatTitle, setChatTitle] = useState("");
 
+  const hasCommittedStage1Ref = useRef(false);
+  const currentChatIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    currentChatIdRef.current = currentChatId;
+  }, [currentChatId]);
+
+  useEffect(() => {
+    return () => {
+      const chatId = currentChatIdRef.current;
+      if (chatId && !hasCommittedStage1Ref.current) {
+        (async () => {
+          try {
+            await supabase
+              .from('chats')
+              .delete()
+              .eq('id', chatId)
+              .eq('chat_type', 'ai_assistant');
+            console.log('🧹 Removed unused AI prep session', chatId);
+          } catch (cleanupErr) {
+            console.warn('⚠️ Failed to clean up unused AI prep session', cleanupErr);
+          }
+        })();
+      }
+    };
+  }, []);
+
   // Aggregate clarity heuristic: allow short/typo answers if overall info is sufficient
   const hasAggregateClarity = React.useCallback(() => {
     const totalAnswerWords = qaPairs.reduce((sum, p) => sum + ((p.answer || '').trim().split(/\s+/).filter(Boolean).length), 0);
@@ -1733,7 +1760,7 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
     const normalizedTitle = chatTitle.trim() || contextDataRef.current.chat_title || '';
 
    if (!answer?.trim() && !isReviewMode) {
-  Alert.alert("Answer Required", "Please provide an answer to continue.");
+   Alert.alert("Quick note needed", "Drop a short reply so we can keep rolling.");
   return;
 }
 
@@ -2998,16 +3025,16 @@ Respond ONLY with valid JSON:
   <View style={styles.stageContainer}>
     <View style={styles.headerSection}>
       <Sparkles size={36} color={Colors.primary[500]} />
-      <Text style={styles.stageTitle}>Stage 1 – Describe the Situation</Text>
+      <Text style={styles.stageTitle}>Stage 1 – Set the Scene</Text>
       <Text style={styles.stageSubtitle}>
-        Tell me what's on your mind about{" "}
+        Give this chat a short title and share what's happening with{" "}
         <Text style={styles.contactName}>
           {contact?.full_name || contact?.email}
         </Text>
         .
       </Text>
       <Text style={styles.stageDescription}>
-        I'll ask a few questions to help you prepare better.
+        Tell me what happened so I can help shape the opener.
       </Text>
     </View>
 
@@ -3018,13 +3045,13 @@ Respond ONLY with valid JSON:
         style={styles.titleInput}
         value={chatTitle}
         onChangeText={setChatTitle}
-        placeholder="e.g. Clearing the weekend misunderstanding"
+        placeholder="Give this chat a short title (e.g. Weekend mix-up reset)"
         placeholderTextColor={Colors.text.tertiary}
         maxLength={80}
         autoCapitalize="sentences"
         returnKeyType="done"
       />
-      <Text style={styles.inputHelper}>This appears in your AI prep and shared chat lists.</Text>
+      <Text style={styles.inputHelper}>Helps you spot it later in AI prep and shared chat lists.</Text>
     </View>
 
     <View style={{ position: "relative", width: "100%" }}>
@@ -3042,7 +3069,7 @@ Respond ONLY with valid JSON:
       onSelectionChange={(event) => {
         setDescriptionCursorPos(event.nativeEvent.selection.start);
       }}
-      placeholder="Describe the situation … (use @ or # tags)"
+      placeholder="Tell me what happened… (use @ or # tags if helpful)"
       placeholderTextColor={Colors.text.tertiary}
       multiline
       maxLength={800}
@@ -3131,7 +3158,7 @@ Respond ONLY with valid JSON:
         : { color: Colors.success[600] },
     ]}
   >
-  {Math.max(0, 150 - Math.round(initialDescription.trim().split(/\s+/).length * 1.5))} tokens left 💬
+  {Math.max(0, 150 - Math.round(initialDescription.trim().split(/\s+/).length * 1.5))} tokens to play with ✨
 </Text>
 
 
@@ -3147,8 +3174,8 @@ Respond ONLY with valid JSON:
         }}
       >
         {initialDescription.trim().split(/\s+/).length > 100
-          ? "Let's simplify it a bit ❤️"
-          : "Try to keep it short and clear 💛"}
+          ? "Let's keep it breezy ❤️"
+          : "Short & sweet keeps the vibe 💛"}
       </Text>
     )}
   </View>
@@ -3201,9 +3228,9 @@ Respond ONLY with valid JSON:
   const renderQAStage = () => (
     <View style={styles.stageContainer}>
       <View style={styles.headerSection}>
-        <Text style={styles.stageTitle}>Stage 2: Understanding ({questionCount}/5)</Text>
+        <Text style={styles.stageTitle}>Stage 2 – Fill in the Gaps ({questionCount}/5)</Text>
         <Text style={styles.stageSubtitle}>
-          Let me ask a few questions to understand the situation better
+          I'll toss a few easy prompts to round out the story.
         </Text>
       </View>
 
@@ -3331,8 +3358,8 @@ Respond ONLY with valid JSON:
         {isGeneratingSummary ? (
           <View style={styles.generatingContainer}>
             <ActivityIndicator size="large" color={Colors.primary[500]} />
-            <Text style={styles.generatingText}>Generating Summary...</Text>
-            <Text style={styles.generatingSubtext}>Analyzing your responses</Text>
+            <Text style={styles.generatingText}>Piecing things together…</Text>
+            <Text style={styles.generatingSubtext}>Sitting with everything you shared</Text>
           </View>
         ) : currentQuestion ? (
           <View style={styles.qaCardVertical}>
@@ -3485,7 +3512,7 @@ Respond ONLY with valid JSON:
       onPress={() => setFlowStage("welcome")}
       disabled={loading}
     >
-      <Text style={styles.secondaryButtonText}>Previous Step</Text>
+      <Text style={styles.secondaryButtonText}>Back a step</Text>
     </TouchableOpacity>
 
     <TouchableOpacity
@@ -3496,7 +3523,7 @@ Respond ONLY with valid JSON:
       {loading ? (
         <ActivityIndicator color={Colors.primary[600]} size="small" />
       ) : (
-        <Text style={styles.secondaryButtonText}>Next Question</Text>
+        <Text style={styles.secondaryButtonText}>Next prompt</Text>
       )}
     </TouchableOpacity>
   </View>
@@ -3511,8 +3538,8 @@ Respond ONLY with valid JSON:
   onPress={async () => {
     if (qaPairs.length < 2) {
       Alert.alert(
-        "Answer more questions 💬",
-        "Please answer at least two questions before generating a summary."
+        "Need one more beat 💬",
+        "Add at least two answers before I spin up your recap."
       );
       return;
     }
@@ -3534,21 +3561,21 @@ Respond ONLY with valid JSON:
   const renderSummaryStage = () => (
     <View style={styles.stageContainer}>
       <View style={styles.headerSection}>
-        <Text style={styles.stageTitle}>Stage 3: Summary</Text>
+        <Text style={styles.stageTitle}>Stage 3 – Your Recap</Text>
         <Text style={styles.stageSubtitle}>
-          Here's what I understand about your situation
+          Here's a gentle snapshot of what you've shared.
         </Text>
         {/* Small quick-link back to Stage 1 */}
         <TouchableOpacity onPress={restartFlowToInitial} style={styles.smallLinkButton}>
-          <Text style={styles.smallLinkButtonText}>Go to Initial Description</Text>
+          <Text style={styles.smallLinkButtonText}>Revisit Stage 1</Text>
         </TouchableOpacity>
       </View>
 
       {isSummaryUnclear && (
         <View style={styles.quickTipBox}>
-          <Text style={styles.quickTipTitle}>Need a bit more clarity</Text>
+          <Text style={styles.quickTipTitle}>Let's tighten a couple things</Text>
           <Text style={styles.quickTipText}>
-            I couldn't confidently understand one or more parts. Try editing:
+            A few bits still feel fuzzy—tweak these spots:
           </Text>
           {qaPairs.map((p, i) => {
             const t = (p.answer || '').trim();
@@ -3560,7 +3587,7 @@ Respond ONLY with valid JSON:
           {additionalInfo.trim().length > 0 && (additionalInfo.trim().split(/\s+/).length < 3) && (
             <Text style={styles.quickTipItem}>• Additional Information</Text>
           )}
-          <Text style={styles.quickTipHint}>Edit only what's flagged above, then press Regenerate Summary.</Text>
+          <Text style={styles.quickTipHint}>Polish the pieces above, then tap Regenerate Summary.</Text>
         </View>
       )}
 
@@ -3575,7 +3602,7 @@ Respond ONLY with valid JSON:
       {isSummaryUnclear ? (
   <>
     <Text style={styles.warningText}>
-      ⚠️ Cannot move to Stage 4 (Ready to Chat) as the purpose of this conversation is not clear.
+      ⚠️ I need a clearer purpose before we jump to Launch Time.
     </Text>
     <View style={styles.buttonRow}>
       {(() => {
@@ -3589,7 +3616,7 @@ Respond ONLY with valid JSON:
             style={styles.secondaryButton}
             onPress={() => setFlowStage("qa")}
           >
-            <Text style={styles.secondaryButtonText}>Refine Answers</Text>
+            <Text style={styles.secondaryButtonText}>Revisit answers</Text>
           </TouchableOpacity>
         ) : null;
       })()}
@@ -3597,7 +3624,7 @@ Respond ONLY with valid JSON:
         style={styles.secondaryButton}
         onPress={() => router.push('/ai-assistant')}
       >
-        <Text style={styles.secondaryButtonText}>Cancel</Text>
+        <Text style={styles.secondaryButtonText}>Save for later</Text>
       </TouchableOpacity>
     </View>
   </>
@@ -3862,7 +3889,7 @@ Respond ONLY with valid JSON:
     disabled={loading}
   >
     <Plus size={16} color={Colors.primary[600]} />
-    <Text style={styles.secondaryButtonText}>Edit & Add Info</Text>
+    <Text style={styles.secondaryButtonText}>Add more context</Text>
   </TouchableOpacity>
 
   <TouchableOpacity
@@ -3876,7 +3903,7 @@ Respond ONLY with valid JSON:
   >
     <Check size={20} color="#fff" />
     <Text style={styles.primaryButtonText}>
-      {summaryJustRegenerated ? 'Summary Updated...' : 'Yes, looks good'}
+      {summaryJustRegenerated ? 'Recap refreshed…' : 'Looks solid'}
     </Text>
   </TouchableOpacity>
 </View>
@@ -3896,24 +3923,24 @@ Respond ONLY with valid JSON:
     <View style={styles.stageContainer}>
       <View style={styles.headerSection}>
         <Check size={48} color={Colors.success[500]} />
-        <Text style={styles.stageTitle}>Stage 4: Ready!</Text>
+        <Text style={styles.stageTitle}>Stage 4 – Launch Time</Text>
         <Text style={styles.stageSubtitle}>
-          Perfect! I'll use this summary to help you start your chat naturally with{" "}
+          Your prep is locked in. I'll help you kick things off with{" "}
           <Text style={styles.contactName}>{contact?.full_name || contact?.email}</Text>.
         </Text>
-        <Text style={styles.readyMessage}>Ready to begin?</Text>
+        <Text style={styles.readyMessage}>Feeling good?</Text>
         {/* Small quick-link back to Stage 1 */}
         <TouchableOpacity onPress={restartFlowToInitial} style={styles.smallLinkButton}>
-          <Text style={styles.smallLinkButtonText}>Go to Initial Description</Text>
+          <Text style={styles.smallLinkButtonText}>Back to Stage 1</Text>
         </TouchableOpacity>
       </View>
 
       {showReturnFromChatBanner && (
         <View style={styles.returnBanner}>
-          <Text style={styles.returnBannerText}>What would you like to do?</Text>
+          <Text style={styles.returnBannerText}>Need to jump anywhere else?</Text>
           <View style={styles.returnBannerRow}>
             <TouchableOpacity style={styles.smallPillButton} onPress={() => router.push('/(tabs)/chats')}>
-              <Text style={styles.smallPillButtonText}>Go to Chats Home</Text>
+              <Text style={styles.smallPillButtonText}>Open Chats Home</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -3930,7 +3957,7 @@ Respond ONLY with valid JSON:
       ) : (
         <View style={styles.loadingInfoBox}>
           <ActivityIndicator color={Colors.primary[500]} size="small" />
-          <Text style={styles.loadingText}>Loading your summary…</Text>
+          <Text style={styles.loadingText}>Grabbing your recap…</Text>
         </View>
       )}
 
@@ -3953,7 +3980,7 @@ Respond ONLY with valid JSON:
     {loading ? (
       <ActivityIndicator color="#fff" size="small" />
     ) : (
-      <Text style={styles.readyButtonText}>Ready to Chat</Text>
+      <Text style={styles.readyButtonText}>Send to contact</Text>
     )}
   </TouchableOpacity>
 </View>
@@ -3963,11 +3990,11 @@ Respond ONLY with valid JSON:
   <>
     <View style={styles.loadingInfoBox}>
       <ActivityIndicator color={Colors.primary[500]} size="large" />
-      <Text style={styles.loadingText}>Generating conversation options...</Text>
-      <Text style={styles.loadingSubtext}>This may take 10–20 seconds</Text>
+      <Text style={styles.loadingText}>Lining up your opening lines…</Text>
+      <Text style={styles.loadingSubtext}>Thanks for waiting—I usually wrap this in a few seconds.</Text>
     </View>
     <Text style={{ textAlign: "center", marginTop: 10, color: Colors.text.secondary }}>
-      💬 Preparing your first message options — please wait a moment…
+      💬 Almost there—just polishing your first message choices…
     </Text>
   </>
       )}

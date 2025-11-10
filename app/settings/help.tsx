@@ -9,6 +9,7 @@ import {
   Linking,
   Alert,
   Animated,
+  Platform,
 } from 'react-native';
 import { router } from 'expo-router';
 import { ArrowLeft, Mail, MessageCircle, Book, ExternalLink, ChevronRight } from 'lucide-react-native';
@@ -19,8 +20,36 @@ interface FAQItem {
   answer: string;
 }
 
+const userGuideSteps = [
+  {
+    title: 'Start on the Chats Home tab',
+    description: 'Glance at your latest talks, unread nudges, and the welcome banner tailored to your name.'
+  },
+  {
+    title: 'Prep with the AI Assistant',
+    description: 'Tap “Discuss with AI Assistant” to begin Stage 1. Share your story, answer a few reflective questions, and review the summary before inviting your contact.'
+  },
+  {
+    title: 'Send options when you’re ready',
+    description: 'Once you hit “Ready to Chat,” choose an option that feels right and send it to your contact to start the real conversation.'
+  },
+  {
+    title: 'Continue in Contact Chat',
+    description: 'Track the full exchange, view both perspectives, and respond using the curated options without ever losing context.'
+  },
+  {
+    title: 'Reflect in the Soulroom',
+    description: 'Capture how the chat made you feel, record voice notes, follow mood trends, and unlock gentle AI nudges each week.'
+  },
+  {
+    title: 'Revisit Settings anytime',
+    description: 'Update your profile, tweak notifications, or review policies—all live-updating throughout the app.'
+  }
+];
+
 export default function HelpSupportScreen() {
   const [expandedFAQ, setExpandedFAQ] = useState<number | null>(null);
+  const [showUserGuide, setShowUserGuide] = useState<boolean>(false);
   const fadeAnim = React.useRef(new Animated.Value(0)).current;
 
   React.useEffect(() => {
@@ -71,19 +100,19 @@ export default function HelpSupportScreen() {
   };
 
   const openEmail = () => {
-    Linking.openURL('mailto:support@sorted.app?subject=Sorted App Support');
+    Linking.openURL('mailto:sortedchatapp@gmail.com?subject=Sorted App Support');
   };
 
-  const openWebsite = () => {
-    Linking.openURL('https://sorted.app');
+  const toggleUserGuide = () => {
+    setShowUserGuide(prev => !prev);
   };
 
   const openPrivacyPolicy = () => {
-    Linking.openURL('https://sorted.app/privacy');
+    Linking.openURL('https://doc-hosting.flycricket.io/sorted-privacy-policy/1568dbc0-d11d-48b1-b85e-7e5b1aaac64e/privacy');
   };
 
   const openTermsOfService = () => {
-    Linking.openURL('https://sorted.app/terms');
+    Linking.openURL('https://doc-hosting.flycricket.io/sorted-terms-of-use/39b52541-4a24-470e-a611-b796984adb4d/terms');
   };
 
   return (
@@ -120,19 +149,43 @@ export default function HelpSupportScreen() {
               <ExternalLink size={20} color={Colors.text.tertiary} />
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.actionCard} onPress={openWebsite}>
+            <TouchableOpacity style={styles.actionCard} onPress={toggleUserGuide}>
               <View style={styles.actionIcon}>
                 <Book size={24} color={Colors.secondary[500]} />
               </View>
               <View style={styles.actionContent}>
-                <Text style={styles.actionTitle}>User Guide</Text>
+                <Text style={styles.actionTitle}>In-app User Guide</Text>
                 <Text style={styles.actionDescription}>
-                  Learn how to use all features of Sorted
+                  Step through the Sorted Chat flow, end-to-end
                 </Text>
               </View>
-              <ExternalLink size={20} color={Colors.text.tertiary} />
+              <ChevronRight
+                size={20}
+                color={Colors.text.tertiary}
+                style={[styles.chevron, showUserGuide && styles.chevronExpanded]}
+              />
             </TouchableOpacity>
           </View>
+
+          {showUserGuide && (
+            <View style={styles.userGuideSection}>
+              <Text style={styles.sectionTitle}>Sorted Chat User Guide</Text>
+              <Text style={styles.userGuideIntro}>
+                Follow these calm, friendly steps whenever you want Sorted to help you navigate a conversation.
+              </Text>
+              {userGuideSteps.map((step, index) => (
+                <View key={step.title} style={styles.userGuideStep}>
+                  <View style={styles.userGuideBullet}>
+                    <Text style={styles.userGuideBulletText}>{index + 1}</Text>
+                  </View>
+                  <View style={styles.userGuideContent}>
+                    <Text style={styles.userGuideStepTitle}>{step.title}</Text>
+                    <Text style={styles.userGuideStepDescription}>{step.description}</Text>
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
 
           {/* FAQ Section */}
           <View style={styles.section}>
@@ -350,11 +403,10 @@ const styles = StyleSheet.create({
     fontWeight: Typography.fontWeight.medium,
   },
   infoCard: {
-    backgroundColor: Colors.surfaceElevated,
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.lg,
-    borderWidth: 1,
-    borderColor: Colors.borderLight,
+    backgroundColor: '#ffffff',
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    gap: Spacing.sm,
     ...Shadows.small,
   },
   infoRow: {
@@ -371,8 +423,53 @@ const styles = StyleSheet.create({
     fontWeight: Typography.fontWeight.medium,
   },
   infoValue: {
-    fontSize: Typography.fontSize.base,
-    color: Colors.text.primary,
+    fontSize: Typography.fontSize.sm,
+    color: Colors.text.secondary,
+  },
+  userGuideSection: {
+    marginBottom: Spacing.lg,
+    backgroundColor: '#f6f8ff',
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    borderWidth: 1,
+    borderColor: '#d9e3ff',
+    gap: Spacing.md,
+  },
+  userGuideIntro: {
+    fontSize: Typography.fontSize.sm,
+    color: Colors.text.secondary,
+    lineHeight: 20,
+  },
+  userGuideStep: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.sm,
+  },
+  userGuideBullet: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: Colors.primary[100],
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  userGuideBulletText: {
+    fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.semibold,
+    color: Colors.primary[600],
+  },
+  userGuideContent: {
+    flex: 1,
+  },
+  userGuideStepTitle: {
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.semibold,
+    color: Colors.text.primary,
+    marginBottom: 4,
+  },
+  userGuideStepDescription: {
+    fontSize: Typography.fontSize.sm,
+    color: Colors.text.secondary,
+    lineHeight: 20,
   },
 });

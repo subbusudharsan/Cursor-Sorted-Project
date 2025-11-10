@@ -104,12 +104,14 @@ const fetchConversations = useCallback(async () => {
         }
       }
 
-      const formattedConversations = (chatsData || []).filter((chat) => {
+      const filteredChats = (chatsData || []).filter((chat) => {
         if (!chat.context_data) return true;
         if (chat.context_data.initial_pending === false) return false;
         if (chat.context_data.session_promoted === true) return false;
         return true;
-      }).map((chat) => {
+      });
+
+      const mappedChats = filteredChats.map((chat) => {
         const profile = chat.context_contact_id
           ? contactMap.get(chat.context_contact_id)
           : undefined;
@@ -125,12 +127,18 @@ const fetchConversations = useCallback(async () => {
           created_at: chat.created_at,
           context_contact_id: chat.context_contact_id,
           contact_name: contactNameStr,
+          context_data: chat.context_data || null,
         };
       });
 
-      setConversations(formattedConversations);
+      const dedupedChats = Array.from(new Map(mappedChats.map(chat => [chat.id, chat])).values())
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
-      console.log('✅ Updated conversations state with', formattedConversations.length, 'items');
+      const limitedChats = dedupedChats.slice(0, MAX_CONVERSATIONS);
+
+      setConversations(limitedChats);
+
+      console.log('✅ Updated conversations state with', limitedChats.length, 'items');
     } catch (error) {
       console.error('❌ Error fetching conversations:', error);
       Alert.alert('Error', 'Failed to load conversations');
@@ -244,8 +252,8 @@ const fetchConversations = useCallback(async () => {
 
     if (conversations.length >= MAX_CONVERSATIONS) {
       Alert.alert(
-        'Limit Reached',
-        `You can only have ${MAX_CONVERSATIONS} active AI conversations. Please complete or delete an existing conversation first.`
+        'Heads up 💬',
+        `You already have ${MAX_CONVERSATIONS} AI prep sessions humming. Wrap one up before starting another so things stay calm.`
       );
       return;
     }
@@ -699,17 +707,15 @@ const fetchConversations = useCallback(async () => {
               }
 
               console.log(`✅ Successfully deleted ${count} chat(s)`);
-
-              // Update UI instantly
-              setConversations(prev => prev.filter(c => !selectedConversations.includes(c.id)));
-
-              await fetchConversations();
-
-              Alert.alert("Success", `${count} chat(s) deleted successfully!`);
-
-              setBulkDeleting(false);
-              setSelectedConversations([]);
-              setMultiSelectMode(false);
+ 
+               // Update UI instantly
+               setConversations(prev => prev.filter(c => !selectedConversations.includes(c.id)));
+ 
+               await fetchConversations();
+ 
+               setBulkDeleting(false);
+               setSelectedConversations([]);
+               setMultiSelectMode(false);
             } catch (err: any) {
               console.error("❌ Delete operation failed:", err);
 
