@@ -7,38 +7,39 @@
   <style>
     /* ===== Sorted App Theme ===== */
     :root {
-      --primary: #5a6af0;
-      --secondary: #7d8bff;
-      --text-primary: #222;
-      --text-secondary: #555;
-      --background: #f7f8fc;
+      --primary: #4f46e5;      /* deeper blue */
+      --accent: #facc15;       /* warm yellow */
+      --text-primary: #1f2937;
+      --text-secondary: #4b5563;
+      --background: #f8fafc;
       --surface: #ffffff;
-      --radius: 16px;
-      --shadow: 0 3px 10px rgba(0,0,0,0.06);
+      --radius: 18px;
+      --shadow: 0 4px 10px rgba(0, 0, 0, 0.06);
     }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
 
     body {
       font-family: "Inter", "Helvetica Neue", Helvetica, Arial, sans-serif;
       background: var(--background);
-      margin: 0;
-      padding: 0;
       color: var(--text-primary);
       line-height: 1.7;
     }
 
     header {
-      background: linear-gradient(120deg, var(--primary), var(--secondary));
-      color: white;
+      background: linear-gradient(135deg, var(--primary) 10%, var(--accent) 90%);
+      color: #fff;
       text-align: center;
-      padding: 2.5rem 1rem 2rem;
-      box-shadow: var(--shadow);
+      padding: 1.25rem 1rem 1rem; /* reduced top space */
+      border-bottom-left-radius: 24px;
+      border-bottom-right-radius: 24px;
+      box-shadow: 0 3px 8px rgba(0,0,0,0.08);
     }
 
     header h1 {
-      font-size: 1.9rem;
+      font-size: 1.85rem;
       font-weight: 600;
-      letter-spacing: 0.5px;
-      margin: 0;
+      letter-spacing: 0.3px;
     }
 
     main {
@@ -48,6 +49,7 @@
       border-radius: var(--radius);
       box-shadow: var(--shadow);
       padding: 2rem 2.5rem;
+      animation: fadeIn 0.5s ease-out;
     }
 
     h2 {
@@ -55,41 +57,39 @@
       font-size: 1.25rem;
       margin-top: 2rem;
       margin-bottom: 0.5rem;
+      font-weight: 600;
     }
 
     p, li {
       font-size: 1rem;
       color: var(--text-secondary);
-    }
-
-    ul {
-      margin-left: 1.5rem;
+      margin-bottom: 1rem;
     }
 
     a {
       color: var(--primary);
       text-decoration: none;
+      font-weight: 500;
     }
 
     a:hover {
       text-decoration: underline;
     }
 
+    ul {
+      margin-left: 1.5rem;
+    }
+
     footer {
       text-align: center;
-      color: #888;
+      color: #9ca3af;
       font-size: 0.9rem;
       margin: 3rem 0 2rem;
     }
 
-    @media (prefers-reduced-motion: no-preference) {
-      main {
-        animation: fadeIn 0.5s ease-out;
-      }
-      @keyframes fadeIn {
-        from { opacity: 0; transform: translateY(10px); }
-        to { opacity: 1; transform: translateY(0); }
-      }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
     }
   </style>
 </head>
@@ -100,50 +100,31 @@
   </header>
 
   <main>
-    <p>
-      Welcome to <strong>Sorted</strong>. These Terms of Use (“Terms”) govern your use of the Sorted mobile application (“Application”) provided by <strong>Subbulakshmi Arunachalam</strong> (“Service Provider”). By downloading or using the Application, you agree to these Terms.
-    </p>
+    <p>Welcome to <strong>Sorted</strong>. These Terms of Use (“Terms”) govern your use of the Sorted mobile application (“Application”) provided by <strong>Subbulakshmi Arunachalam</strong> (“Service Provider”). By downloading or using the Application, you agree to these Terms.</p>
 
     <h2>Use of the Application</h2>
-    <p>
-      The Application is provided for personal, non-commercial use. You must not copy, modify, distribute, or reverse engineer any part of it. All intellectual property rights remain with the Service Provider.
-    </p>
+    <p>The Application is provided for personal, non-commercial use. You must not copy, modify, distribute, or reverse engineer any part of it. All intellectual property rights remain with the Service Provider.</p>
 
     <h2>Data and Privacy</h2>
-    <p>
-      The Application processes limited personal data as described in the Privacy Policy. By using the Application, you consent to that processing and agree to keep your device secure and your account credentials confidential.
-    </p>
+    <p>The Application processes limited personal data as described in the Privacy Policy. By using the Application, you consent to that processing and agree to keep your device secure and your account credentials confidential.</p>
 
     <h2>Connectivity and Charges</h2>
-    <p>
-      Certain features may require an active internet connection. You are responsible for any data charges from your network provider. The Service Provider is not liable for limited functionality caused by connectivity issues or data restrictions.
-    </p>
+    <p>Certain features may require an active internet connection. You are responsible for any data charges from your network provider. The Service Provider is not liable for limited functionality caused by connectivity issues or data restrictions.</p>
 
     <h2>Updates and Maintenance</h2>
-    <p>
-      The Service Provider may update or modify the Application at any time to enhance performance or security. Some updates may be required to continue using the Application. The Service Provider may also discontinue the Application without prior notice.
-    </p>
+    <p>The Service Provider may update or modify the Application at any time to enhance performance or security. Some updates may be required to continue using the Application. The Service Provider may also discontinue the Application without prior notice.</p>
 
     <h2>Limitation of Liability</h2>
-    <p>
-      The Application is provided “AS IS,” without warranties of any kind. The Service Provider will not be liable for any direct or indirect damages arising from your use of the Application, including loss of data, profits, or device malfunction.
-    </p>
+    <p>The Application is provided “AS IS,” without warranties of any kind. The Service Provider will not be liable for any direct or indirect damages arising from your use of the Application, including loss of data, profits, or device malfunction.</p>
 
     <h2>Termination</h2>
-    <p>
-      Violation of these Terms may result in immediate termination of your access to the Application. Upon termination, you must stop using and uninstall the Application.
-    </p>
+    <p>Violation of these Terms may result in immediate termination of your access to the Application. Upon termination, you must stop using and uninstall the Application.</p>
 
     <h2>Changes to These Terms</h2>
-    <p>
-      The Service Provider may revise these Terms from time to time. Updates will be posted within the Application or on this page. Continued use of the Application after revisions indicates your acceptance of the new Terms.
-    </p>
+    <p>The Service Provider may revise these Terms from time to time. Updates will be posted within the Application or on this page. Continued use of the Application after revisions indicates your acceptance of the new Terms.</p>
 
     <h2>Contact</h2>
-    <p>
-      If you have any questions regarding these Terms, please contact the Service Provider at
-      <a href="mailto:sortedchatapp@gmail.com">sortedchatapp@gmail.com</a>.
-    </p>
+    <p>If you have any questions regarding these Terms, please contact the Service Provider at <a href="mailto:sortedchatapp@gmail.com">sortedchatapp@gmail.com</a>.</p>
 
     <p><strong>Effective Date:</strong> November 7, 2025</p>
   </main>

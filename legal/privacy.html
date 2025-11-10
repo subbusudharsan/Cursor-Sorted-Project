@@ -7,38 +7,39 @@
   <style>
     /* ===== Sorted App Theme ===== */
     :root {
-      --primary: #5a6af0;      /* main accent color */
-      --secondary: #7d8bff;    /* gradient accent */
-      --text-primary: #222;
-      --text-secondary: #555;
-      --background: #f7f8fc;
+      --primary: #4f46e5;      /* deeper blue tone */
+      --accent: #facc15;       /* warm yellow accent */
+      --text-primary: #1f2937;
+      --text-secondary: #4b5563;
+      --background: #f8fafc;
       --surface: #ffffff;
-      --radius: 16px;
-      --shadow: 0 3px 10px rgba(0,0,0,0.06);
+      --radius: 18px;
+      --shadow: 0 4px 10px rgba(0, 0, 0, 0.06);
     }
 
+    /* Reset + base layout */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       font-family: "Inter", "Helvetica Neue", Helvetica, Arial, sans-serif;
       background: var(--background);
-      margin: 0;
-      padding: 0;
       color: var(--text-primary);
       line-height: 1.7;
     }
 
     header {
-      background: linear-gradient(120deg, var(--primary), var(--secondary));
-      color: white;
+      background: linear-gradient(135deg, var(--primary) 10%, var(--accent) 90%);
+      color: #fff;
       text-align: center;
-      padding: 2.5rem 1rem 2rem;
-      box-shadow: var(--shadow);
+      padding: 1.25rem 1rem 1rem; /* trimmed top gap */
+      border-bottom-left-radius: 24px;
+      border-bottom-right-radius: 24px;
+      box-shadow: 0 3px 8px rgba(0,0,0,0.08);
     }
 
     header h1 {
-      font-size: 1.9rem;
+      font-size: 1.85rem;
       font-weight: 600;
-      letter-spacing: 0.5px;
-      margin: 0;
+      letter-spacing: 0.3px;
     }
 
     main {
@@ -48,6 +49,7 @@
       border-radius: var(--radius);
       box-shadow: var(--shadow);
       padding: 2rem 2.5rem;
+      animation: fadeIn 0.5s ease-out;
     }
 
     h2 {
@@ -55,42 +57,39 @@
       font-size: 1.25rem;
       margin-top: 2rem;
       margin-bottom: 0.5rem;
+      font-weight: 600;
     }
 
     p, li {
       font-size: 1rem;
       color: var(--text-secondary);
-    }
-
-    ul {
-      margin-left: 1.5rem;
+      margin-bottom: 1rem;
     }
 
     a {
       color: var(--primary);
       text-decoration: none;
+      font-weight: 500;
     }
 
     a:hover {
       text-decoration: underline;
     }
 
+    ul {
+      margin-left: 1.5rem;
+    }
+
     footer {
       text-align: center;
-      color: #888;
+      color: #9ca3af;
       font-size: 0.9rem;
       margin: 3rem 0 2rem;
     }
 
-    /* Optional: add a subtle fade effect */
-    @media (prefers-reduced-motion: no-preference) {
-      main {
-        animation: fadeIn 0.5s ease-out;
-      }
-      @keyframes fadeIn {
-        from { opacity: 0; transform: translateY(10px); }
-        to { opacity: 1; transform: translateY(0); }
-      }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
     }
   </style>
 </head>
@@ -101,51 +100,31 @@
   </header>
 
   <main>
-    <p>
-      This Privacy Policy describes how the <strong>Sorted</strong> mobile application (“Application”) collects, uses, and protects personal information. The Application was developed by <strong>Subbulakshmi Arunachalam</strong> (“Service Provider”) and offered as a free service for personal use.
-    </p>
+    <p>This Privacy Policy describes how the <strong>Sorted</strong> mobile application (“Application”) collects, uses, and protects personal information. The Application was developed by <strong>Subbulakshmi Arunachalam</strong> (“Service Provider”) and offered as a free service for personal use.</p>
 
     <h2>Information Collection and Use</h2>
-    <p>
-      The Application may collect limited information automatically, including but not limited to your device’s IP address, operating system, and basic usage data (e.g., screens visited, time spent, app performance). This data helps improve functionality and user experience. No precise location data is collected.
-    </p>
+    <p>The Application may collect limited information automatically, including but not limited to your device’s IP address, operating system, and basic usage data (e.g., screens visited, time spent, app performance). This data helps improve functionality and user experience. No precise location data is collected.</p>
 
     <h2>Personal Information</h2>
-    <p>
-      When you use the Application, you may voluntarily provide personal details such as your name, email, or other contact information to receive support or personalized services. Such information is used only for its intended purpose and is not sold or shared with third parties.
-    </p>
+    <p>When you use the Application, you may voluntarily provide personal details such as your name, email, or other contact information to receive support or personalized services. Such information is used only for its intended purpose and is not sold or shared with third parties.</p>
 
     <h2>Third-Party Services</h2>
-    <p>
-      The Application may include links or APIs from third-party providers (for example, analytics or cloud storage). These third parties operate under their own privacy policies. You are encouraged to review their terms when using integrated features.
-    </p>
+    <p>The Application may include links or APIs from third-party providers (for example, analytics or cloud storage). These third parties operate under their own privacy policies. You are encouraged to review their terms when using integrated features.</p>
 
     <h2>Data Retention</h2>
-    <p>
-      Personal data is retained only for as long as necessary to provide the intended service or comply with legal obligations. Users may request deletion of their data by contacting
-      <a href="mailto:sortedchatapp@gmail.com">sortedchatapp@gmail.com</a>.
-    </p>
+    <p>Personal data is retained only for as long as necessary to provide the intended service or comply with legal obligations. Users may request deletion of their data by contacting <a href="mailto:sortedchatapp@gmail.com">sortedchatapp@gmail.com</a>.</p>
 
     <h2>Security</h2>
-    <p>
-      Reasonable technical and organizational measures are implemented to safeguard your information against unauthorized access or disclosure. However, no online system is completely secure, and users accept this inherent risk.
-    </p>
+    <p>Reasonable technical and organizational measures are implemented to safeguard your information against unauthorized access or disclosure. However, no online system is completely secure, and users accept this inherent risk.</p>
 
     <h2>Children’s Privacy</h2>
-    <p>
-      The Application is not directed toward children under 13. The Service Provider does not knowingly collect personal data from minors. Parents or guardians who believe their child has shared data should contact us for removal.
-    </p>
+    <p>The Application is not directed toward children under 13. The Service Provider does not knowingly collect personal data from minors. Parents or guardians who believe their child has shared data should contact us for removal.</p>
 
     <h2>Changes to This Policy</h2>
-    <p>
-      This Privacy Policy may be updated periodically. Any updates will appear on this page, and continued use of the Application indicates acceptance of the revised policy.
-    </p>
+    <p>This Privacy Policy may be updated periodically. Any updates will appear on this page, and continued use of the Application indicates acceptance of the revised policy.</p>
 
     <h2>Contact</h2>
-    <p>
-      For any questions about this Privacy Policy or data handling practices, please contact the Service Provider at
-      <a href="mailto:sortedchatapp@gmail.com">sortedchatapp@gmail.com</a>.
-    </p>
+    <p>For any questions about this Privacy Policy or data handling practices, please contact the Service Provider at <a href="mailto:sortedchatapp@gmail.com">sortedchatapp@gmail.com</a>.</p>
 
     <p><strong>Effective Date:</strong> November 7, 2025</p>
   </main>
