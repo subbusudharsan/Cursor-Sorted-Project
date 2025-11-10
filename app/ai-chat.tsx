@@ -66,6 +66,7 @@ function AIChatScreen() {
     fromContactChat,
     sent,
     returnStage,
+    skipReturnBanner,
     prefillDescription,
   } = useLocalSearchParams();
 
@@ -74,6 +75,7 @@ function AIChatScreen() {
   const fromContactChatValue = Array.isArray(fromContactChat) ? fromContactChat[0] : fromContactChat;
   const sentValue = Array.isArray(sent) ? sent[0] : sent;
   const returnStageValue = Array.isArray(returnStage) ? returnStage[0] : returnStage;
+  const skipReturnBannerValue = Array.isArray(skipReturnBanner) ? skipReturnBanner[0] : skipReturnBanner;
   const prefillDescriptionValue = Array.isArray(prefillDescription)
     ? prefillDescription[0]
     : prefillDescription;
@@ -248,8 +250,15 @@ function AIChatScreen() {
       const hasSent = String(sentValue || '') === '1';
       if (comingBack && !hasSent) {
         kickedOff = true;
-        setShowReturnFromChatBanner(true);
-        setFlowStage('ready');
+        setShowReturnFromChatBanner(String(skipReturnBannerValue || '') === '1' ? false : true);
+        if (chatIdValue) {
+          (async () => {
+            await loadExistingChat();
+            setFlowStage('ready');
+          })();
+        } else {
+          setFlowStage('ready');
+        }
         // Skip initialization to avoid jumping back to Stage 1
       } else if (mode === 'continue' && chatIdValue) {
         kickedOff = true;
@@ -268,7 +277,7 @@ function AIChatScreen() {
     if (!kickedOff) {
       setInitializing(false);
     }
-  }, [contactIdValue, chatIdValue, user, mode, fromContactChatValue, sentValue]);
+  }, [contactIdValue, chatIdValue, user, mode, fromContactChatValue, sentValue, skipReturnBannerValue]);
 
   // Define initializeChat before it's used in useEffect
   const initializeChat = async () => {
@@ -2822,12 +2831,14 @@ Respond ONLY with valid JSON:
         {
           is_resolved: true,
           session_name: normalizedTitle,
+          context_data: { ...contextDataRef.current, session_promoted: true },
         },
         {
           summary,
           thoughts,
           qa_pairs: qaPairs,
           initial_description: initialDescription,
+          session_promoted: true,
           chat_title: normalizedTitle,
         }
       );

@@ -55,7 +55,7 @@ const fetchConversations = useCallback(async () => {
 
       const { data: chatsData, error } = await supabase
   .from('chats')
-  .select('id, user_id, session_name, last_message, created_at, context_contact_id, chat_type')
+  .select('id, user_id, session_name, last_message, created_at, context_contact_id, chat_type, context_data')
   .eq('user_id', user.id)
   .eq('chat_type', 'ai_assistant')
   .order('created_at', { ascending: false })
@@ -104,7 +104,12 @@ const fetchConversations = useCallback(async () => {
         }
       }
 
-      const formattedConversations = (chatsData || []).map((chat) => {
+      const formattedConversations = (chatsData || []).filter((chat) => {
+        if (!chat.context_data) return true;
+        if (chat.context_data.initial_pending === false) return false;
+        if (chat.context_data.session_promoted === true) return false;
+        return true;
+      }).map((chat) => {
         const profile = chat.context_contact_id
           ? contactMap.get(chat.context_contact_id)
           : undefined;

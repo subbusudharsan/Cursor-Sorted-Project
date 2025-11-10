@@ -38,8 +38,10 @@ interface ContactChat {
   participants?: string[];
   context_data?: any;
   issueLabel?: string;
-  isUserB?: boolean;
+  issueSummary?: string;
+  chatTitle?: string;
   lastMsg?: string;
+  isUserB?: boolean;
   is_resolved?: boolean;
 }
 
@@ -240,32 +242,29 @@ const finalChats = Array.from(contactChatMap.values()).map((chat) => {
   const isUserB = !isUserA;
 
   if (isUserA) {
+    const issueSummary = chat?.context_data?.summary_a || chat?.context_data?.summary || '';
     return {
       ...chat,
       ongoing_count: myOngoing,
       total_ongoing_count: totalOngoing,
-      issueLabel:
-        chat?.context_data?.summary_a
-          ? `ISSUE: ${chat.context_data.summary_a}`
-          : '',
-      lastMsg: chat?.last_message
-        ? `Last message: ${chat.last_message}`
-        : '',
+      issueLabel: issueSummary,
+      issueSummary,
+      chatTitle: chat.context_data?.chat_title || issueSummary,
+      lastMsg: chat?.last_message || '',
       isUserB: false,
     };
   }
 
+  const hintIssue = chat?.context_data?.hint_to_contact?.issue || chat?.context_data?.hint_to_contact?.full_text || '';
+  const receivedSummary = chat?.context_data?.summary_b || chat?.context_data?.summary || '';
   return {
     ...chat,
     ongoing_count: myOngoing,
     total_ongoing_count: totalOngoing,
-    issueLabel:
-      chat?.context_data?.hint_to_contact?.full_text
-        ? `ISSUE: ${chat.context_data.hint_to_contact.full_text}`
-        : '',
-    lastMsg: chat?.last_message
-      ? `Last message: ${chat.last_message}`
-      : '',
+    issueLabel: hintIssue || receivedSummary,
+    issueSummary: hintIssue || receivedSummary,
+    chatTitle: chat.context_data?.chat_title || hintIssue || receivedSummary,
+    lastMsg: chat?.last_message || '',
     isUserB: true,
   };
 });
@@ -512,56 +511,38 @@ setContactChats(finalChats);
                         </View>
                         <View style={styles.chatDetails}>
                           <View style={styles.chatTitleRow}>
-                            <Text style={styles.chatTitle} numberOfLines={1}>{contactChat.contact_name}</Text>
+                            <Text style={styles.chatName} numberOfLines={1}>{contactChat.contact_name}</Text>
+                            <Text style={styles.chatTime}>{formatTime(contactChat.last_message_at || '')}</Text>
                           </View>
-                         {contactChat.issueLabel ? (
-  <View style={styles.issueRow}>
-    <Text style={styles.issueText} numberOfLines={1}>
-      {contactChat.issueLabel}
-    </Text>
-    {contactChat.isUserB && (
-      <View style={styles.hintBadge}>
-        <Text style={styles.hintBadgeText}>💬 Hint Received</Text>
-      </View>
-    )}
-  </View>
-) : null}
-
-
-{contactChat.lastMsg ? (
-  <Text style={styles.lastMsgText} numberOfLines={1}>
-    {contactChat.lastMsg}
-  </Text>
-) : (
-  <Text style={styles.lastMessage} numberOfLines={1}>
-    {contactChat.last_message || 'No messages yet'}
-  </Text>
-)}
-{/* ✅ Closed peacefully label */}
-{contactChat.context_data?.is_resolved || contactChat.is_resolved ? (
-  <Text style={styles.closedPeacefullyText}>✅ Closed peacefully</Text>
-) : null}
-
+                          {contactChat.chatTitle ? (
+                            <Text style={styles.chatTitle} numberOfLines={1}>{contactChat.chatTitle}</Text>
+                          ) : null}
+                          {contactChat.issueSummary ? (
+                            <Text style={styles.issueText} numberOfLines={1}>{contactChat.issueSummary}</Text>
+                          ) : null}
+                          <Text style={styles.lastMsgText} numberOfLines={1}>
+                            {contactChat.lastMsg || contactChat.last_message || 'No messages yet'}
+                          </Text>
+                          {(contactChat.ongoing_count > 0 || (contactChat.total_ongoing_count || 0) > 0 || contactChat.context_data?.is_resolved || contactChat.is_resolved) && (
+                            <View style={styles.metaRow}>
+                              {contactChat.ongoing_count > 0 && (
+                                <View style={styles.metaBadge}>
+                                  <Text style={styles.metaBadgeText}>{contactChat.ongoing_count} ongoing</Text>
+                                </View>
+                              )}
+                              {(contactChat.total_ongoing_count || 0) > 0 && (
+                                <View style={[styles.metaBadge, styles.metaBadgeAlt]}>
+                                  <Text style={[styles.metaBadgeText, styles.metaBadgeTextAlt]}>{contactChat.total_ongoing_count} total</Text>
+                                </View>
+                              )}
+                              {contactChat.context_data?.is_resolved || contactChat.is_resolved ? (
+                                <View style={styles.resolvedPill}>
+                                  <Text style={styles.resolvedPillText}>✅ Closed peacefully</Text>
+                                </View>
+                              ) : null}
+                            </View>
+                          )}
                         </View>
-                      </View>
-                      <View style={styles.badgeContainer}>
-                        {contactChat.ongoing_count > 0 && (
-                          <View style={styles.ongoingBadge}>
-                            <Text style={styles.ongoingBadgeText}>
-                              {contactChat.ongoing_count} ongoing
-                            </Text>
-                          </View>
-                        )}
-                        {(contactChat.total_ongoing_count || 0) > 0 && (
-                          <View style={styles.sessionBadge}>
-                            <Text style={styles.sessionBadgeText}>
-                              {contactChat.total_ongoing_count} total
-                            </Text>
-                          </View>
-                        )}
-                        <Text style={styles.chatTimeCompact}>
-                          {formatTime(contactChat.last_message_at)}
-                        </Text>
                       </View>
                     </View>
                   </TouchableOpacity>
@@ -830,7 +811,7 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     marginBottom: 2,
   },
-  chatTitle: {
+  chatName: {
     fontSize: Typography.fontSize.base,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.text.primary,
@@ -841,54 +822,23 @@ const styles = StyleSheet.create({
     fontSize: Typography.fontSize.sm,
     color: Colors.text.tertiary,
   },
-  badgeContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-    marginTop: Spacing.xs,
-  },
-  ongoingBadge: {
-    backgroundColor: Colors.warning[500],
-    borderRadius: BorderRadius.sm,
-    paddingHorizontal: Spacing.xs,
-    paddingVertical: 2,
-  },
-  ongoingBadgeText: {
-    color: Colors.text.inverse,
-    fontSize: Typography.fontSize.xs,
-    fontWeight: Typography.fontWeight.semibold,
-  },
-  sessionBadge: {
-    backgroundColor: Colors.neutral[400],
-    borderRadius: BorderRadius.sm,
-    paddingHorizontal: Spacing.xs,
-    paddingVertical: 2,
-  },
-  sessionBadgeText: {
-    color: Colors.text.inverse,
-    fontSize: Typography.fontSize.xs,
-    fontWeight: Typography.fontWeight.semibold,
-  },
-  chatTimeCompact: {
-    marginLeft: Spacing.sm,
-    fontSize: Typography.fontSize.xs,
-    color: Colors.text.tertiary,
-  },
-  lastMessage: {
+  chatTitle: {
     fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.medium,
     color: Colors.text.secondary,
-    lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
+    marginBottom: 2,
   },
- issueText: {
-  color: Colors.primary[700],
-  fontSize: Typography.fontSize.sm,
-  fontWeight: Typography.fontWeight.semibold,
-  marginTop: 2,
-},
+  issueText: {
+    color: Colors.primary[600],
+    fontSize: Typography.fontSize.xs,
+    fontWeight: Typography.fontWeight.semibold,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
 lastMsgText: {
-  color: Colors.text.secondary,
+  color: Colors.text.primary,
   fontSize: Typography.fontSize.sm,
-  marginTop: 1,
+  marginTop: 4,
 },
 
 issueRow: {
@@ -923,6 +873,40 @@ hintBadgeText: {
   deleteBtnDisabled: { opacity: 0.5 },
   deleteText: { color: Colors.text.inverse, fontSize: Typography.fontSize.sm, fontWeight: Typography.fontWeight.semibold },
 
+  metaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    marginTop: Spacing.xs,
+  },
+  metaBadge: {
+    backgroundColor: Colors.primary[100],
+    borderRadius: BorderRadius.sm,
+    paddingHorizontal: Spacing.xs,
+    paddingVertical: 2,
+  },
+  metaBadgeText: {
+    color: Colors.primary[700],
+    fontSize: Typography.fontSize.xs,
+    fontWeight: Typography.fontWeight.semibold,
+  },
+  metaBadgeAlt: {
+    backgroundColor: Colors.secondary[100],
+  },
+  metaBadgeTextAlt: {
+    color: Colors.secondary[700],
+  },
+  resolvedPill: {
+    backgroundColor: Colors.success[100],
+    borderRadius: BorderRadius.sm,
+    paddingHorizontal: Spacing.xs,
+    paddingVertical: 2,
+  },
+  resolvedPillText: {
+    color: Colors.success[700],
+    fontSize: Typography.fontSize.xs,
+    fontWeight: Typography.fontWeight.semibold,
+  },
 
 });
 

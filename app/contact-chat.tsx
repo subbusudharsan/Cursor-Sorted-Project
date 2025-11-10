@@ -1149,8 +1149,8 @@ const sendMessage = async (messageContent: string) => {
     });
 
     const updatedContextData = chatData?.context_data
-      ? { ...chatData.context_data, initial_pending: false }
-      : { initial_pending: false };
+      ? { ...chatData.context_data, initial_pending: false, session_promoted: true }
+      : { initial_pending: false, session_promoted: true };
 
     await supabase
       .from("chats")
@@ -1424,6 +1424,7 @@ const regenerateOptions = async () => {
                     returnStage: 'ready',
                     fromContactChat: '1',
                     sent: '0',
+                    skipReturnBanner: '1',
                   }
                 });
               } else {
