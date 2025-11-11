@@ -1475,56 +1475,8 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       }
     }
 
-    let options = Array.isArray(optionsData.options)
-      ? [...optionsData.options]
-      : [];
+    let options = optionsData.options || [];
     const expectedCount = isVeryFirstMessage ? 5 : 3;
-
-    if (isVeryFirstMessage) {
-      const friendlyTemplates =
-        contactCategory === "family"
-          ? [
-              "hey you 😊 got a sec?",
-              "hi fam, just wanted to say hey 🙂",
-              "yo! how’s your day been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
-            ]
-          : contactCategory === "friend"
-          ? [
-              "hey you 😊 got a sec?",
-              "hi there, just wanted to say hey 🙂",
-              "yo! how’s your day been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
-            ]
-          : contactCategory === "romantic"
-          ? [
-              "hey you 😊 got a sec?",
-              "hi love, just wanted to say hey 🙂",
-              "yo! how’s your evening been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
-            ]
-          : contactCategory === "work"
-          ? [
-              "hey you 😊 got a sec?",
-              "hi there, just wanted to say hey 🙂",
-              "yo! how’s your day been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
-            ]
-          : [
-              "hey you 😊 got a sec?",
-              "hi there, just wanted to say hey 🙂",
-              "yo! how’s your day been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
-            ];
-
-      options = friendlyTemplates.slice(0, 5);
-      console.log("✅ Rewrote warm-up options (friendly only):", options);
-    }
 
     // ✅ STRICT: Enforce minimum option count (5 for first turn, 3 for all others)
     if (!options || options.length === 0) {
@@ -1559,6 +1511,18 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
         return false;
       });
     };
+
+    // ✅ Extra warm-up cleanup: remove any accidental names or tags
+if (isVeryFirstMessage) {
+  options = options.map(opt =>
+    opt
+      .replace(/@\w+/g, 'you')
+      .replace(/#\w+/g, '')
+      .replace(/\b[A-Z][a-z]{2,}\b/g, 'you') // capitalized names → "you"
+      .replace(/\b(I'?m|I am)\s+jealous\b/gi, 'just wanted to say hi 😊')
+  );
+}
+
 
     // ✅ LENIENT WORD LIMIT + NAME LEAK VALIDATION
     // Target 10-14 words, but allow up to 20 words to ensure we always have options
@@ -1930,16 +1894,8 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     const processOption = (text: string): string => {
       const stripped = stripTagSymbols(text);
       const perspectived = cleanPerspective(stripped);
-      let processed = fixPronounMistakes(removeListenerName(perspectived));
-    
-      // ✅ Optional polish: add light emoji for warm-up stage
-      if (isVeryFirstMessage && !/[?!]$/.test(processed)) {
-        processed += ' 🙂';
-      }
-    
-      return capitalizeFirstLetter(processed);
+      return capitalizeFirstLetter(fixPronounMistakes(removeListenerName(perspectived)));
     };
-    
 
     const finalOptions = options.slice(0, Math.min(expectedCount, options.length))
       .map((opt: string) => processOption(opt));
@@ -2097,7 +2053,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       return latestKeywords.some(keyword => lower.includes(keyword));
     }).length;
 
-    if (!finalClosureDetected && !isVeryFirstMessage && latestKeywords.length > 0 && selectedLatestCoverage === 0) {
+    if (!finalClosureDetected && latestKeywords.length > 0 && selectedLatestCoverage === 0) {
       const latestSnippetRaw = getPrimaryStatement(cleanCurrentMessage || '');
       if (latestSnippetRaw) {
         const sanitizedSnippet = latestSnippetRaw.replace(/["']/g, '').trim();

@@ -141,21 +141,45 @@ function ChatsScreen() {
 if (contactChatsError) throw contactChatsError;
 
 // 🧩 Fetch latest messages fallback (only if last_message missing)
-const { data: recentMsgs } = await supabase
-  .from('messages')
-  .select('chat_id, content, created_at')
-  .order('created_at', { ascending: false })
-  .limit(50);
+const chatIds = (contactChatsData || [])
+  .map((chat: any) => chat.id)
+  .filter((id: string | null | undefined): id is string => Boolean(id));
 
 const latestMsgMap = new Map<string, { content: string; created_at: string }>();
-(recentMsgs || []).forEach(msg => {
-  if (!latestMsgMap.has(msg.chat_id)) {
-    latestMsgMap.set(msg.chat_id, {
-      content: msg.content,
-      created_at: msg.created_at
+const messagePresenceMap = new Map<string, { hasAny: boolean; hasUserMessage: boolean }>();
+
+if (chatIds.length > 0) {
+  const { data: messageRows, error: messageError } = await supabase
+    .from('messages')
+    .select('chat_id, sender_id, content, created_at')
+    .in('chat_id', chatIds)
+    .order('created_at', { ascending: false });
+
+  if (messageError) {
+    console.warn('⚠️ Failed to fetch message presence metadata:', messageError);
+  } else if (messageRows) {
+    messageRows.forEach((row: any) => {
+      if (!row?.chat_id) return;
+
+      if (!messagePresenceMap.has(row.chat_id)) {
+        messagePresenceMap.set(row.chat_id, { hasAny: false, hasUserMessage: false });
+      }
+
+      const presence = messagePresenceMap.get(row.chat_id)!;
+      presence.hasAny = true;
+      if (row.sender_id === user?.id) {
+        presence.hasUserMessage = true;
+      }
+
+      if (!latestMsgMap.has(row.chat_id)) {
+        latestMsgMap.set(row.chat_id, {
+          content: row.content ?? 'New conversation started',
+          created_at: row.created_at ?? new Date().toISOString(),
+        });
+      }
     });
   }
-});
+}
 
 // ✅ Include all chats where user participates (no over-filter)
 const validContactChats = (contactChatsData || []).filter((chat: any) =>
@@ -239,9 +263,10 @@ validContactChats.forEach((chat: any) => {
   // Count ongoing per contact (maps prevent double-count drift when aggregating later)
   // My Talks = chats where user_id === current user (user started the chat)
   // Total = all unresolved chats with this contact (regardless of who started)
-  if (!chat.is_resolved) {
+  const presence = messagePresenceMap.get(chat.id) || { hasAny: false, hasUserMessage: false };
+  if (!chat.is_resolved && presence.hasAny) {
     totalOngoingByContact.set(contactId, (totalOngoingByContact.get(contactId) || 0) + 1);
-    if (isMyTalk) {
+    if (isMyTalk && presence.hasUserMessage) {
       myOngoingByContact.set(contactId, (myOngoingByContact.get(contactId) || 0) + 1);
     }
     console.log(`📊 Chat counting: chat_id=${chat.id}, user_id=${chat.user_id}, contact_id=${chat.contact_id}, isMyTalk=${isMyTalk}, contactId=${contactId}, myOngoing=${myOngoingByContact.get(contactId)}, totalOngoing=${totalOngoingByContact.get(contactId)}`);

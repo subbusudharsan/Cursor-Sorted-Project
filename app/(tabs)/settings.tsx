@@ -25,6 +25,7 @@ import {
   X,
   Upload,
   Trash2,
+  Lock,
 } from 'lucide-react-native';
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/Colors';
 import LoadingSpinner from '@/components/ui/LoadingSpinner';
@@ -205,6 +206,13 @@ function SettingsScreen() {
       subtitle: 'Control your privacy settings',
       description: 'Manage data sharing and account security.',
       onPress: () => router.push('/settings/privacy'),
+    },
+    {
+      icon: Lock,
+      title: 'Change Password',
+      subtitle: 'Keep your password strong',
+      description: 'Update your password with the latest security policy.',
+      onPress: () => router.push('/settings/change-password'),
     },
     {
       icon: Trash2,

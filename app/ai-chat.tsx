@@ -37,6 +37,7 @@ import {
   Spacing,
   Typography,
 } from "@/constants/Colors";
+import { MY_TALKS_LIMIT, getCompletedMyTalksCount, buildMyTalksLimitMessage } from "@/lib/myTalksLimit";
 // Prevent undefined Colors or constants crash in Expo web
 if (!Colors?.primary) console.warn("⚠️ Colors not loaded properly");
 
@@ -185,6 +186,10 @@ function AIChatScreen() {
   const [prevAnswerCursorPos, setPrevAnswerCursorPos] = useState<{[key: number]: number}>({});
   const [editModeCursorPos, setEditModeCursorPos] = useState<{[key: number]: number}>({});
   const [additionalInfoCursorPos, setAdditionalInfoCursorPos] = useState<number>(0);
+  const descriptionAutosaveReadyRef = useRef(false);
+  const titleAutosaveReadyRef = useRef(false);
+  const descriptionAutosaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const titleAutosaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Pronoun selection state for all stages
   const [showPronounDropdown, setShowPronounDropdown] = useState<'@' | '#' | null>(null);
@@ -216,6 +221,76 @@ function AIChatScreen() {
     },
     [currentChatId]
   );
+  useEffect(() => {
+    descriptionAutosaveReadyRef.current = false;
+    titleAutosaveReadyRef.current = false;
+  }, [currentChatId]);
+
+  useEffect(() => {
+    if (!currentChatId) return;
+    if (!titleAutosaveReadyRef.current) {
+      titleAutosaveReadyRef.current = true;
+      return;
+    }
+
+    if (titleAutosaveTimeoutRef.current) {
+      clearTimeout(titleAutosaveTimeoutRef.current);
+    }
+
+    titleAutosaveTimeoutRef.current = setTimeout(() => {
+      const normalized = chatTitle.trim();
+      const fields: Record<string, any> = {};
+      if (normalized.length > 0) {
+        fields.session_name = normalized;
+      }
+      updateChatRecord(fields, {
+        chat_title: normalized || contextDataRef.current?.chat_title || '',
+      });
+    }, 500);
+
+    return () => {
+      if (titleAutosaveTimeoutRef.current) {
+        clearTimeout(titleAutosaveTimeoutRef.current);
+      }
+    };
+  }, [chatTitle, currentChatId, updateChatRecord]);
+
+  useEffect(() => {
+    if (!currentChatId) return;
+    if (!descriptionAutosaveReadyRef.current) {
+      descriptionAutosaveReadyRef.current = true;
+      return;
+    }
+
+    if (descriptionAutosaveTimeoutRef.current) {
+      clearTimeout(descriptionAutosaveTimeoutRef.current);
+    }
+
+    descriptionAutosaveTimeoutRef.current = setTimeout(() => {
+      const trimmed = initialDescription.trim();
+      const fields: Record<string, any> = {};
+      if (trimmed.length > 0) {
+        const preview = trimmed.length > 140 ? `${trimmed.slice(0, 137)}…` : trimmed;
+        fields.last_message = preview;
+        fields.last_message_at = new Date().toISOString();
+      }
+      const contextPatch: Record<string, any> = {
+        initial_description: initialDescription,
+        taggedEntities,
+      };
+      if (flowStage === 'welcome') {
+        contextPatch.flowStage = 'welcome';
+      }
+      updateChatRecord(fields, contextPatch);
+    }, 600);
+
+    return () => {
+      if (descriptionAutosaveTimeoutRef.current) {
+        clearTimeout(descriptionAutosaveTimeoutRef.current);
+      }
+    };
+  }, [initialDescription, JSON.stringify(taggedEntities), currentChatId, updateChatRecord, flowStage]);
+
 
   const scrollViewRef = useRef<ScrollView>(null);
 
@@ -354,6 +429,15 @@ function AIChatScreen() {
           email: contactProfile.email,
           full_name: contactProfile.full_name,
         });
+      }
+
+      const completedMyTalks = await getCompletedMyTalksCount(user.id, contactIdValue);
+      if (completedMyTalks >= MY_TALKS_LIMIT) {
+        const friendlyName = contactProfile?.full_name || contactProfile?.email || 'this contact';
+        Alert.alert('Limit Reached', buildMyTalksLimitMessage(friendlyName));
+        setInitializing(false);
+        router.push('/ai-assistant');
+        return;
       }
 
       const defaultSessionName = `Conversation with ${contactProfile?.full_name || contactProfile?.email}`;
@@ -1518,6 +1602,16 @@ const inferEntityCategory = (name: string): string => {
           console.error('❌ Failed to load contact profile');
           throw new Error('Contact profile not found. The contact may have been deleted.');
         }
+
+        const limitContactId = contactProfile?.id || contactIdToLoad;
+        const completedMyTalks = await getCompletedMyTalksCount(user.id, limitContactId);
+        if (completedMyTalks >= MY_TALKS_LIMIT) {
+          const friendlyName = contactProfile?.full_name || contactProfile?.email || 'this contact';
+          Alert.alert('Limit Reached', buildMyTalksLimitMessage(friendlyName));
+          setInitializing(false);
+          router.push('/ai-assistant');
+          return;
+        }
       } catch (contactErr) {
         console.error('❌ Contact loading error:', contactErr);
         throw new Error('Failed to load contact information');
@@ -2201,7 +2295,7 @@ Generate:
 1. A refined summary paragraph under "📌 Discussion Summary" (written from User A's "I/me/my" perspective)
 2. One empathetic insight under "💡 My Thoughts"
 
-Keep total under 100 words. Write naturally, using tags for ALL participants (except "I/me/my" for User A). Never use pronouns like "you", "he", "she", "they", "them", or "their" - always use explicit @ or # tags.
+Keep total under 100 words. Write naturally. User A must speak about themselves using only "I / me / my / myself". Address User B directly as "you / your / yourself" (no @ tags). For any other participants that were explicitly mentioned with # tags in the context, reuse those same # tags. Do not invent new people, names, or events.
 
 Your response MUST include both "📌 Discussion Summary" and "💡 My Thoughts" in this exact order.
 Return only two labeled sections exactly in this order:
@@ -2227,22 +2321,35 @@ Return only two labeled sections exactly in this order:
 
       const result = await response.json();
 
-     if (result?.content) {
-  const userBEntity = entitiesFromRegistry?.find((e: any) => e.role_in_conversation === 'User B' || (e.is_participant && e.participant_slot === 'B'));
-  const allowedTagSet = new Set<string>();
-  const tagRegex = /[@#][A-Za-z0-9_\-]+/g;
-  const recordAllowedTag = (tag: string) => {
-    if (!tag) return;
-    allowedTagSet.add(tag);
-    allowedTagSet.add(tag.toLowerCase());
-  };
-  const addTagsFromText = (text?: string | null) => {
-    if (!text) return;
-    const matches = text.match(tagRegex);
-    if (matches) {
-      matches.forEach(recordAllowedTag);
-    }
-  };
+      if (result?.content) {
+        const userAEntity =
+          entitiesFromRegistry?.find(
+            (e: any) =>
+              e.role_in_conversation === "User A" ||
+              (e.is_participant && e.participant_slot === "A")
+          ) ?? null;
+        const userBEntity =
+          entitiesFromRegistry?.find(
+            (e: any) =>
+              e.role_in_conversation === "User B" ||
+              (e.is_participant && e.participant_slot === "B")
+          ) ?? null;
+        const allowedTagSet = new Set<string>();
+        const tagRegex = /[@#][A-Za-z0-9_\-]+/g;
+        const recordAllowedTag = (tag: string) => {
+          if (!tag) return;
+          allowedTagSet.add(tag);
+          allowedTagSet.add(tag.toLowerCase());
+        };
+        const escapeRegex = (value: string) =>
+          value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const addTagsFromText = (text?: string | null) => {
+          if (!text) return;
+          const matches = text.match(tagRegex);
+          if (matches) {
+            matches.forEach(recordAllowedTag);
+          }
+        };
 
   addTagsFromText(initialDescription);
   pairs.forEach((pair: QAPair) => {
@@ -2251,16 +2358,6 @@ Return only two labeled sections exactly in this order:
   });
   addTagsFromText(structuredAnswersText);
   addTagsFromText(additionalInfo);
-  (taggedEntities || []).forEach((entity) => {
-    if (entity?.tag) {
-      recordAllowedTag(entity.tag);
-    }
-  });
-  (additionalInfoTags || []).forEach((entity) => {
-    if (entity?.tag) {
-      recordAllowedTag(entity.tag);
-    }
-  });
   if (userBEntity?.entity_name) {
     recordAllowedTag(`@${userBEntity.entity_name}`);
   }
@@ -2274,9 +2371,12 @@ Return only two labeled sections exactly in this order:
   
   // Extract and protect all existing @ and # tags
   rawContent = rawContent.replace(/(@[\w]+|#[\w]+)/g, (match: string): string => {
-    const placeholder = `__TAG_PROTECT_${protectionIndex}__`;
+    const placeholder = `<<TAG_PROTECT_${protectionIndex}>>`;
+    const legacyPlaceholder = `__TAG_PROTECT_${protectionIndex}__`;
     tagProtectionMap[placeholder] = match;
+    tagProtectionMap[legacyPlaceholder] = match;
     existingTags.add(match);
+    existingTags.add(match.toLowerCase());
     protectionIndex++;
     return placeholder;
   });
@@ -2290,95 +2390,94 @@ Return only two labeled sections exactly in this order:
   sortedEntities.forEach((e: any) => {
     const name = e.entity_name?.toLowerCase().trim();
     const fullName = e.entity_name;
-    if (name && fullName) {
-      const tagSymbol = e.is_registered ? '@' : '#';
-      const tag = `${tagSymbol}${fullName}`;
-      
-      // Skip if this entity already has a tag in the text (to avoid duplicates)
-      if (existingTags.has(tag)) {
-        return;
-      }
-      
-      // User A -> Keep ONLY first-person "I/me/my" (do not replace these)
-      if (e.role_in_conversation === 'User A' || (e.is_participant && e.participant_slot === 'A')) {
-        // Only replace generic references, keep "I/me/my" as-is
-        const patterns = [
-          new RegExp(`\\bthe user\\b`, 'gi'),
-          new RegExp(`\\buser a\\b`, 'gi'),
-          new RegExp(`\\bthe person preparing\\b`, 'gi'),
-          new RegExp(`\\bthe person writing\\b`, 'gi'),
-          // Only replace name if it's not already protected as a tag
-          new RegExp(`\\b${fullName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b(?!\\s*(?:__TAG_PROTECT|said|told|asked))`, 'gi'),
-        ];
-        patterns.forEach((pattern) => {
-          rawContent = rawContent.replace(pattern, (match: string, offset: number, original: string): string => {
-            const before = original.substring(Math.max(0, offset - 10), offset);
-            const after = original.substring(offset + match.length, Math.min(original.length, offset + match.length + 10));
-            if (before.includes('__TAG_PROTECT') || after.includes('__TAG_PROTECT')) {
-              return match;
-            }
-            return 'I';
-          });
-        });
-      }
-      // User B -> Replace ALL pronouns with @tag
-      else if (e.role_in_conversation === 'User B' || (e.is_participant && e.participant_slot === 'B')) {
-        // Escape special regex characters in fullName
-        const escapedName = fullName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        
-        // Replace pronouns with tag - use word boundaries to avoid partial matches
-        rawContent = rawContent.replace(new RegExp(`\\byou\\b(?!\\s*${escapedName})`, 'gi'), tag);
-        rawContent = rawContent.replace(new RegExp(`\\byour\\b(?!\\s*${escapedName})`, 'gi'), `${tag}'s`);
-        rawContent = rawContent.replace(new RegExp(`\\byours\\b(?!\\s*${escapedName})`, 'gi'), `${tag}'s`);
-        rawContent = rawContent.replace(new RegExp(`\\byourself\\b(?!\\s*${escapedName})`, 'gi'), tag);
-        
-        // Replace generic references and bare names (not already protected)
-        const patterns = [
-          new RegExp(`\\buser b\\b`, 'gi'),
-          new RegExp(`\\bthe contact\\b`, 'gi'),
-          new RegExp(`\\bthe recipient\\b`, 'gi'),
-          new RegExp(`(?!__TAG_PROTECT)\\b${escapedName}\\b(?!\\s*(?:__TAG_PROTECT))`, 'gi'),
-        ];
-        patterns.forEach((pattern) => {
-          rawContent = rawContent.replace(pattern, tag);
-        });
-      }
-      // Third parties -> Replace ALL pronouns with tags
-      else {
-        // Escape special regex characters in fullName
-        const escapedName = fullName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        
-        // Replace pronouns based on stored preferred_pronouns
-        const pronouns = e.preferred_pronouns || 'they/them';
-        if (pronouns.toLowerCase().includes('he/him')) {
-          rawContent = rawContent.replace(new RegExp(`\\bhe\\b(?!\\s*${escapedName})`, 'gi'), tag);
-          rawContent = rawContent.replace(new RegExp(`\\bhim\\b(?!\\s*${escapedName})`, 'gi'), tag);
-          rawContent = rawContent.replace(new RegExp(`\\bhis\\b(?!\\s*${escapedName})`, 'gi'), `${tag}'s`);
-          rawContent = rawContent.replace(new RegExp(`\\bhimself\\b(?!\\s*${escapedName})`, 'gi'), tag);
-        } else if (pronouns.toLowerCase().includes('she/her')) {
-          rawContent = rawContent.replace(new RegExp(`\\bshe\\b(?!\\s*${escapedName})`, 'gi'), tag);
-          rawContent = rawContent.replace(new RegExp(`\\bher\\b(?!\\s*${escapedName})`, 'gi'), tag);
-          rawContent = rawContent.replace(new RegExp(`\\bhers\\b(?!\\s*${escapedName})`, 'gi'), `${tag}'s`);
-          rawContent = rawContent.replace(new RegExp(`\\bherself\\b(?!\\s*${escapedName})`, 'gi'), tag);
-        } else {
-          // they/them
-          rawContent = rawContent.replace(new RegExp(`\\bthey\\b(?!\\s*${escapedName})`, 'gi'), tag);
-          rawContent = rawContent.replace(new RegExp(`\\bthem\\b(?!\\s*${escapedName})`, 'gi'), tag);
-          rawContent = rawContent.replace(new RegExp(`\\btheir\\b(?!\\s*${escapedName})`, 'gi'), `${tag}'s`);
-          rawContent = rawContent.replace(new RegExp(`\\btheirs\\b(?!\\s*${escapedName})`, 'gi'), `${tag}'s`);
-          rawContent = rawContent.replace(new RegExp(`\\bthemselves\\b(?!\\s*${escapedName})`, 'gi'), tag);
-        }
-        
-        // Replace bare names (not already protected)
-        rawContent = rawContent.replace(new RegExp(`(?!__TAG_PROTECT|@|#)\\b${escapedName}\\b(?!\\s*(?:__TAG_PROTECT|@|#))`, 'gi'), tag);
-      }
+    if (!name || !fullName) {
+      return;
     }
+
+    const tagSymbol = e.is_registered ? '@' : '#';
+    const tag = `${tagSymbol}${fullName}`;
+    const tagLower = tag.toLowerCase();
+    const isUserA = e.role_in_conversation === 'User A' || (e.is_participant && e.participant_slot === 'A');
+    const isUserB = e.role_in_conversation === 'User B' || (e.is_participant && e.participant_slot === 'B');
+    const isMentioned = allowedTagSet.has(tag) || allowedTagSet.has(tagLower);
+
+    if (!isUserA && !isUserB && !isMentioned) {
+      return;
+    }
+
+    if (existingTags.has(tag) || existingTags.has(tagLower)) {
+      return;
+    }
+
+    if (isUserA) {
+      const patterns = [
+        new RegExp(`\\bthe user\\b`, 'gi'),
+        new RegExp(`\\buser a\\b`, 'gi'),
+        new RegExp(`\\bthe person preparing\\b`, 'gi'),
+        new RegExp(`\\bthe person writing\\b`, 'gi'),
+        new RegExp(`\\b${escapeRegex(fullName)}\\b(?!\\s*(?:__TAG_PROTECT|said|told|asked))`, 'gi'),
+      ];
+      patterns.forEach((pattern) => {
+        rawContent = rawContent.replace(pattern, (match: string, offset: number, original: string): string => {
+          const before = original.substring(Math.max(0, offset - 10), offset);
+          const after = original.substring(offset + match.length, Math.min(original.length, offset + match.length + 10));
+          if (before.includes('__TAG_PROTECT') || after.includes('__TAG_PROTECT')) {
+            return match;
+          }
+          return 'I';
+        });
+      });
+      return;
+    }
+
+    if (isUserB) {
+      const escapedName = escapeRegex(fullName);
+      rawContent = rawContent.replace(new RegExp(`\\buser b\\b`, 'gi'), 'you');
+      rawContent = rawContent.replace(new RegExp(`\\bthe contact\\b`, 'gi'), 'you');
+      rawContent = rawContent.replace(new RegExp(`\\bthe recipient\\b`, 'gi'), 'you');
+      rawContent = rawContent.replace(new RegExp(`(?!__TAG_PROTECT|@|#)\\b${escapedName}\\b`, 'gi'), 'you');
+      return;
+    }
+
+    const escapedName = escapeRegex(fullName);
+    const pronouns = e.preferred_pronouns || 'they/them';
+    if (pronouns.toLowerCase().includes('he/him')) {
+      rawContent = rawContent.replace(new RegExp(`\\bhe\\b(?!\\s*${escapedName})`, 'gi'), tag);
+      rawContent = rawContent.replace(new RegExp(`\\bhim\\b(?!\\s*${escapedName})`, 'gi'), tag);
+      rawContent = rawContent.replace(new RegExp(`\\bhis\\b(?!\\s*${escapedName})`, 'gi'), `${tag}'s`);
+      rawContent = rawContent.replace(new RegExp(`\\bhimself\\b(?!\\s*${escapedName})`, 'gi'), tag);
+    } else if (pronouns.toLowerCase().includes('she/her')) {
+      rawContent = rawContent.replace(new RegExp(`\\bshe\\b(?!\\s*${escapedName})`, 'gi'), tag);
+      rawContent = rawContent.replace(new RegExp(`\\bher\\b(?!\\s*${escapedName})`, 'gi'), tag);
+      rawContent = rawContent.replace(new RegExp(`\\bhers\\b(?!\\s*${escapedName})`, 'gi'), `${tag}'s`);
+      rawContent = rawContent.replace(new RegExp(`\\bherself\\b(?!\\s*${escapedName})`, 'gi'), tag);
+    } else {
+      rawContent = rawContent.replace(new RegExp(`\\bthey\\b(?!\\s*${escapedName})`, 'gi'), tag);
+      rawContent = rawContent.replace(new RegExp(`\\bthem\\b(?!\\s*${escapedName})`, 'gi'), tag);
+      rawContent = rawContent.replace(new RegExp(`\\btheir\\b(?!\\s*${escapedName})`, 'gi'), `${tag}'s`);
+      rawContent = rawContent.replace(new RegExp(`\\btheirs\\b(?!\\s*${escapedName})`, 'gi'), `${tag}'s`);
+      rawContent = rawContent.replace(new RegExp(`\\bthemselves\\b(?!\\s*${escapedName})`, 'gi'), tag);
+    }
+
+    rawContent = rawContent.replace(new RegExp(`(?!__TAG_PROTECT|@|#)\\b${escapedName}\\b(?!\\s*(?:__TAG_PROTECT|@|#))`, 'gi'), tag);
   });
   
   // Restore protected tags
-  Object.entries(tagProtectionMap).forEach(([placeholder, originalTag]) => {
-    rawContent = rawContent.replace(placeholder, originalTag);
+  rawContent = rawContent.replace(/<<TAG_PROTECT_\d+>>|__TAG_PROTECT_\d+__/g, (placeholder: string) => {
+    return tagProtectionMap[placeholder] ?? placeholder;
   });
+  
+  if (userAEntity?.entity_name) {
+    const escapedUserA = escapeRegex(userAEntity.entity_name);
+    rawContent = rawContent.replace(new RegExp(`@${escapedUserA}'s`, 'gi'), 'my');
+    rawContent = rawContent.replace(new RegExp(`@${escapedUserA}`, 'gi'), 'I');
+  }
+
+  if (userBEntity?.entity_name) {
+    const escapedUserB = escapeRegex(userBEntity.entity_name);
+    rawContent = rawContent.replace(new RegExp(`@${escapedUserB}'s`, 'gi'), 'your');
+    rawContent = rawContent.replace(new RegExp(`@${escapedUserB}`, 'gi'), 'you');
+  }
   
   // Final cleanup: remove any remaining double @ or # patterns
   rawContent = rawContent.replace(/@@+/g, '@');
@@ -2620,7 +2719,7 @@ Generate:
 1. A refined summary paragraph under "📌 Discussion Summary" (written from User A's "I/me/my" perspective)
 2. One empathetic insight under "💡 My Thoughts"
 
-Keep total under 100 words. Write naturally, using tags for ALL participants (except "I/me/my" for User A). Never use pronouns like "you", "he", "she", "they", "them", or "their" - always use explicit @ or # tags.
+Keep total under 100 words. Write naturally. User A must speak about themselves using only "I / me / my / myself". Address User B directly as "you / your / yourself" (no @ tags). For any other participants that were explicitly mentioned with # tags in the context, reuse those same # tags. Do not invent new people, names, or events.
 
 Your response MUST include both "📌 Discussion Summary" and "💡 My Thoughts" in this exact order.
 Return only two labeled sections exactly in this order:
@@ -2645,6 +2744,7 @@ Return only two labeled sections exactly in this order:
       const result = await response.json();
 
      if (result?.content) {
+  const userAEntity = entitiesFromRegistry?.find((e: any) => e.role_in_conversation === 'User A' || (e.is_participant && e.participant_slot === 'A'));
   const userBEntity = entitiesFromRegistry?.find((e: any) => e.role_in_conversation === 'User B' || (e.is_participant && e.participant_slot === 'B'));
   const allowedTagSet = new Set<string>();
   const tagRegex = /[@#][A-Za-z0-9_\-]+/g;
@@ -2653,6 +2753,7 @@ Return only two labeled sections exactly in this order:
     allowedTagSet.add(tag);
     allowedTagSet.add(tag.toLowerCase());
   };
+  const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const addTagsFromText = (text?: string | null) => {
     if (!text) return;
     const matches = text.match(tagRegex);
@@ -2668,16 +2769,6 @@ Return only two labeled sections exactly in this order:
   });
   addTagsFromText(structuredAnswersText);
   addTagsFromText(additionalInfo);
-  (taggedEntities || []).forEach((entity) => {
-    if (entity?.tag) {
-      recordAllowedTag(entity.tag);
-    }
-  });
-  (additionalInfoTags || []).forEach((entity) => {
-    if (entity?.tag) {
-      recordAllowedTag(entity.tag);
-    }
-  });
   if (userBEntity?.entity_name) {
     recordAllowedTag(`@${userBEntity.entity_name}`);
   }
@@ -2691,9 +2782,12 @@ Return only two labeled sections exactly in this order:
   
   // Extract and protect all existing @ and # tags
   rawContent = rawContent.replace(/(@[\w]+|#[\w]+)/g, (match: string): string => {
-    const placeholder = `__TAG_PROTECT_${protectionIndex}__`;
+    const placeholder = `<<TAG_PROTECT_${protectionIndex}>>`;
+    const legacyPlaceholder = `__TAG_PROTECT_${protectionIndex}__`;
     tagProtectionMap[placeholder] = match;
+    tagProtectionMap[legacyPlaceholder] = match;
     existingTags.add(match);
+    existingTags.add(match.toLowerCase());
     protectionIndex++;
     return placeholder;
   });
@@ -2707,85 +2801,94 @@ Return only two labeled sections exactly in this order:
   sortedEntities.forEach((e: any) => {
     const name = e.entity_name?.toLowerCase().trim();
     const fullName = e.entity_name;
-    if (name && fullName) {
-      const tagSymbol = e.is_registered ? '@' : '#';
-      const tag = `${tagSymbol}${fullName}`;
-      
-      // User A -> Keep ONLY first-person "I/me/my" (do not replace these)
-      if (e.role_in_conversation === 'User A' || (e.is_participant && e.participant_slot === 'A')) {
-        // Only replace generic references, keep "I/me/my" as-is
-        const patterns = [
-          new RegExp(`\\bthe user\\b`, 'gi'),
-          new RegExp(`\\buser a\\b`, 'gi'),
-          new RegExp(`\\bthe person preparing\\b`, 'gi'),
-          new RegExp(`\\bthe person writing\\b`, 'gi'),
-          new RegExp(`\\b${fullName}\\b(?!\\s*(?:@|#|said|told|asked))`, 'gi'),
-        ];
-        patterns.forEach((pattern) => {
-          rawContent = rawContent.replace(pattern, (match: string, offset: number, original: string): string => {
-            const before = original.substring(Math.max(0, offset - 5), offset);
-            const after = original.substring(offset + match.length, Math.min(original.length, offset + match.length + 5));
-            if (before.includes('@') || before.includes('#') || after.includes('@') || after.includes('#')) {
-              return match;
-            }
-            return 'I';
-          });
-        });
-      }
-      // User B -> Replace ALL pronouns with @tag
-      else if (e.role_in_conversation === 'User B' || (e.is_participant && e.participant_slot === 'B')) {
-        // First, remove any double @ signs
-        rawContent = rawContent.replace(new RegExp(`@@${fullName}`, 'gi'), tag);
-        rawContent = rawContent.replace(new RegExp(`@+${fullName}`, 'gi'), tag);
-        
-        // Replace pronouns with tag
-        rawContent = rawContent.replace(new RegExp(`\\byou\\b`, 'gi'), tag);
-        rawContent = rawContent.replace(new RegExp(`\\byour\\b`, 'gi'), `${tag}'s`);
-        rawContent = rawContent.replace(new RegExp(`\\byours\\b`, 'gi'), `${tag}'s`);
-        rawContent = rawContent.replace(new RegExp(`\\byourself\\b`, 'gi'), tag);
-        
-        // Replace generic references and bare names
-        const patterns = [
-          new RegExp(`\\buser b\\b`, 'gi'),
-          new RegExp(`\\bthe contact\\b`, 'gi'),
-          new RegExp(`\\bthe recipient\\b`, 'gi'),
-          new RegExp(`(?!@)\\b${fullName}\\b(?!\\s*(?:@|#))`, 'gi'),
-        ];
-        patterns.forEach((pattern) => {
-          rawContent = rawContent.replace(pattern, tag);
-        });
-      }
-      // Third parties -> Replace ALL pronouns with tags
-      else {
-        // Remove any double @ or # signs first
-        rawContent = rawContent.replace(new RegExp(`${tagSymbol}+${fullName}`, 'gi'), tag);
-        
-        // Replace pronouns based on stored preferred_pronouns
-        const pronouns = e.preferred_pronouns || 'they/them';
-        if (pronouns.toLowerCase().includes('he/him')) {
-          rawContent = rawContent.replace(new RegExp(`\\bhe\\b(?!\\s*${fullName})`, 'gi'), tag);
-          rawContent = rawContent.replace(new RegExp(`\\bhim\\b(?!\\s*${fullName})`, 'gi'), tag);
-          rawContent = rawContent.replace(new RegExp(`\\bhis\\b(?!\\s*${fullName})`, 'gi'), `${tag}'s`);
-          rawContent = rawContent.replace(new RegExp(`\\bhimself\\b(?!\\s*${fullName})`, 'gi'), tag);
-        } else if (pronouns.toLowerCase().includes('she/her')) {
-          rawContent = rawContent.replace(new RegExp(`\\bshe\\b(?!\\s*${fullName})`, 'gi'), tag);
-          rawContent = rawContent.replace(new RegExp(`\\bher\\b(?!\\s*${fullName})`, 'gi'), tag);
-          rawContent = rawContent.replace(new RegExp(`\\bhers\\b(?!\\s*${fullName})`, 'gi'), `${tag}'s`);
-          rawContent = rawContent.replace(new RegExp(`\\bherself\\b(?!\\s*${fullName})`, 'gi'), tag);
-        } else {
-          // they/them
-          rawContent = rawContent.replace(new RegExp(`\\bthey\\b(?!\\s*${fullName})`, 'gi'), tag);
-          rawContent = rawContent.replace(new RegExp(`\\bthem\\b(?!\\s*${fullName})`, 'gi'), tag);
-          rawContent = rawContent.replace(new RegExp(`\\btheir\\b(?!\\s*${fullName})`, 'gi'), `${tag}'s`);
-          rawContent = rawContent.replace(new RegExp(`\\btheirs\\b(?!\\s*${fullName})`, 'gi'), `${tag}'s`);
-          rawContent = rawContent.replace(new RegExp(`\\bthemselves\\b(?!\\s*${fullName})`, 'gi'), tag);
-        }
-        
-        // Replace bare names
-        rawContent = rawContent.replace(new RegExp(`(?!@|#)\\b${fullName}\\b(?!\\s*(?:@|#))`, 'gi'), tag);
-      }
+    if (!name || !fullName) {
+      return;
     }
+
+    const tagSymbol = e.is_registered ? '@' : '#';
+    const tag = `${tagSymbol}${fullName}`;
+    const tagLower = tag.toLowerCase();
+    const isUserA = e.role_in_conversation === 'User A' || (e.is_participant && e.participant_slot === 'A');
+    const isUserB = e.role_in_conversation === 'User B' || (e.is_participant && e.participant_slot === 'B');
+    const isMentioned = allowedTagSet.has(tag) || allowedTagSet.has(tagLower);
+
+    if (!isUserA && !isUserB && !isMentioned) {
+      return;
+    }
+
+    if (existingTags.has(tag) || existingTags.has(tagLower)) {
+      return;
+    }
+
+    if (isUserA) {
+      const patterns = [
+        new RegExp(`\\bthe user\\b`, 'gi'),
+        new RegExp(`\\buser a\\b`, 'gi'),
+        new RegExp(`\\bthe person preparing\\b`, 'gi'),
+        new RegExp(`\\bthe person writing\\b`, 'gi'),
+        new RegExp(`\\b${escapeRegex(fullName)}\\b(?!\\s*(?:@|#|said|told|asked))`, 'gi'),
+      ];
+      patterns.forEach((pattern) => {
+        rawContent = rawContent.replace(pattern, (match: string, offset: number, original: string): string => {
+          const before = original.substring(Math.max(0, offset - 5), offset);
+          const after = original.substring(offset + match.length, Math.min(original.length, offset + match.length + 5));
+          if (before.includes('@') || before.includes('#') || after.includes('@') || after.includes('#')) {
+            return match;
+          }
+          return 'I';
+        });
+      });
+      return;
+    }
+
+    if (isUserB) {
+      const escapedName = escapeRegex(fullName);
+      rawContent = rawContent.replace(new RegExp(`\\buser b\\b`, 'gi'), 'you');
+      rawContent = rawContent.replace(new RegExp(`\\bthe contact\\b`, 'gi'), 'you');
+      rawContent = rawContent.replace(new RegExp(`\\bthe recipient\\b`, 'gi'), 'you');
+      rawContent = rawContent.replace(new RegExp(`(?!__TAG_PROTECT|@|#)\\b${escapedName}\\b`, 'gi'), 'you');
+      return;
+    }
+
+    const escapedName = escapeRegex(fullName);
+    const pronouns = e.preferred_pronouns || 'they/them';
+    if (pronouns.toLowerCase().includes('he/him')) {
+      rawContent = rawContent.replace(new RegExp(`\\bhe\\b(?!\\s*${escapedName})`, 'gi'), tag);
+      rawContent = rawContent.replace(new RegExp(`\\bhim\\b(?!\\s*${escapedName})`, 'gi'), tag);
+      rawContent = rawContent.replace(new RegExp(`\\bhis\\b(?!\\s*${escapedName})`, 'gi'), `${tag}'s`);
+      rawContent = rawContent.replace(new RegExp(`\\bhimself\\b(?!\\s*${escapedName})`, 'gi'), tag);
+    } else if (pronouns.toLowerCase().includes('she/her')) {
+      rawContent = rawContent.replace(new RegExp(`\\bshe\\b(?!\\s*${escapedName})`, 'gi'), tag);
+      rawContent = rawContent.replace(new RegExp(`\\bher\\b(?!\\s*${escapedName})`, 'gi'), tag);
+      rawContent = rawContent.replace(new RegExp(`\\bhers\\b(?!\\s*${escapedName})`, 'gi'), `${tag}'s`);
+      rawContent = rawContent.replace(new RegExp(`\\bherself\\b(?!\\s*${escapedName})`, 'gi'), tag);
+    } else {
+      rawContent = rawContent.replace(new RegExp(`\\bthey\\b(?!\\s*${escapedName})`, 'gi'), tag);
+      rawContent = rawContent.replace(new RegExp(`\\bthem\\b(?!\\s*${escapedName})`, 'gi'), tag);
+      rawContent = rawContent.replace(new RegExp(`\\btheir\\b(?!\\s*${escapedName})`, 'gi'), `${tag}'s`);
+      rawContent = rawContent.replace(new RegExp(`\\btheirs\\b(?!\\s*${escapedName})`, 'gi'), `${tag}'s`);
+      rawContent = rawContent.replace(new RegExp(`\\bthemselves\\b(?!\\s*${escapedName})`, 'gi'), tag);
+    }
+
+    rawContent = rawContent.replace(new RegExp(`(?!__TAG_PROTECT|@|#)\\b${escapedName}\\b(?!\\s*(?:__TAG_PROTECT|@|#))`, 'gi'), tag);
   });
+  
+  // Restore protected tags
+  rawContent = rawContent.replace(/<<TAG_PROTECT_\d+>>|__TAG_PROTECT_\d+__/g, (placeholder: string) => {
+    return tagProtectionMap[placeholder] ?? placeholder;
+  });
+  
+  if (userAEntity?.entity_name) {
+    const escapedUserA = escapeRegex(userAEntity.entity_name);
+    rawContent = rawContent.replace(new RegExp(`@${escapedUserA}'s`, 'gi'), 'my');
+    rawContent = rawContent.replace(new RegExp(`@${escapedUserA}`, 'gi'), 'I');
+  }
+
+  if (userBEntity?.entity_name) {
+    const escapedUserB = escapeRegex(userBEntity.entity_name);
+    rawContent = rawContent.replace(new RegExp(`@${escapedUserB}'s`, 'gi'), 'your');
+    rawContent = rawContent.replace(new RegExp(`@${escapedUserB}`, 'gi'), 'you');
+  }
   
   // Final cleanup: remove any remaining double @ or # patterns
   rawContent = rawContent.replace(/@@+/g, '@');
@@ -2882,6 +2985,13 @@ Return only two labeled sections exactly in this order:
       const contactCategory = contactData?.category || "General";
       const contactName = contact?.full_name || contact?.email || "Contact";
 
+      const completedMyTalks = await getCompletedMyTalksCount(user.id, contactIdValue);
+      if (completedMyTalks >= MY_TALKS_LIMIT) {
+        Alert.alert('Limit Reached', buildMyTalksLimitMessage(contactName));
+        setLoading(false);
+        return;
+      }
+
       const hintPrompt = `Extract a 2-3 word issue summary and timeline from: "${summary}"
 
 Respond ONLY with valid JSON:
@@ -2946,34 +3056,93 @@ Respond ONLY with valid JSON:
 
       // Always create a fresh contact chat for a clean session (no history reuse)
       let contactChatId: string | undefined;
-      const { data: newChat } = await supabase
-        .from("chats")
-        .insert({
-          user_id: user.id,
-          contact_id: contactIdValue,
-          chat_type: "contact_chat",
-          participants: [user.id, contactIdValue],
-          is_resolved: false,
-          ai_source_chat_id: currentChatId,
-          ai_confidence_level: "high",
-          options_stage: "ai_assisted",
-          conversation_phase: "opening",
-          turn_count_a: 0,
-          turn_count_b: 0,
-          resolution_detected: false,
-          title: normalizedTitle,
-          context_data: {
+      let reusedContactChat = false;
+
+      if (currentChatId && contactIdValue) {
+        const { data: existingChat, error: existingChatError } = await supabase
+          .from("chats")
+          .select("id, context_data")
+          .eq("user_id", user.id)
+          .eq("contact_id", contactIdValue)
+          .eq("chat_type", "contact_chat")
+          .eq("ai_source_chat_id", currentChatId)
+          .eq("is_resolved", false)
+          .order("created_at", { ascending: false })
+          .maybeSingle();
+
+        if (existingChatError) {
+          console.warn("⚠️ Failed checking for existing contact chat:", existingChatError);
+        }
+
+        if (existingChat?.id && existingChat.context_data?.initial_pending) {
+          contactChatId = existingChat.id;
+          reusedContactChat = true;
+          const updatedContext = {
+            ...(existingChat.context_data ?? {}),
             summary_a: summary,
             thoughts_a: thoughts,
             hint_to_contact: hintToContact,
             contact_category: contactCategory,
             initial_pending: true,
             chat_title: normalizedTitle,
-          },
-        })
-        .select("id")
-        .single();
-      contactChatId = newChat?.id;
+          };
+
+          await supabase
+            .from("chats")
+            .update({
+              title: normalizedTitle,
+              ai_confidence_level: "high",
+              conversation_phase: "opening",
+              turn_count_a: 0,
+              turn_count_b: 0,
+              resolution_detected: false,
+              context_data: updatedContext,
+              last_message: null,
+              last_message_at: new Date().toISOString(),
+            })
+            .eq("id", contactChatId);
+        }
+      }
+
+      if (!contactChatId) {
+        const { data: newChat } = await supabase
+          .from("chats")
+          .insert({
+            user_id: user.id,
+            contact_id: contactIdValue,
+            chat_type: "contact_chat",
+            participants: [user.id, contactIdValue],
+            is_resolved: false,
+            ai_source_chat_id: currentChatId,
+            ai_confidence_level: "high",
+            options_stage: "ai_assisted",
+            conversation_phase: "opening",
+            turn_count_a: 0,
+            turn_count_b: 0,
+            resolution_detected: false,
+            title: normalizedTitle,
+            context_data: {
+              summary_a: summary,
+              thoughts_a: thoughts,
+              hint_to_contact: hintToContact,
+              contact_category: contactCategory,
+              initial_pending: true,
+              chat_title: normalizedTitle,
+            },
+          })
+          .select("id")
+          .single();
+        contactChatId = newChat?.id;
+      } else if (reusedContactChat) {
+        // Clean up any previously generated options so we don't surface stale choices
+        const { error: deleteOptionsError } = await supabase
+          .from("message_options")
+          .delete()
+          .eq("chat_id", contactChatId);
+        if (deleteOptionsError) {
+          console.warn("⚠️ Failed to clear previous message options:", deleteOptionsError);
+        }
+      }
 
       // Auto add a Soulroom reflection for this chat start
       try {
@@ -3009,9 +3178,19 @@ Respond ONLY with valid JSON:
           tags.push(`chat:${contactChatId}`);
         }
  
-        await supabase
-          .from('soulroom_entries')
-          .insert({
+        if (contactChatId) {
+          const { data: existingAutoNote, error: existingAutoNoteError } = await supabase
+            .from('soulroom_entries')
+            .select('id')
+            .eq('user_id', user.id)
+            .contains('tags', ['post_conversation', `chat:${contactChatId}`])
+            .maybeSingle();
+
+          if (existingAutoNoteError) {
+            console.warn('⚠️ Failed to check for existing post-conversation note:', existingAutoNoteError);
+          }
+
+          const payload = {
             user_id: user.id,
             title: 'Post-conversation note',
             content: reflectionLines.join('\n\n') || 'Processing what I want to share.',
@@ -3019,7 +3198,24 @@ Respond ONLY with valid JSON:
             tags,
             ai_summary: null,
             emotion_tag: null,
-          });
+          };
+
+          if (existingAutoNote?.id) {
+            await supabase
+              .from('soulroom_entries')
+              .update({
+                title: payload.title,
+                content: payload.content,
+                mood: payload.mood,
+                tags: payload.tags,
+                ai_summary: null,
+                emotion_tag: null,
+              })
+              .eq('id', existingAutoNote.id);
+          } else {
+            await supabase.from('soulroom_entries').insert(payload);
+          }
+        }
       } catch (soulLogError) {
         console.warn('⚠️ Failed to create Soulroom auto note:', soulLogError);
       }

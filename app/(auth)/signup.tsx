@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -17,6 +17,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { COUNTRIES } from '@/constants/countries';
 import { ArrowLeft, Eye, EyeOff, Calendar } from 'lucide-react-native';
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/Colors';
+import { isStrongPassword, PASSWORD_RULE_DESCRIPTION, getPasswordErrors } from '@/utils/passwordPolicy';
 import Button from '@/components/ui/Button';
 import NotificationBanner from '@/components/ui/NotificationBanner';
 
@@ -38,6 +39,8 @@ export default function SignUpScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [passwordTouched, setPasswordTouched] = useState(false);
+  const [confirmTouched, setConfirmTouched] = useState(false);
   const [notification, setNotification] = useState<{
     visible: boolean;
     type: 'success' | 'error' | 'info' | 'warning';
@@ -60,6 +63,19 @@ export default function SignUpScreen() {
   }, []);
 
   const { signUp } = useAuth();
+
+  const passwordValidation = useMemo(() => getPasswordErrors(password), [password]);
+  const passwordValid = useMemo(() => isStrongPassword(password), [password]);
+  const passwordsMatch = useMemo(() => password === confirmPassword && confirmPassword.length > 0, [password, confirmPassword]);
+  const canSubmit =
+    !loading &&
+    firstName.trim() &&
+    lastName.trim() &&
+    email.trim() &&
+    password &&
+    confirmPassword &&
+    passwordValid &&
+    passwordsMatch;
 
   const showNotification = (type: 'success' | 'error' | 'info' | 'warning', title: string, message?: string) => {
     setNotification({ visible: true, type, title, message });
@@ -125,13 +141,13 @@ export default function SignUpScreen() {
       return;
     }
 
-    if (password !== confirmPassword) {
-      showNotification('error', 'Password Mismatch', 'Passwords do not match');
+    if (!passwordValid) {
+      showNotification('error', 'Weak Password', PASSWORD_RULE_DESCRIPTION);
       return;
     }
 
-    if (password.length < 6) {
-      showNotification('error', 'Weak Password', 'Password must be at least 6 characters');
+    if (!passwordsMatch) {
+      showNotification('error', 'Password Mismatch', 'Passwords do not match.');
       return;
     }
 
@@ -301,6 +317,7 @@ export default function SignUpScreen() {
                     placeholderTextColor={Colors.text.tertiary}
                     secureTextEntry={!showPassword}
                     autoCapitalize="none"
+                    onBlur={() => setPasswordTouched(true)}
                   />
                   <TouchableOpacity
                     style={styles.eyeButton}
@@ -314,6 +331,18 @@ export default function SignUpScreen() {
                   </TouchableOpacity>
                 </View>
               </View>
+              {passwordTouched && !passwordValid && (
+                <View style={styles.validationContainer}>
+                  {passwordValidation.map((error) => (
+                    <Text key={error} style={styles.validationText}>
+                      • {error}
+                    </Text>
+                  ))}
+                </View>
+              )}
+              {!passwordTouched && (
+                <Text style={styles.policyHint}>{PASSWORD_RULE_DESCRIPTION}</Text>
+              )}
 
               <View style={styles.inputContainer}>
                 <Text style={styles.label}>Confirm Password</Text>
@@ -326,6 +355,7 @@ export default function SignUpScreen() {
                     placeholderTextColor={Colors.text.tertiary}
                     secureTextEntry={!showConfirmPassword}
                     autoCapitalize="none"
+                    onBlur={() => setConfirmTouched(true)}
                   />
                   <TouchableOpacity
                     style={styles.eyeButton}
@@ -339,6 +369,9 @@ export default function SignUpScreen() {
                   </TouchableOpacity>
                 </View>
               </View>
+              {confirmTouched && !passwordsMatch && (
+                <Text style={styles.validationText}>• Passwords must match.</Text>
+              )}
 
               <View style={styles.inputContainer}>
                 <Text style={styles.label}>Date of Birth (Optional)</Text>
@@ -358,7 +391,7 @@ export default function SignUpScreen() {
                 title="Create Account"
                 onPress={handleSignUp}
                 loading={loading}
-                disabled={loading}
+                disabled={!canSubmit}
                 variant="primary"
                 size="large"
                 style={styles.signUpButton}
@@ -472,6 +505,21 @@ const styles = StyleSheet.create({
     fontSize: Typography.fontSize.base,
     color: Colors.primary[500],
     fontWeight: Typography.fontWeight.semibold,
+  },
+  validationContainer: {
+    marginTop: Spacing.sm,
+    marginBottom: Spacing.xs,
+    paddingLeft: Spacing.sm,
+  },
+  validationText: {
+    fontSize: Typography.fontSize.sm,
+    color: Colors.error[600],
+    lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
+  },
+  policyHint: {
+    fontSize: Typography.fontSize.sm,
+    color: Colors.text.secondary,
+    marginTop: Spacing.sm,
   },
   phoneContainer: {
     flexDirection: 'row',

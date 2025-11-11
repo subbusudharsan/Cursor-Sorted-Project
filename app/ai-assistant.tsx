@@ -17,6 +17,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
 import { ArrowLeft, Bot, MessageCircle, Plus, Sparkles, Check, Trash2, X } from "lucide-react-native";
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/Colors';
+import { MY_TALKS_LIMIT, getCompletedMyTalksCount, buildMyTalksLimitMessage } from '@/lib/myTalksLimit';
 
 const MAX_CONVERSATIONS = 10;
 
@@ -265,47 +266,14 @@ const fetchConversations = useCallback(async () => {
       return;
     }
 
-      // Check per-contact conversation limit (max 3 "My Talks" contact chats OR 3 total ongoing)
-      try {
-        const { count: myTalksCount, error: myTalksError } = await supabase
-          .from('chats')
-          .select('id', { count: 'exact', head: true })
-          .eq('user_id', user?.id)
-          .eq('contact_id', contactId)
-          .eq('chat_type', 'contact_chat')
-          .eq('is_resolved', false);
-
-        // Also check total ongoing (My Talks + Contact's Talks)
-        // Count chats where contact started the chat (user_id = contactId AND contact_id = user.id)
-        const { count: contactTalksCount, error: contactTalksError } = await supabase
-          .from('chats')
-          .select('id', { count: 'exact', head: true })
-          .eq('user_id', contactId)
-          .eq('contact_id', user?.id)
-          .eq('chat_type', 'contact_chat')
-          .eq('is_resolved', false);
-        
-        const totalOngoingCount = (myTalksCount ?? 0) + (contactTalksCount ?? 0);
-        
-        if (contactTalksError) {
-          console.error('❌ Error checking contact talks count:', contactTalksError);
-        }
-
-      if (myTalksError) {
-        console.error('❌ Error checking My Talks count:', myTalksError);
-        throw myTalksError;
-      }
-
-      if ((myTalksCount ?? 0) >= 3 || (totalOngoingCount ?? 0) >= 3) {
-        Alert.alert(
-          'Limit Reached',
-          `You already have 3 active talks with ${contactName}. Please finish one before starting another.`,
-          [{ text: 'OK', style: 'default' }]
-        );
+    try {
+      const completedMyTalks = await getCompletedMyTalksCount(user?.id, contactId);
+      if (completedMyTalks >= MY_TALKS_LIMIT) {
+        const friendlyName = contactName || 'this contact';
+        Alert.alert('Limit Reached', buildMyTalksLimitMessage(friendlyName));
         return;
       }
-      
-      console.log(`📊 AI Assistant Limit Check: My Talks=${myTalksCount}, Total Ongoing=${totalOngoingCount}`);
+      console.log(`📊 AI Assistant Limit Check: Completed My Talks=${completedMyTalks}`);
     } catch (error) {
       console.error('❌ Error in conversation limit check:', error);
       Alert.alert('Error', 'Failed to check conversation limit. Please try again.');
@@ -361,6 +329,13 @@ const fetchConversations = useCallback(async () => {
       if (!contactIdToUse) {
         console.error('❌ No context_contact_id found for conversation:', conversationId);
         Alert.alert('Error', 'Contact information is missing for this conversation');
+        return;
+      }
+
+      const completedMyTalks = await getCompletedMyTalksCount(user?.id, contactIdToUse);
+      if (completedMyTalks >= MY_TALKS_LIMIT) {
+        const friendlyName = conversation.contact_name || 'this contact';
+        Alert.alert('Limit Reached', buildMyTalksLimitMessage(friendlyName));
         return;
       }
 
@@ -452,12 +427,12 @@ const fetchConversations = useCallback(async () => {
       </View>
 
       <ScrollView
-  style={styles.content}
-  contentContainerStyle={[
-    styles.contentContainer,
-    multiSelectMode && { paddingBottom: 100 },
-  ]}
->
+        style={styles.content}
+        contentContainerStyle={[
+          styles.contentContainer,
+          multiSelectMode && { paddingBottom: 100 },
+        ]}
+      >
 
         <View style={styles.heroSection}>
           <View style={styles.heroIcon}>
@@ -469,16 +444,31 @@ const fetchConversations = useCallback(async () => {
           </Text>
         </View>
 
-        {!isLimitReached && (
-          <TouchableOpacity
-            style={styles.createButton}
-            onPress={handleCreateConversation}
-          >
-            <Plus size={20} color="#fff" />
-            <Text style={styles.createButtonText}>
-              {contactId ? 'Create New Conversation' : 'Select Contact & Chat'}
+        <TouchableOpacity
+          style={[
+            styles.createButton,
+            isLimitReached && styles.createButtonDisabled,
+          ]}
+          onPress={isLimitReached ? undefined : handleCreateConversation}
+          disabled={isLimitReached}
+        >
+          <Plus size={20} color="#fff" />
+          <Text style={styles.createButtonText}>
+            {isLimitReached
+              ? 'Clear one to start'
+              : contactId
+                ? 'Create New Conversation'
+                : 'Select Contact & Chat'}
+          </Text>
+        </TouchableOpacity>
+
+        {isLimitReached && (
+          <View style={styles.limitWarning}>
+            <Text style={styles.limitWarningTitle}>All prep slots are full 🌼</Text>
+            <Text style={styles.limitWarningMessage}>
+              You already have 10 ongoing AI prep sessions. Wrap one up or clear it before starting a fresh conversation.
             </Text>
-          </TouchableOpacity>
+          </View>
         )}
 
         <View style={styles.limitSection}>
@@ -968,6 +958,27 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.neutral[400],
     borderColor: Colors.neutral[500],
     opacity: 0.6,
+  },
+  limitWarning: {
+    backgroundColor: Colors.error[50],
+    borderColor: Colors.error[200],
+    borderWidth: 1,
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.lg,
+    marginTop: Spacing.md,
+    marginBottom: Spacing.md,
+    ...Shadows.small,
+  },
+  limitWarningTitle: {
+    fontSize: Typography.fontSize.base,
+    fontWeight: Typography.fontWeight.semibold,
+    color: Colors.error[700],
+    marginBottom: Spacing.xs,
+  },
+  limitWarningMessage: {
+    fontSize: Typography.fontSize.sm,
+    color: Colors.error[700],
+    lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
   },
   createButtonText: {
     fontSize: Typography.fontSize.base,

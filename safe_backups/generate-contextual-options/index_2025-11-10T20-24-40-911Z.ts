@@ -1560,6 +1560,49 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       });
     };
 
+    // ✅ Extra warm-up cleanup: remove any accidental names or tags
+// ✅ Extra warm-up cleanup & rewrite: guarantee 5 friendly openers only
+if (isVeryFirstMessage) {
+  const friendlyTemplates = [
+    "hey you 😊 got a sec?",
+    "hi there, just wanted to say hey 🙂",
+    "yo! how’s your day been?",
+    "hey hey, what’s up?",
+    "hi, hope you’re doing good 🙂"
+  ];
+
+  // Clean any names or tags first
+  options = options.map(opt =>
+    opt
+      .replace(/@\w+/g, "you")
+      .replace(/#\w+/g, "")
+      .replace(/\b[A-Z][a-z]{2,}\b/g, "you")
+      .replace(/\b(I'?m|I am)\s+jealous\b/gi, "just wanted to say hi 😊")
+  );
+
+  // If any options look non-friendly or reference issues/names, replace them entirely
+  const forbiddenPatterns = /(jealous|angry|upset|sorry|said|because|feel|think|why|that|@|#)/i;
+  options = options.map((opt, i) => {
+    if (!opt || forbiddenPatterns.test(opt) || opt.length > 45) {
+      // pick a friendly greeting by index
+      return friendlyTemplates[i % friendlyTemplates.length];
+    }
+    return opt;
+  });
+
+  // Guarantee we end up with exactly 5
+  if (options.length < 5) {
+    while (options.length < 5) {
+      const next = friendlyTemplates[options.length % friendlyTemplates.length];
+      options.push(next);
+    }
+  }
+
+  console.log("✅ Replaced warm-up options with friendly greetings:", options);
+}
+
+
+
     // ✅ LENIENT WORD LIMIT + NAME LEAK VALIDATION
     // Target 10-14 words, but allow up to 20 words to ensure we always have options
     const validOptions = options.filter(opt => {
@@ -2097,7 +2140,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       return latestKeywords.some(keyword => lower.includes(keyword));
     }).length;
 
-    if (!finalClosureDetected && !isVeryFirstMessage && latestKeywords.length > 0 && selectedLatestCoverage === 0) {
+    if (!finalClosureDetected && latestKeywords.length > 0 && selectedLatestCoverage === 0) {
       const latestSnippetRaw = getPrimaryStatement(cleanCurrentMessage || '');
       if (latestSnippetRaw) {
         const sanitizedSnippet = latestSnippetRaw.replace(/["']/g, '').trim();

@@ -13,6 +13,7 @@ interface AuthContextType {
 }
 
 import { notificationService } from './NotificationService';
+import { isStrongPassword, PASSWORD_RULE_DESCRIPTION } from '@/utils/passwordPolicy';
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -149,6 +150,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signUp = async (email: string, password: string, fullName: string) => {
+    if (!isStrongPassword(password)) {
+      throw new Error(PASSWORD_RULE_DESCRIPTION);
+    }
+
+    const policyPayload = {
+      password,
+      action_type: 'signup',
+      user_id: email.trim().toLowerCase(),
+    };
+
+    const { data: policyData, error: policyError } = await supabase.functions.invoke('password-policy', {
+      body: policyPayload,
+    });
+
+    if (policyError) {
+      throw new Error((policyError as Error)?.message || 'Failed to validate password policy.');
+    }
+    if (policyData?.error) {
+      throw new Error(policyData.error);
+    }
+
     const { data, error } = await supabase.auth.signUp({
       email,
       password,

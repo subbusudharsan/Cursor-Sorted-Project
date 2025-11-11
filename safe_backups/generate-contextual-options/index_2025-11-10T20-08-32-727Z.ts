@@ -1475,56 +1475,8 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       }
     }
 
-    let options = Array.isArray(optionsData.options)
-      ? [...optionsData.options]
-      : [];
+    let options = optionsData.options || [];
     const expectedCount = isVeryFirstMessage ? 5 : 3;
-
-    if (isVeryFirstMessage) {
-      const friendlyTemplates =
-        contactCategory === "family"
-          ? [
-              "hey you 😊 got a sec?",
-              "hi fam, just wanted to say hey 🙂",
-              "yo! how’s your day been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
-            ]
-          : contactCategory === "friend"
-          ? [
-              "hey you 😊 got a sec?",
-              "hi there, just wanted to say hey 🙂",
-              "yo! how’s your day been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
-            ]
-          : contactCategory === "romantic"
-          ? [
-              "hey you 😊 got a sec?",
-              "hi love, just wanted to say hey 🙂",
-              "yo! how’s your evening been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
-            ]
-          : contactCategory === "work"
-          ? [
-              "hey you 😊 got a sec?",
-              "hi there, just wanted to say hey 🙂",
-              "yo! how’s your day been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
-            ]
-          : [
-              "hey you 😊 got a sec?",
-              "hi there, just wanted to say hey 🙂",
-              "yo! how’s your day been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
-            ];
-
-      options = friendlyTemplates.slice(0, 5);
-      console.log("✅ Rewrote warm-up options (friendly only):", options);
-    }
 
     // ✅ STRICT: Enforce minimum option count (5 for first turn, 3 for all others)
     if (!options || options.length === 0) {
@@ -1559,6 +1511,55 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
         return false;
       });
     };
+
+    // ✅ Extra warm-up cleanup: remove any accidental names or tags
+// ✅ Extra warm-up cleanup & rewrite: guarantee 5 friendly openers only
+// ✅ Extra warm-up cleanup & rewrite: guarantee 5 friendly openers only
+if (isVeryFirstMessage) {
+  const friendlyTemplates = [
+    "hey you 😊 got a sec?",
+    "hi there, just wanted to say hey 🙂",
+    "yo! how’s your day been?",
+    "hey hey, what’s up?",
+    "hi, hope you’re doing good 🙂"
+  ];
+
+  // ✅ Clean any names or tags first (handles lowercase, @, #)
+  const listenerName = (isRecipientUserA ? userBName : userAName) || '';
+  const escapedName = listenerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const nameRegex = new RegExp(`@?${escapedName}\\b`, 'gi');
+
+  options = options.map(opt =>
+    opt
+      .replace(nameRegex, 'you')
+      .replace(/@\w+/g, 'you')
+      .replace(/#\w+/g, '')
+      .replace(/\b([A-Z][a-z]{2,}|[a-z]{3,})\b/g, (word) => {
+        // If it looks like a name (3–10 letters and not a pronoun/common word), replace
+        const commonWords = ['you', 'your', 'me', 'i', 'my', 'the', 'and', 'are', 'hey', 'hi', 'how', 'day', 'doing'];
+        return commonWords.includes(word.toLowerCase()) ? word : 'you';
+      })
+      .replace(/\b(I'?m|I am)\s+(jealous|hurt|angry|upset|annoyed|sad)\b/gi, 'just wanted to say hi 😊')
+  );
+
+  // ✅ Remove any issue-type or emotional sentence entirely
+  const forbiddenPatterns = /(accused|hurt|angry|jealous|upset|sorry|blame|issue|problem|because|feel|said|told|why|that|car|house)/i;
+  options = options.map((opt, i) => {
+    if (!opt || forbiddenPatterns.test(opt) || opt.length > 45) {
+      return friendlyTemplates[i % friendlyTemplates.length];
+    }
+    return opt;
+  });
+
+  // ✅ Always ensure we have exactly 5 greetings
+  while (options.length < 5) {
+    const next = friendlyTemplates[options.length % friendlyTemplates.length];
+    options.push(next);
+  }
+
+  console.log("✅ Rewrote warm-up options (friendly only):", options);
+}
+
 
     // ✅ LENIENT WORD LIMIT + NAME LEAK VALIDATION
     // Target 10-14 words, but allow up to 20 words to ensure we always have options
@@ -2097,7 +2098,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       return latestKeywords.some(keyword => lower.includes(keyword));
     }).length;
 
-    if (!finalClosureDetected && !isVeryFirstMessage && latestKeywords.length > 0 && selectedLatestCoverage === 0) {
+    if (!finalClosureDetected && latestKeywords.length > 0 && selectedLatestCoverage === 0) {
       const latestSnippetRaw = getPrimaryStatement(cleanCurrentMessage || '');
       if (latestSnippetRaw) {
         const sanitizedSnippet = latestSnippetRaw.replace(/["']/g, '').trim();

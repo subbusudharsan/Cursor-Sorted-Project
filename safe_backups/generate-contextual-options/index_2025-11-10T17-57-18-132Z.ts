@@ -890,13 +890,10 @@ ${isRecipientUserA ? `
 
 KEY INSIGHT: By the time you see the text, BOTH @ and # symbols have been removed. Generate options with ZERO @ or # symbols - use only natural pronouns and names.
 
-${!isVeryFirstMessage ? `
-  ${entityContext}
-  ${actionContext}
-  ${structuredContext}
-  ${tagContext}
-  ` : ''}
-  
+${entityContext}
+${actionContext}
+${structuredContext}
+${tagContext}
 
 ⚠️ CRITICAL RECIPIENT RULE:
 The recipient is the person receiving these message options.
@@ -1204,25 +1201,20 @@ Build trust and understanding before closure.
 
     const userPrompt = `Generate exactly ${isVeryFirstMessage ? '5' : '3'} options that sound like what this person would ACTUALLY SAY in this conversation.
 
-    ${isVeryFirstMessage ? `
-      🌱 WARMUP PHASE - FRIENDLY HELLOS ONLY:
-      - Generate 5 warm, friendly openings someone would naturally text to ${contactCategory === 'family'
-          ? 'a family member'
-          : contactCategory === 'friend'
-          ? 'a close friend'
-          : contactCategory === 'romantic'
-          ? 'a partner'
-          : contactCategory === 'work'
-          ? 'a teammate'
-          : 'someone they know'}.
-      - Tones: gentle, upbeat, curious, playful — no tension or conflict.
-      - Keep each message SHORT (≤ 12 words).
-      - NEVER mention any issue, event, emotion, or third person.
-      - NEVER use or imply any @name, real name, or #tag — only say "you", "hey", or similar.
-      - Use natural texting style: lowercase fine, small emoji ok ("hey you 😊", "yo", "hi there", "hey hey", etc.).
-      - All 5 options must be distinct styles (soft / playful / curious / simple / kind).
-      ` : ''}
-      
+${isVeryFirstMessage ? `
+🌱 WARMUP PHASE - CASUAL GREETINGS ONLY:
+This is the VERY FIRST message. Generate 5 different casual greetings appropriate for a ${contactCategory} relationship and ${conversationTimingContext} timing.
+
+DO NOT mention any issues or problems yet. Just natural, friendly greetings like:
+- "hey! how's it going?"
+- "hey, how are you?"
+- "what's up? how you been?"
+- "hi there, long time no talk"
+- "hey, got a sec?"
+
+Match the formality to the relationship type and timing context. Make each option feel distinct.
+` : ''}
+
 ${!isVeryFirstMessage && safeConversationHistory.length <= 2 ? `
 - USE SPECIFIC WORDS from the issue context: ${cleanOriginalIssueSummary || cleanSummary}
 - Reference what actually happened in their own words
@@ -1475,56 +1467,8 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       }
     }
 
-    let options = Array.isArray(optionsData.options)
-      ? [...optionsData.options]
-      : [];
+    let options = optionsData.options || [];
     const expectedCount = isVeryFirstMessage ? 5 : 3;
-
-    if (isVeryFirstMessage) {
-      const friendlyTemplates =
-        contactCategory === "family"
-          ? [
-              "hey you 😊 got a sec?",
-              "hi fam, just wanted to say hey 🙂",
-              "yo! how’s your day been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
-            ]
-          : contactCategory === "friend"
-          ? [
-              "hey you 😊 got a sec?",
-              "hi there, just wanted to say hey 🙂",
-              "yo! how’s your day been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
-            ]
-          : contactCategory === "romantic"
-          ? [
-              "hey you 😊 got a sec?",
-              "hi love, just wanted to say hey 🙂",
-              "yo! how’s your evening been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
-            ]
-          : contactCategory === "work"
-          ? [
-              "hey you 😊 got a sec?",
-              "hi there, just wanted to say hey 🙂",
-              "yo! how’s your day been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
-            ]
-          : [
-              "hey you 😊 got a sec?",
-              "hi there, just wanted to say hey 🙂",
-              "yo! how’s your day been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
-            ];
-
-      options = friendlyTemplates.slice(0, 5);
-      console.log("✅ Rewrote warm-up options (friendly only):", options);
-    }
 
     // ✅ STRICT: Enforce minimum option count (5 for first turn, 3 for all others)
     if (!options || options.length === 0) {
@@ -1930,16 +1874,8 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     const processOption = (text: string): string => {
       const stripped = stripTagSymbols(text);
       const perspectived = cleanPerspective(stripped);
-      let processed = fixPronounMistakes(removeListenerName(perspectived));
-    
-      // ✅ Optional polish: add light emoji for warm-up stage
-      if (isVeryFirstMessage && !/[?!]$/.test(processed)) {
-        processed += ' 🙂';
-      }
-    
-      return capitalizeFirstLetter(processed);
+      return capitalizeFirstLetter(fixPronounMistakes(removeListenerName(perspectived)));
     };
-    
 
     const finalOptions = options.slice(0, Math.min(expectedCount, options.length))
       .map((opt: string) => processOption(opt));
@@ -2097,7 +2033,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       return latestKeywords.some(keyword => lower.includes(keyword));
     }).length;
 
-    if (!finalClosureDetected && !isVeryFirstMessage && latestKeywords.length > 0 && selectedLatestCoverage === 0) {
+    if (!finalClosureDetected && latestKeywords.length > 0 && selectedLatestCoverage === 0) {
       const latestSnippetRaw = getPrimaryStatement(cleanCurrentMessage || '');
       if (latestSnippetRaw) {
         const sanitizedSnippet = latestSnippetRaw.replace(/["']/g, '').trim();

@@ -25,6 +25,10 @@ import NotificationBanner from '@/components/ui/NotificationBanner';
 import { useFocusEffect } from "@react-navigation/native";
 import { useCallback } from "react";
 
+// ADD THIS LINE HERE
+import { useNavigation } from '@react-navigation/native';
+
+
 interface Message {
   id: string;
   content: string;
@@ -59,10 +63,25 @@ const cleanOptionsForDisplay = (options: string[], contactName: string | null): 
   });
 };
 
+type ContactChatParams = {
+  chatId?: string;
+  contactId?: string;
+  summary?: string;
+  thoughts?: string;
+  aiContext?: string;
+};
+
 function ContactChatScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
-  const { chatId, contactId } = useLocalSearchParams();
+  const {
+    chatId,
+    contactId,
+    summary: summaryParam,
+    thoughts: thoughtsParam,
+    aiContext: aiContextParam,
+  } = useLocalSearchParams<ContactChatParams>();
+  const navigation = useNavigation();
 
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
@@ -137,7 +156,10 @@ function ContactChatScreen() {
   
   // ✅ FIX: Prevent flickering - track option update in progress
   const [isUpdatingOptions, setIsUpdatingOptions] = useState(false);
-  const optionsUpdateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const optionsUpdateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ---- add near the other state declarations ----
+const hasSentMessage = useRef(false);          // ← NEW
 
 // 🌈 NEW — closure resolution indicator + animation
 const [isResolved, setIsResolved] = useState(false);
@@ -307,13 +329,47 @@ useFocusEffect(
     refreshOptionsOnFocus();
 
     return () => {
-      // Clear options when navigating away
       if (showSuggestedOptions) {
         console.log('👋 Tab unfocused - clearing options display');
       }
     };
-  }, [currentChatId, user, messages, lastOptionRefreshTime])
+  }, [currentChatId, user, messages, lastOptionRefreshTime, showSuggestedOptions])
 );
+
+
+  useEffect(() => {
+    navigation.setOptions({
+      headerLeft: () => (
+        <TouchableOpacity
+          style={{ paddingLeft: 16 }}
+          onPress={() => {
+            if (hasSentMessage.current) {
+              router.replace('/(tabs)/chats');
+            } else {
+              router.push({
+                pathname: '/ai-chat',
+                params: {
+                  contactId: contactId as string,
+                  chatId: chatId as string,
+                  summary: summaryParam ?? '',
+                  thoughts: thoughtsParam ?? '',
+                  aiContext: aiContextParam ?? '',
+                  stage: '4',
+                  mode: 'continue',
+                  returnStage: 'ready',
+                  fromContactChat: '1',
+                  sent: '0',
+                  skipReturnBanner: '1',
+                },
+              });
+            }
+          }}
+        >
+          <ArrowLeft size={24} color={Colors.text.secondary} />
+        </TouchableOpacity>
+      ),
+    });
+  }, [navigation, contactId, chatId, summaryParam, thoughtsParam, aiContextParam, hasSentMessage]);
 
 
 
@@ -965,6 +1021,9 @@ const sendMessage = async (messageContent: string) => {
   const content = messageContent.trim();
   if (!content || !currentChatId || loading) return;
 
+    // ← ADD THIS LINE
+    hasSentMessage.current = true;
+
   // Check if conversation is already resolved
   const { data: chatCheck } = await supabase
     .from("chats")
@@ -1291,7 +1350,8 @@ const sendMessage = async (messageContent: string) => {
   }
 };
 
- const handleSuggestedOptionPress = (option: string) => {
+const handleSuggestedOptionPress = (option: string) => {
+  hasSentMessage.current = true;   // ← NEW
   setShowSuggestedOptions(false);
   sendMessage(option);
 };
@@ -1411,31 +1471,7 @@ const regenerateOptions = async () => {
       />
       <SafeAreaView style={styles.container}>
         <View style={[styles.header, { paddingTop: insets.top }]}>
-          <TouchableOpacity style={styles.backButton} onPress={() => {
-            try {
-              const hasUserSent = messages.length > 0 && messages[messages.length - 1].sender_id === (user?.id || '');
-              if (!hasUserSent) {
-                router.push({
-                  pathname: '/ai-chat',
-                  params: {
-                    chatId: String(chatId || ''),
-                    contactId: String(contactId || ''),
-                    mode: 'continue',
-                    returnStage: 'ready',
-                    fromContactChat: '1',
-                    sent: '0',
-                    skipReturnBanner: '1',
-                  }
-                });
-              } else {
-                router.push(`/contact-chat-details?contactId=${contactId}`);
-              }
-            } catch {
-              router.push('/ai-assistant');
-            }
-          }}>
-            <ArrowLeft size={24} color={Colors.text.secondary} />
-          </TouchableOpacity>
+          
           <View style={[styles.headerInfo, { marginLeft: Spacing.sm }] }>
             {!showSuggestedOptions && (
               <View style={styles.contactAvatar}>
@@ -1497,10 +1533,11 @@ const regenerateOptions = async () => {
         {showHintBanner && hintToContact && (
           <View style={styles.hintBannerWrapper}>
             <ScrollView
-              style={styles.hintBannerScrollView}
-              contentContainerStyle={styles.hintBannerScrollContent}
-              showsVerticalScrollIndicator={true}
-            >
+  key="hint"
+  style={styles.hintBannerScrollView}
+  contentContainerStyle={styles.hintBannerScrollContent}
+  showsVerticalScrollIndicator={true}
+>
               <View style={styles.hintBannerContent}>
                 <Text style={styles.hintBannerText}>
                   {hintToContact.full_text}
@@ -1919,12 +1956,17 @@ const regenerateOptions = async () => {
                   Response options couldn't be generated. You can:
                 </Text>
                 <View style={styles.recoveryButtonsContainer}>
-                  <TouchableOpacity
-                    style={styles.recoveryButton}
-                    onPress={regenerateOptions}
-                  >
-                    <Text style={styles.recoveryButtonText}>🔄 Try Again</Text>
-                  </TouchableOpacity>
+                <TouchableOpacity
+  style={styles.recoveryButton}
+  onPress={regenerateOptions}
+  disabled={waitingForOptions}  // ← NEW: stops clicking while loading
+>
+  {waitingForOptions ? (
+    <ActivityIndicator color="#fff" size="small" />
+  ) : (
+    <Text style={styles.recoveryButtonText}>Try Again</Text>
+  )}
+</TouchableOpacity>
                   <TouchableOpacity
                     style={[styles.recoveryButton, styles.manualInputButton]}
                     onPress={() => {
@@ -2020,6 +2062,7 @@ const regenerateOptions = async () => {
                   onPress={() => {
                     const text = (manualInputRef as any).current;
                     if (text?.trim()) {
+                      hasSentMessage.current = true;   // ← NEW
                       sendMessage(text.trim());
                       (manualInputRef as any).current = '';
                       setManualInputMode(false);

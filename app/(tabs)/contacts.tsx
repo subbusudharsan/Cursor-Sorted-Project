@@ -14,6 +14,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/Colors';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
+import { MY_TALKS_LIMIT, getCompletedMyTalksCount, buildMyTalksLimitMessage } from '@/lib/myTalksLimit';
 import {
   Users,
   Search,
@@ -412,36 +413,26 @@ if (userToContactError) throw userToContactError;
       if (mode === 'ai_chat') {
         console.log('✅ AI chat mode detected, checking conversation limit for contactId:', targetContactId);
 
-        // Check how many active My Talks (contact_chat) exist with this contact
-        const { count, error: countError } = await supabase
-          .from('chats')
-          .select('id', { count: 'exact', head: true })
-          .eq('user_id', user?.id)
-          .eq('contact_id', targetContactId)
-          .eq('chat_type', 'contact_chat')
-          .eq('is_resolved', false);
-        
-        console.log(`📊 AI Chat Limit Check: My Talks count with ${targetContactId}: ${count}`);
-
-        if (countError) {
-          console.error('❌ Error checking conversation count:', countError);
-          throw countError;
-        }
-
         // Get contact name for alert
         const contactName = ('contact_profile' in contact && contact.contact_profile)
           ? (contact.contact_profile.full_name || contact.contact_profile.email)
           : (('full_name' in contact ? contact.full_name : null) || ('email' in contact ? contact.email : 'this person'));
 
-          if ((count ?? 0) >= 3) {
+        try {
+          const completedMyTalks = await getCompletedMyTalksCount(user?.id, targetContactId);
+          if (completedMyTalks >= MY_TALKS_LIMIT) {
             Alert.alert(
               'Limit reached',
-              `You’ve got 3 chats going with ${contactName}.\n\nJust making sure you're not carrying too much — take a pause ❤️`,
+              buildMyTalksLimitMessage(contactName),
               [{ text: 'OK', style: 'default' }]
             );
             return;
           }
-          
+        } catch (error) {
+          console.error('❌ Error checking conversation count:', error);
+          Alert.alert('Error', 'Failed to check conversation limit. Please try again.');
+          return;
+        }
 
         console.log('✅ Conversation limit check passed, navigating to AI chat');
         router.push(`/ai-chat?contactId=${targetContactId}&mode=new`);

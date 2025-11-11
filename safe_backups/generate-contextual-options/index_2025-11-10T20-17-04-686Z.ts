@@ -1475,54 +1475,48 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       }
     }
 
-    let options = Array.isArray(optionsData.options)
-      ? [...optionsData.options]
-      : [];
+    let options = optionsData.options || [];
     const expectedCount = isVeryFirstMessage ? 5 : 3;
 
     if (isVeryFirstMessage) {
-      const friendlyTemplates =
-        contactCategory === "family"
-          ? [
-              "hey you 😊 got a sec?",
-              "hi fam, just wanted to say hey 🙂",
-              "yo! how’s your day been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
-            ]
-          : contactCategory === "friend"
-          ? [
-              "hey you 😊 got a sec?",
-              "hi there, just wanted to say hey 🙂",
-              "yo! how’s your day been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
-            ]
-          : contactCategory === "romantic"
-          ? [
-              "hey you 😊 got a sec?",
-              "hi love, just wanted to say hey 🙂",
-              "yo! how’s your evening been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
-            ]
-          : contactCategory === "work"
-          ? [
-              "hey you 😊 got a sec?",
-              "hi there, just wanted to say hey 🙂",
-              "yo! how’s your day been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
-            ]
-          : [
-              "hey you 😊 got a sec?",
-              "hi there, just wanted to say hey 🙂",
-              "yo! how’s your day been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
-            ];
+      const friendlyTemplates = [
+        "hey you 😊 got a sec?",
+        "hi there, just wanted to say hey 🙂",
+        "yo! how’s your day been?",
+        "hey hey, what’s up?",
+        "hi, hope you’re doing good 🙂",
+      ];
 
-      options = friendlyTemplates.slice(0, 5);
+      const conflictPattern =
+        /\b(accused?|jealous|angry|upset|hurt|mad|frustrated|argument|fight|sorry|because|why|feel|think|blame|annoyed|tense|worried)\b/i;
+
+      const sanitizeWarmup = (raw: string | null | undefined, index: number): string => {
+        if (!raw || typeof raw !== "string") {
+          return friendlyTemplates[index % friendlyTemplates.length];
+        }
+
+        let cleaned = raw
+          .replace(/@\w+/g, "you")
+          .replace(/#\w+/g, "")
+          .replace(/\b[A-Z][a-z]{2,}\b/g, "you")
+          .replace(/\s{2,}/g, " ")
+          .trim();
+
+        if (!cleaned || conflictPattern.test(cleaned) || cleaned.length > 45) {
+          return friendlyTemplates[index % friendlyTemplates.length];
+        }
+
+        return cleaned;
+      };
+
+      const normalized = Array.isArray(options) ? options.map(sanitizeWarmup) : [];
+      const padded: string[] = normalized.slice(0, 5);
+
+      while (padded.length < 5) {
+        padded.push(friendlyTemplates[padded.length % friendlyTemplates.length]);
+      }
+
+      options = padded.slice(0, 5);
       console.log("✅ Rewrote warm-up options (friendly only):", options);
     }
 
@@ -1559,6 +1553,49 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
         return false;
       });
     };
+
+    // ✅ Extra warm-up cleanup: remove any accidental names or tags
+// ✅ Extra warm-up cleanup & rewrite: guarantee 5 friendly openers only
+if (isVeryFirstMessage) {
+  const friendlyTemplates = [
+    "hey you 😊 got a sec?",
+    "hi there, just wanted to say hey 🙂",
+    "yo! how’s your day been?",
+    "hey hey, what’s up?",
+    "hi, hope you’re doing good 🙂"
+  ];
+
+  // Clean any names or tags first
+  options = options.map(opt =>
+    opt
+      .replace(/@\w+/g, "you")
+      .replace(/#\w+/g, "")
+      .replace(/\b[A-Z][a-z]{2,}\b/g, "you")
+      .replace(/\b(I'?m|I am)\s+jealous\b/gi, "just wanted to say hi 😊")
+  );
+
+  // If any options look non-friendly or reference issues/names, replace them entirely
+  const forbiddenPatterns = /(jealous|angry|upset|sorry|said|because|feel|think|why|that|@|#)/i;
+  options = options.map((opt, i) => {
+    if (!opt || forbiddenPatterns.test(opt) || opt.length > 45) {
+      // pick a friendly greeting by index
+      return friendlyTemplates[i % friendlyTemplates.length];
+    }
+    return opt;
+  });
+
+  // Guarantee we end up with exactly 5
+  if (options.length < 5) {
+    while (options.length < 5) {
+      const next = friendlyTemplates[options.length % friendlyTemplates.length];
+      options.push(next);
+    }
+  }
+
+  console.log("✅ Replaced warm-up options with friendly greetings:", options);
+}
+
+
 
     // ✅ LENIENT WORD LIMIT + NAME LEAK VALIDATION
     // Target 10-14 words, but allow up to 20 words to ensure we always have options
@@ -2097,7 +2134,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       return latestKeywords.some(keyword => lower.includes(keyword));
     }).length;
 
-    if (!finalClosureDetected && !isVeryFirstMessage && latestKeywords.length > 0 && selectedLatestCoverage === 0) {
+    if (!finalClosureDetected && latestKeywords.length > 0 && selectedLatestCoverage === 0) {
       const latestSnippetRaw = getPrimaryStatement(cleanCurrentMessage || '');
       if (latestSnippetRaw) {
         const sanitizedSnippet = latestSnippetRaw.replace(/["']/g, '').trim();
