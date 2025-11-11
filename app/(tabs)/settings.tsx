@@ -211,7 +211,7 @@ function SettingsScreen() {
       icon: Lock,
       title: 'Change Password',
       subtitle: 'Keep your password strong',
-      description: 'Update your password with the latest security policy.',
+      description: 'Update your password securely',
       onPress: () => router.push('/settings/change-password'),
     },
     {
@@ -251,10 +251,15 @@ function SettingsScreen() {
         <Animated.View style={[styles.content, { opacity: fadeAnim, paddingTop: insets.top }]}> 
           {/* Centered content container */}
           <View style={styles.centeredContainer}>
+  <View style={{ width: '92%' }}>
+
             {/* Title */}
             <View style={styles.titleSection}>
+            <View style={{ height: 10 }} />
+
               <Text style={styles.title}>Settings</Text>
             </View>
+          
 
             {/* Profile info */}
             <View style={styles.profileSection}>
@@ -312,7 +317,7 @@ function SettingsScreen() {
               />
             </View>
           </View>
-
+          </View>
         </Animated.View>
       </SafeAreaView>
     </>
@@ -324,19 +329,25 @@ const styles = StyleSheet.create({
   content: { flex: 1 },
   centeredContainer: {
     flex: 1,
-    justifyContent: 'center',
+    justifyContent: 'center', // centers everything vertically
+    alignItems: 'center',      // keeps all content nicely aligned
     paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.xs,
+    paddingVertical: Spacing.sm,
+    transform: [{ translateY: -1 }], // slightly scale down content to fit comfortably
   },
+  
+  
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    transform: [{ translateY: -20 }], 
   },
   loadingText: {
     fontSize: Typography.fontSize.base,
     color: Colors.text.secondary,
     marginTop: Spacing.md,
+    
   },
 
   titleSection: {
@@ -348,6 +359,7 @@ const styles = StyleSheet.create({
     fontWeight: Typography.fontWeight.bold,
     color: '#0288D1',
     textAlign: 'left',
+    transform: [{ translateY: -1 }], 
   },
 
   profileSection: {
@@ -377,9 +389,10 @@ const styles = StyleSheet.create({
   avatar: { width: 48, height: 48, borderRadius: BorderRadius.xxl },
   
 
-  settingsList: { 
-    marginBottom: Spacing.md,
+  settingsList: {
+    marginBottom: Spacing.xs,
   },
+  
 
   settingItem: {
     flexDirection: 'row',
@@ -418,10 +431,14 @@ const styles = StyleSheet.create({
   settingDescription: { fontSize: Typography.fontSize.xs, color: '#546E7A' },
 
   signOutContainer: {
-    marginTop: Spacing.md,
+    marginTop: Spacing.xs,
     paddingHorizontal: Spacing.sm,
+    paddingBottom: Spacing.sm,
+    alignItems: 'center',
+    transform: [{ translateY: -10}],
   },
-
+  
+  
   signOutButton: {
     backgroundColor: 'transparent',
     borderWidth: 0,

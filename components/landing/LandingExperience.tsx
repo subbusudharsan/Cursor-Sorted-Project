@@ -288,17 +288,17 @@ export default function LandingExperience() {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
-    <ScrollView style={styles.container} contentContainerStyle={[styles.scrollContent, { paddingBottom: Math.max(Spacing.lg, insets.bottom) }]}> 
-      <Animated.View
-        style={[
-          styles.content,
-          {
-            opacity: fadeAnim,
-            transform: [{ translateY: slideAnim }],
-          },
-        ]}
-      >
+    <SafeAreaView style={[styles.container, { justifyContent: 'center' }]}>
+  <Animated.View
+    style={[
+      styles.content,
+      {
+        opacity: fadeAnim,
+        transform: [{ translateY: slideAnim }],
+      },
+    ]}
+  >
+
         <View style={styles.header}>
           <View style={styles.logoContainer}>
             <Animated.View 
@@ -532,7 +532,6 @@ export default function LandingExperience() {
           </View>
         </View>
       </Animated.View>
-    </ScrollView>
     </SafeAreaView>
   );
 }
@@ -548,10 +547,12 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
     paddingHorizontal: Spacing.xl,
-    paddingTop: 40,
-    paddingBottom: Spacing.lg,
-    justifyContent: 'space-between',
+    paddingTop: 10, // reduced from 40 → creates more top space visually
+    paddingBottom: Spacing.xl, // more breathing room at bottom
+    justifyContent: 'center',
+    transform: [{ translateY: -60 }], // lifts entire block upward slightly
   },
+  
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
