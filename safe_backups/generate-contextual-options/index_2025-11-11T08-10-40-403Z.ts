@@ -2107,9 +2107,16 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO â
       return latestKeywords.some(keyword => lower.includes(keyword));
     }).length;
 
-    if (!finalClosureDetected && !isVeryFirstMessage && selectedLatestCoverage === 0) {
-      const fallbackLatestRaw = `Something you just shared really stayed with me. I want to explain what was happening for me and why.`;
-      selected[0] = processOption(fallbackLatestRaw);
+    if (!finalClosureDetected && !isVeryFirstMessage && latestKeywords.length > 0 && selectedLatestCoverage === 0) {
+      const latestSnippetRaw = getPrimaryStatement(cleanCurrentMessage || '');
+      if (latestSnippetRaw) {
+        const sanitizedSnippet = latestSnippetRaw.replace(/["']/g, '').trim();
+        const fallbackLatest = isRecipientUserA
+          ? `You mentioned ${sanitizedSnippet}. I need to explain how that affected me and why.`
+          : `You mentioned ${sanitizedSnippet}. I want to explain what I was dealing with and why.`;
+        const processedFallback = processOption(fallbackLatest);
+        selected[0] = processedFallback;
+      }
     }
 
     if (finalClosureDetected) {

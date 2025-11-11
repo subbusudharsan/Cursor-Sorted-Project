@@ -2107,9 +2107,13 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO â
       return latestKeywords.some(keyword => lower.includes(keyword));
     }).length;
 
-    if (!finalClosureDetected && !isVeryFirstMessage && selectedLatestCoverage === 0) {
-      const fallbackLatestRaw = `Something you just shared really stayed with me. I want to explain what was happening for me and why.`;
-      selected[0] = processOption(fallbackLatestRaw);
+    if (!finalClosureDetected && !isVeryFirstMessage && latestKeywords.length > 0 && selectedLatestCoverage === 0) {
+      const keywordPhrase = latestKeywords.slice(0, 2).join(' & ');
+      const fallbackLatestRaw = keywordPhrase
+        ? `That point about ${keywordPhrase} really stayed with me. I want to explain what was happening for me and why.`
+        : `I really hear what you just shared. I want to explain what was happening for me and why.`;
+      const processedFallback = processOption(fallbackLatestRaw);
+      selected[0] = processedFallback;
     }
 
     if (finalClosureDetected) {

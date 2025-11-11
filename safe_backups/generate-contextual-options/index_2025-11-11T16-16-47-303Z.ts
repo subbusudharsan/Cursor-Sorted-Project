@@ -268,16 +268,6 @@ const summaryA = contextData.summary_a || contextData.summary || summary || orig
 const thoughtsA = contextData.thoughts_a || contextData.thoughts || thoughts || '';
 const summaryBFromContext = contextData.summary_b || summaryB || '';
 const thoughtsBFromContext = contextData.thoughts_b || thoughtsB || '';
-const sessionStartedAtIso = contextData.session_started_at;
-const sessionStartedAtMs = sessionStartedAtIso ? Date.parse(sessionStartedAtIso) : NaN;
-
-const filteredStructuredAnswers =
-  !Number.isNaN(sessionStartedAtMs)
-    ? (structuredAnswers || []).filter((answer) => {
-        const createdAtMs = answer?.created_at ? Date.parse(answer.created_at) : NaN;
-        return !Number.isNaN(createdAtMs) && createdAtMs >= sessionStartedAtMs;
-      })
-    : (structuredAnswers || []);
 
 console.log("📋 Context data extraction:", {
   hasSummaryA: !!summaryA,
@@ -656,9 +646,9 @@ let entityContext = `\n${pronounToneContext}`;
 
     // Build structured answers context
     let structuredContext = '';
-    if (filteredStructuredAnswers.length > 0) {
+    if (structuredAnswers && structuredAnswers.length > 0) {
       structuredContext += '\n\n📊 STRUCTURED INFORMATION:\n';
-      filteredStructuredAnswers.forEach((answer) => {
+      structuredAnswers.forEach((answer) => {
         structuredContext += `\n- ${answer.question_text}: ${JSON.stringify(answer.answer_value.value)}`;
       });
     }
@@ -2107,9 +2097,16 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       return latestKeywords.some(keyword => lower.includes(keyword));
     }).length;
 
-    if (!finalClosureDetected && !isVeryFirstMessage && selectedLatestCoverage === 0) {
-      const fallbackLatestRaw = `Something you just shared really stayed with me. I want to explain what was happening for me and why.`;
-      selected[0] = processOption(fallbackLatestRaw);
+    if (!finalClosureDetected && !isVeryFirstMessage && latestKeywords.length > 0 && selectedLatestCoverage === 0) {
+      const latestSnippetRaw = getPrimaryStatement(cleanCurrentMessage || '');
+      if (latestSnippetRaw) {
+        const sanitizedSnippet = latestSnippetRaw.replace(/["']/g, '').trim();
+        const fallbackLatest = isRecipientUserA
+          ? `You mentioned ${sanitizedSnippet}. I need to explain how that affected me and why.`
+          : `You mentioned ${sanitizedSnippet}. I want to explain what I was dealing with and why.`;
+        const processedFallback = processOption(fallbackLatest);
+        selected[0] = processedFallback;
+      }
     }
 
     if (finalClosureDetected) {

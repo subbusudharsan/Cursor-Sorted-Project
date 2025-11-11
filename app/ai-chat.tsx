@@ -461,6 +461,7 @@ function AIChatScreen() {
             },
             flowStage: 'welcome',
             chat_title: defaultSessionName,
+            session_started_at: new Date().toISOString(),
           },
         })
         .select()
@@ -1777,16 +1778,28 @@ const inferEntityCategory = (name: string): string => {
       setLoading(false);
     }
 
+    const shouldResetSession =
+      !contextDataRef.current?.session_started_at || qaPairs.length === 0;
+    const sessionStartedAt = shouldResetSession
+      ? new Date().toISOString()
+      : contextDataRef.current?.session_started_at;
+
+    const contextPatch: Record<string, any> = {
+      chat_title: normalizedTitle,
+      initial_description: initialDescription,
+      taggedEntities,
+      flowStage: 'welcome',
+    };
+
+    if (shouldResetSession && sessionStartedAt) {
+      contextPatch.session_started_at = sessionStartedAt;
+    }
+
     await updateChatRecord(
       {
         session_name: normalizedTitle,
       },
-      {
-        chat_title: normalizedTitle,
-        initial_description: initialDescription,
-        taggedEntities,
-        flowStage: 'welcome',
-      }
+      contextPatch
     );
   };
 
@@ -2185,6 +2198,21 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
         console.error('Failed to fetch structured context:', structuredError);
       }
 
+      const sessionStartedAtIso = contextDataRef.current?.session_started_at;
+      const sessionStartedAtMs = sessionStartedAtIso
+        ? Date.parse(sessionStartedAtIso)
+        : NaN;
+      const structuredRows = Array.isArray(structuredContextData)
+        ? structuredContextData
+        : [];
+      const filteredStructuredContextData =
+        !Number.isNaN(sessionStartedAtMs)
+          ? structuredRows.filter((sc: any) => {
+              const createdAtMs = sc?.created_at ? Date.parse(sc.created_at) : NaN;
+              return !Number.isNaN(createdAtMs) && createdAtMs >= sessionStartedAtMs;
+            })
+          : structuredRows;
+
       // Identify User A, User B, and other entities
       const userAEntity = entitiesFromRegistry?.find((e: any) => e.role_in_conversation === 'User A' || e.is_participant && e.participant_slot === 'A');
       const userBEntity = entitiesFromRegistry?.find((e: any) => e.role_in_conversation === 'User B' || e.is_participant && e.participant_slot === 'B');
@@ -2199,8 +2227,8 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
 
       // Add structured context data to conversation history
       let structuredAnswersText = '';
-      if (structuredContextData && structuredContextData.length > 0) {
-        structuredAnswersText = '\n\nAdditional Context:\n' + structuredContextData.map((sc: any) => 
+      if (filteredStructuredContextData.length > 0) {
+        structuredAnswersText = '\n\nAdditional Context:\n' + filteredStructuredContextData.map((sc: any) => 
           `${sc.question_text}: ${typeof sc.answer_value === 'object' ? JSON.stringify(sc.answer_value.value || sc.answer_value) : sc.answer_value}`
         ).join('\n');
       }
@@ -2619,6 +2647,21 @@ for (const [idx, pair] of editedQAPairs.entries()) {
         console.error('Failed to fetch structured context:', structuredError);
       }
 
+      const sessionStartedAtIso = contextDataRef.current?.session_started_at;
+      const sessionStartedAtMs = sessionStartedAtIso
+        ? Date.parse(sessionStartedAtIso)
+        : NaN;
+      const structuredRows = Array.isArray(structuredContextData)
+        ? structuredContextData
+        : [];
+      const filteredStructuredContextData =
+        !Number.isNaN(sessionStartedAtMs)
+          ? structuredRows.filter((sc: any) => {
+              const createdAtMs = sc?.created_at ? Date.parse(sc.created_at) : NaN;
+              return !Number.isNaN(createdAtMs) && createdAtMs >= sessionStartedAtMs;
+            })
+          : structuredRows;
+
       // Build complete conversation history with edited Q&A pairs
       const conversationHistory = editedQAPairs.map((p, idx) => `Q${idx + 1}: ${p.question}\nA${idx + 1}: ${p.answer}`).join("\n\n");
 
@@ -2626,8 +2669,8 @@ for (const [idx, pair] of editedQAPairs.entries()) {
 
       // Add structured context data to conversation history
       let structuredAnswersText = '';
-      if (structuredContextData && structuredContextData.length > 0) {
-        structuredAnswersText = '\n\nAdditional Context:\n' + structuredContextData.map((sc: any) => 
+      if (filteredStructuredContextData.length > 0) {
+        structuredAnswersText = '\n\nAdditional Context:\n' + filteredStructuredContextData.map((sc: any) => 
           `${sc.question_text}: ${typeof sc.answer_value === 'object' ? JSON.stringify(sc.answer_value.value || sc.answer_value) : sc.answer_value}`
         ).join('\n');
       }
@@ -3787,7 +3830,36 @@ Respond ONLY with valid JSON:
 
     <TouchableOpacity
       style={[styles.secondaryButton, styles.halfButton]}
-      onPress={handleAnswerSubmit}
+      onPress={() => {
+        if (qaPairs.length >= 2) {
+          Alert.alert(
+            "Feeling good?",
+            "If you feel good, click Generate Summary.",
+            [
+              {
+                text: "Generate Summary",
+                onPress: () => {
+                  setIsGeneratingSummary(true);
+                  setCurrentQuestion("");
+                  void generateSummary(qaPairs);
+                },
+              },
+              {
+                text: "See another prompt",
+                style: "default",
+                onPress: () => handleAnswerSubmit(),
+              },
+              {
+                text: "Cancel",
+                style: "cancel",
+              },
+            ],
+            { cancelable: true }
+          );
+        } else {
+          handleAnswerSubmit();
+        }
+      }}
       disabled={loading}
     >
       {loading ? (

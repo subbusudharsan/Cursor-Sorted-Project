@@ -156,7 +156,8 @@ function ContactChatScreen() {
   
   // ✅ FIX: Prevent flickering - track option update in progress
   const [isUpdatingOptions, setIsUpdatingOptions] = useState(false);
-  const optionsUpdateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+const optionsUpdateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+const optionsRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ---- add near the other state declarations ----
 const hasSentMessage = useRef(false);          // ← NEW
@@ -647,6 +648,10 @@ useEffect(() => {
         if (optionsUpdateTimeoutRef.current) {
           clearTimeout(optionsUpdateTimeoutRef.current);
         }
+        if (optionsRefreshTimeoutRef.current) {
+          clearTimeout(optionsRefreshTimeoutRef.current);
+          optionsRefreshTimeoutRef.current = null;
+        }
         
         setIsUpdatingOptions(true);
         setWaitingForOptions(false);
@@ -871,6 +876,27 @@ setTimeout(() => {
             console.log("  ✅ Adding message to list as:", newMessage.sender_type);
             return [...prev, newMessage];
           });
+
+        if (String(newMsg.sender_id) !== String(currentUserId)) {
+          console.log("🧹 Clearing existing suggestions while waiting for new options...");
+          if (optionsUpdateTimeoutRef.current) {
+            clearTimeout(optionsUpdateTimeoutRef.current);
+            optionsUpdateTimeoutRef.current = null;
+          }
+          if (optionsRefreshTimeoutRef.current) {
+            clearTimeout(optionsRefreshTimeoutRef.current);
+          }
+          setShowSuggestedOptions(false);
+          setSuggestedOptions([]);
+          setWaitingForOptions(true);
+
+          optionsRefreshTimeoutRef.current = setTimeout(() => {
+            console.log("🔄 Polling latest options after new incoming message");
+            fetchInitialOptions(chatId, currentUserId).catch((err) =>
+              console.error("❌ Failed to refresh options via polling:", err)
+            );
+          }, 800);
+        }
 
           // CONTACT replied → generate options for current user
           console.log("  Checking if should generate options...");
