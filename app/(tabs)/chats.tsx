@@ -90,24 +90,7 @@ function ChatsScreen() {
     }
   }, [user?.id]);
 
-  useEffect(() => {
-    if (user) {
-      fetchUserProfile();
-      fetchAllChats();
-      setupRealtimeSubscription();
-      setupProfileSubscription();
-    }
-  }, [user, fetchUserProfile]);
-
-  useFocusEffect(
-    useCallback(() => {
-      if (user?.id) {
-        fetchUserProfile();
-      }
-    }, [user?.id, fetchUserProfile])
-  );
-
-  const fetchAllChats = async () => {
+  const fetchAllChats = useCallback(async () => {
     console.log('📥 Fetching all chats for user:', user?.id);
     try {
       // Get all contact chats where user is involved
@@ -181,21 +164,15 @@ if (chatIds.length > 0) {
   }
 }
 
-// ✅ Include all chats where user participates (no over-filter)
-const validContactChats = (contactChatsData || []).filter((chat: any) =>
-  (chat.user_id === user?.id ||
-  chat.contact_id === user?.id ||
-  (chat.participants && chat.participants.includes(user?.id))) &&
-  !(chat.context_data?.initial_pending)
-);
+const validContactChats = (contactChatsData || []).filter((chat: any) => {
+  const presence = messagePresenceMap.get(chat.id) || { hasAny: false, hasUserMessage: false };
+  const isDirectContact = chat.user_id === user?.id
+    || chat.contact_id === user?.id
+    || (Array.isArray(chat.participants) && chat.participants.includes(user?.id));
+  const hasValidConversation = presence.hasAny || chat.last_message_at || chat.last_message;
+  const isResolved = chat.is_resolved || chat.context_data?.is_resolved;
 
-// 🧠 Merge latest message fallback
-validContactChats.forEach(chat => {
-  if ((!chat.last_message || !chat.last_message_at) && latestMsgMap.has(chat.id)) {
-    const latest = latestMsgMap.get(chat.id);
-    chat.last_message = latest?.content || 'New conversation started';
-    chat.last_message_at = latest?.created_at || new Date().toISOString();
-  }
+  return isDirectContact && (hasValidConversation || isResolved);
 });
 
 // 👇 keep your same grouping logic and issueLabel additions as before
@@ -323,7 +300,38 @@ setContactChats(finalChats);
     } finally {
       setLoading(false);
     }
-  };
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
+
+    fetchUserProfile();
+    fetchAllChats();
+
+    const unsubscribeChats = setupRealtimeSubscription();
+    const unsubscribeProfile = setupProfileSubscription();
+
+    return () => {
+      if (typeof unsubscribeChats === 'function') {
+        unsubscribeChats();
+      }
+      if (typeof unsubscribeProfile === 'function') {
+        unsubscribeProfile();
+      }
+    };
+  }, [user, fetchUserProfile, fetchAllChats]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!user?.id) {
+        return;
+      }
+      fetchUserProfile();
+      fetchAllChats();
+    }, [user?.id, fetchUserProfile, fetchAllChats])
+  );
 
   const setupRealtimeSubscription = () => {
     if (!user?.id) return () => {};
