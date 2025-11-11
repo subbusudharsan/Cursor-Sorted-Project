@@ -25,6 +25,8 @@ import NotificationBanner from '@/components/ui/NotificationBanner';
 import { useFocusEffect } from "@react-navigation/native";
 import { useCallback } from "react";
 
+import type { RealtimeChannel } from "@supabase/supabase-js";
+
 // ADD THIS LINE HERE
 import { useNavigation } from '@react-navigation/native';
 
@@ -153,11 +155,9 @@ function ContactChatScreen() {
   // 🔄 Option refresh tracking
   const [lastOptionRefreshTime, setLastOptionRefreshTime] = useState<number>(0);
   const OPTION_REFRESH_COOLDOWN = 30000; // 30 seconds
-  
-  // ✅ FIX: Prevent flickering - track option update in progress
-  const [isUpdatingOptions, setIsUpdatingOptions] = useState(false);
-const optionsUpdateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+ 
 const optionsRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+const optionsChannelRef = useRef<RealtimeChannel | null>(null);
 
   // ---- add near the other state declarations ----
 const hasSentMessage = useRef(false);          // ← NEW
@@ -249,6 +249,8 @@ if (data?.is_resolved) {
   }, [user, contactId]);
 
   useEffect(() => {
+    let unsubscribeOptions: (() => void) | undefined;
+
     if (user && chatId) {
       const id = chatId as string;
       console.log('🚀 CONTACT CHAT INITIALIZATION:', { chatId: id, userId: user.id });
@@ -262,7 +264,7 @@ if (data?.is_resolved) {
           setInitialLoading(false);
         });
         fetchInitialOptions(id, user.id);
-        subscribeToOptions(id, user.id);
+        unsubscribeOptions = subscribeToOptions(id, user.id);
         ensureInitialOptions(id);
         subscribeToMessages(id, user.id);
         subscribeToClosureState(id);
@@ -275,8 +277,12 @@ if (data?.is_resolved) {
 
     // ✅ FIX: Cleanup timeout on unmount
     return () => {
-      if (optionsUpdateTimeoutRef.current) {
-        clearTimeout(optionsUpdateTimeoutRef.current);
+      if (optionsRefreshTimeoutRef.current) {
+        clearTimeout(optionsRefreshTimeoutRef.current);
+        optionsRefreshTimeoutRef.current = null;
+      }
+      if (typeof unsubscribeOptions === 'function') {
+        unsubscribeOptions();
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -480,25 +486,33 @@ useEffect(() => {
   };
 
   // ---- options bootstrap ----
-  const fetchInitialOptions = async (chatId: string, userId: string, retryCount = 0) => {
+  const fetchInitialOptions = async (
+    chatId: string,
+    userId: string,
+    retryCount = 0,
+    options: { skipTurnCheck?: boolean } = {}
+  ) => {
+    const { skipTurnCheck = false } = options;
     const maxRetries = 5;
     console.log("🔍 FETCHING INITIAL OPTIONS", { chatId, userId, retryCount });
 
-    // ✅ First check if it's actually user's turn before fetching options
-    const { data: messagesData } = await supabase
-      .from("messages")
-      .select("sender_id")
-      .eq("chat_id", chatId)
-      .order("created_at", { ascending: false })
-      .limit(1);
+    if (!skipTurnCheck) {
+      // ✅ First check if it's actually user's turn before fetching options
+      const { data: messagesData } = await supabase
+        .from("messages")
+        .select("sender_id")
+        .eq("chat_id", chatId)
+        .order("created_at", { ascending: false })
+        .limit(1);
 
-    if (messagesData && messagesData.length > 0) {
-      const lastSenderId = messagesData[0].sender_id;
-      if (lastSenderId === userId) {
-        console.log("⛔ Not user's turn - they sent the last message");
-        setShowSuggestedOptions(false);
-        setWaitingForOptions(false);
-        return;
+      if (messagesData && messagesData.length > 0) {
+        const lastSenderId = messagesData[0].sender_id;
+        if (lastSenderId === userId) {
+          console.log("⛔ Not user's turn - they sent the last message");
+          setShowSuggestedOptions(false);
+          setWaitingForOptions(false);
+          return;
+        }
       }
     }
 
@@ -515,7 +529,7 @@ useEffect(() => {
       if (retryCount < maxRetries) {
         const delay = Math.min(1000 * Math.pow(1.5, retryCount), 5000);
         console.log(`🔄 Retrying in ${delay}ms...`);
-        setTimeout(() => fetchInitialOptions(chatId, userId, retryCount + 1), delay);
+        setTimeout(() => fetchInitialOptions(chatId, userId, retryCount + 1, options), delay);
       } else {
         console.error("❌ Max retries reached for fetching initial options");
         setWaitingForOptions(false);
@@ -553,7 +567,7 @@ useEffect(() => {
       if (retryCount < maxRetries) {
         const delay = Math.min(1000 * Math.pow(1.5, retryCount), 5000);
         console.log(`🔄 Retrying in ${delay}ms...`);
-        setTimeout(() => fetchInitialOptions(chatId, userId, retryCount + 1), delay);
+        setTimeout(() => fetchInitialOptions(chatId, userId, retryCount + 1, options), delay);
       } else {
         console.error("❌ Max retries reached, options not available");
         setWaitingForOptions(false);
@@ -603,9 +617,28 @@ useEffect(() => {
   const subscribeToOptions = (chatId: string, currentUserId: string) => {
     console.log("🔔 SETTING UP OPTIONS SUBSCRIPTION", { chatId, currentUserId });
 
+    if (optionsChannelRef.current) {
+      console.log("🔁 Replacing existing options channel for options");
+      supabase.removeChannel(optionsChannelRef.current);
+      optionsChannelRef.current = null;
+    }
+
+    const fetchLatestOptions = async () => {
+      try {
+        await fetchInitialOptions(chatId, currentUserId, 0, { skipTurnCheck: true });
+      } catch (err) {
+        console.error("❌ Failed to fetch options after realtime event:", err);
+      }
+    };
+
     const handleOptionsUpdate = async (payload: any) => {
       console.log("📨 OPTIONS SUBSCRIPTION RECEIVED", payload);
       const newOptions = payload.new.options || [];
+
+      if (payload.new.chat_id && payload.new.chat_id !== chatId) {
+        console.log("ℹ️ Ignoring options for different chat", payload.new.chat_id);
+        return;
+      }
 
       // ✅ Only show options if they're for the current user
       if (payload.new.recipient_id !== currentUserId) {
@@ -614,82 +647,49 @@ useEffect(() => {
       }
 
       // ✅ FIX: Prevent flickering - debounce rapid updates
-      if (isUpdatingOptions) {
-        console.log("⏳ Options update already in progress, skipping this update");
-        return;
-      }
-
-      // ✅ Check if it's actually the user's turn before showing options
-      const { data: messagesData } = await supabase
-        .from("messages")
-        .select("sender_id")
-        .eq("chat_id", chatId)
-        .order("created_at", { ascending: false })
-        .limit(1);
-
-      if (messagesData && messagesData.length > 0) {
-        const lastSenderId = messagesData[0].sender_id;
-        // If the current user sent the last message, it's not their turn - hide options
-        if (lastSenderId === currentUserId) {
-          console.log("⛔ Not user's turn - they sent the last message, hiding options");
-          setShowSuggestedOptions(false);
-          setWaitingForOptions(false);
-          return;
-        }
-      }
-
       console.log("✅ OPTIONS RECEIVED FOR CURRENT USER", newOptions.length, "options");
       console.log("   Recipient ID from payload:", payload.new.recipient_id);
       console.log("   Current User ID:", currentUserId);
       console.log("   Options:", newOptions);
 
       if (newOptions && Array.isArray(newOptions) && newOptions.length >= 1) {
-        // ✅ FIX: Clear any pending timeout and set updating flag
-        if (optionsUpdateTimeoutRef.current) {
-          clearTimeout(optionsUpdateTimeoutRef.current);
-        }
+        // ✅ FIX: Clear any pending poll timer
         if (optionsRefreshTimeoutRef.current) {
           clearTimeout(optionsRefreshTimeoutRef.current);
           optionsRefreshTimeoutRef.current = null;
         }
         
-        setIsUpdatingOptions(true);
+        console.log(`✅ Displaying ${newOptions.length} options for current user`);
+
+        const cleanedOptions = cleanOptionsForDisplay(newOptions, contact?.full_name || null);
+        console.log("   After client-side cleaning:", cleanedOptions);
+
+        setSuggestedOptions([...cleanedOptions]);
+        setShowSuggestedOptions(true);
         setWaitingForOptions(false);
+        setOptionsGenerationFailed(false);
+        setManualInputMode(false);
+        setLastOptionRefreshTime(Date.now());
 
-        // ✅ FIX: Debounce the update to prevent flickering
-        optionsUpdateTimeoutRef.current = setTimeout(() => {
-          console.log(`✅ Displaying ${newOptions.length} options for current user`);
-
-          // 🛡️ Apply client-side safety cleaning to remove any leaked names
-          const cleanedOptions = cleanOptionsForDisplay(newOptions, contact?.full_name || null);
-          console.log("   After client-side cleaning:", cleanedOptions);
-
-          setSuggestedOptions(cleanedOptions);
-          setShowSuggestedOptions(true);
-
-          // 🌟 Update extra fields live
-          if (payload.new.context_data) {
-            setAiPerspective(payload.new.context_data.newPerspective || "");
-            setAiClosure(payload.new.context_data.closure || "");
-          }
-          
-          setIsUpdatingOptions(false);
-        }, 300); // 300ms debounce to prevent flickering
+        if (payload.new.context_data) {
+          setAiPerspective(payload.new.context_data.newPerspective || "");
+          setAiClosure(payload.new.context_data.closure || "");
+        }
       } else {
         console.warn("⚠️ Received incomplete options set:", newOptions.length);
-        setIsUpdatingOptions(false);
+        await fetchLatestOptions();
       }
     };
 
     const channel = supabase
-      .channel(`options-${chatId}`)
+      .channel(`options-${chatId}-${currentUserId}`)
       .on(
         "postgres_changes",
         {
           event: "INSERT",
           schema: "public",
           table: "message_options",
-          filter: `chat_id=eq.${chatId}`,
+          filter: `recipient_id=eq.${currentUserId}`,
         },
         handleOptionsUpdate
       )
@@ -699,7 +699,7 @@ useEffect(() => {
           event: "UPDATE",
           schema: "public",
           table: "message_options",
-          filter: `chat_id=eq.${chatId}`,
+          filter: `recipient_id=eq.${currentUserId}`,
         },
         handleOptionsUpdate
       )
@@ -709,15 +709,12 @@ useEffect(() => {
           event: "DELETE",
           schema: "public",
           table: "message_options",
-          filter: `chat_id=eq.${chatId}`,
+          filter: `recipient_id=eq.${currentUserId}`,
         },
         (payload) => {
           if (payload.old?.recipient_id !== currentUserId) return;
 
           console.log("🧹 Options deleted for current user - hiding while regeneration runs");
-          if (optionsUpdateTimeoutRef.current) {
-            clearTimeout(optionsUpdateTimeoutRef.current);
-          }
           setShowSuggestedOptions(false);
           setSuggestedOptions([]);
           setWaitingForOptions(true);
@@ -727,14 +724,28 @@ useEffect(() => {
         console.log("📡 Options subscription status:", status);
         if (status === 'SUBSCRIBED') {
           console.log("✅ Successfully subscribed to options updates (INSERT + UPDATE)");
-        } else if (status === 'CHANNEL_ERROR') {
-          console.error("❌ Options subscription error");
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+          console.error("❌ Options subscription issue - attempting to resubscribe", status);
+          supabase.removeChannel(channel);
+          if (optionsChannelRef.current === channel) {
+            optionsChannelRef.current = null;
+          }
+          setTimeout(() => {
+            subscribeToOptions(chatId, currentUserId);
+          }, 500);
         }
       });
 
+    optionsChannelRef.current = channel;
+
     return () => {
       console.log("🔌 Unsubscribing from options channel");
-      supabase.removeChannel(channel);
+      if (optionsChannelRef.current) {
+        supabase.removeChannel(optionsChannelRef.current);
+        optionsChannelRef.current = null;
+      } else {
+        supabase.removeChannel(channel);
+      }
     };
   };
 
@@ -879,10 +890,6 @@ setTimeout(() => {
 
         if (String(newMsg.sender_id) !== String(currentUserId)) {
           console.log("🧹 Clearing existing suggestions while waiting for new options...");
-          if (optionsUpdateTimeoutRef.current) {
-            clearTimeout(optionsUpdateTimeoutRef.current);
-            optionsUpdateTimeoutRef.current = null;
-          }
           if (optionsRefreshTimeoutRef.current) {
             clearTimeout(optionsRefreshTimeoutRef.current);
           }
@@ -1870,7 +1877,6 @@ const regenerateOptions = async () => {
 
                         setWaitingForOptions(true);
                         setShowSuggestedOptions(false);
-                        setIsUpdatingOptions(false); // Reset update flag
 
                         // Get latest message from contact to respond to
                         const latestContactMessage = messages
