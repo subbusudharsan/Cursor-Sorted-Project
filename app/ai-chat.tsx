@@ -2233,46 +2233,69 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
         ).join('\n');
       }
 
-      // Build entity mapping - tags and pronouns
-      const entityTagMap: Record<string, string> = {}; // Maps entity names to their tags (@name or #name)
-      const entityPronounMap: Record<string, string> = {}; // Maps entity names to their pronouns
-      
-      entitiesFromRegistry?.forEach((e: any) => {
-        const name = e.entity_name?.toLowerCase().trim();
-        const fullName = e.entity_name;
-        if (name && fullName) {
-          // Determine tag symbol based on entity type
-          const tagSymbol = e.is_registered ? '@' : '#';
-          const tag = `${tagSymbol}${fullName}`;
-          entityTagMap[name] = tag;
-          
-          // Map pronouns based on role
-          if (e.role_in_conversation === 'User A' || (e.is_participant && e.participant_slot === 'A')) {
-            entityPronounMap[name] = 'I/me/my'; // User A uses first-person
-          } else if (e.role_in_conversation === 'User B' || (e.is_participant && e.participant_slot === 'B')) {
-            entityPronounMap[name] = 'you/your'; // User B is addressed as "you"
-          } else {
-            // Third parties use their stored pronouns
-            entityPronounMap[name] = e.preferred_pronouns || 'they/them';
-          }
+      const tagRegex = /[@#][A-Za-z0-9_\-]+/g;
+      const mentionedTags = new Set<string>();
+      const recordMention = (tag?: string | null) => {
+        if (!tag) return;
+        mentionedTags.add(tag);
+        mentionedTags.add(tag.toLowerCase());
+      };
+      const collectTagsFromText = (text?: string | null) => {
+        if (!text) return;
+        const matches = text.match(tagRegex);
+        matches?.forEach(recordMention);
+      };
+
+      collectTagsFromText(initialDescription);
+      pairs.forEach((pair) => {
+        collectTagsFromText(pair.question);
+        collectTagsFromText(pair.answer);
+      });
+      collectTagsFromText(additionalInfo);
+      collectTagsFromText(structuredAnswersText);
+
+      const getEntityTag = (entity: any): string | null => {
+        const fullName = entity?.entity_name;
+        if (!fullName) return null;
+        const isUserBEntity =
+          entity.role_in_conversation === 'User B' ||
+          (entity.is_participant && entity.participant_slot === 'B');
+        const tagSymbol = isUserBEntity ? '@' : entity.is_registered ? '@' : '#';
+        return `${tagSymbol}${fullName}`;
+      };
+
+      const isUserAEntity = (entity: any) =>
+        entity.role_in_conversation === 'User A' ||
+        (entity.is_participant && entity.participant_slot === 'A');
+      const isUserBEntity = (entity: any) =>
+        entity.role_in_conversation === 'User B' ||
+        (entity.is_participant && entity.participant_slot === 'B');
+      const entityMatchesCurrentInput = (entity: any) => {
+        const tag = getEntityTag(entity);
+        if (!tag) return false;
+        return mentionedTags.has(tag) || mentionedTags.has(tag.toLowerCase());
+      };
+
+      const sanitizableEntities = (entitiesFromRegistry || []).filter((entity: any) => {
+        if (isUserAEntity(entity) || isUserBEntity(entity)) {
+          return true;
         }
+        return entityMatchesCurrentInput(entity);
       });
 
-      // Build comprehensive context with all tagged entities
-      const allTaggedEntitiesList = entitiesFromRegistry && entitiesFromRegistry.length > 0
-        ? entitiesFromRegistry.map((e: any) => {
-            const tagSymbol = e.is_registered ? '@' : '#';
-            const tag = `${tagSymbol}${e.entity_name}`;
-            let roleDesc = '';
-            if (e.role_in_conversation === 'User A' || (e.is_participant && e.participant_slot === 'A')) {
-              roleDesc = ' (User A - the person writing this summary, use "I/me/my")';
-            } else if (e.role_in_conversation === 'User B' || (e.is_participant && e.participant_slot === 'B')) {
-              roleDesc = ' (User B - the person they\'re talking to, use "you/your")';
-            } else {
-              roleDesc = ` (third party, use "${e.preferred_pronouns || 'they/them'}")`;
-            }
-            return `${tag}${roleDesc}`;
-          }).join(', ')
+      const promptEntities = sanitizableEntities.filter((entity: any) => !isUserAEntity(entity));
+      const allTaggedEntitiesList = promptEntities.length
+        ? promptEntities
+            .map((entity: any) => {
+              const tag = getEntityTag(entity);
+              if (!tag) return null;
+              const roleDesc = isUserBEntity(entity)
+                ? ' (User B - the person they\'re talking to, use "you/your")'
+                : ` (third party, use "${entity.preferred_pronouns || 'they/them'}")`;
+              return `${tag}${roleDesc}`;
+            })
+            .filter(Boolean)
+            .join(', ')
         : '';
 
       const entityContextText = allTaggedEntitiesList
@@ -2290,9 +2313,9 @@ CRITICAL RULES FOR PRONOUNS AND TAGS:
 
 2. PRONOUNS AND TAGS:
    - User A (the person writing) → Use "I / me / my" ONLY (keep first-person perspective)
-   - User B (the person they're talking to) → ALWAYS use their @tag (e.g., "@aradhya") - NEVER use "you/your"
+   - User B (the contact) → Refer to them using their @tag (e.g., "@aradhya") or third-person pronouns based on the context. Do NOT address them as "you/your".
    - Third-party people → Use their @/# tag ONLY if that tag already appears in the provided content. NEVER invent new names or tags. If no tag exists, refer to them generically (e.g., "a coworker") without guessing a name.
-   - CRITICAL: Replace ALL pronouns (you, he, she, they, them, their) with explicit tags when a tag exists in the input
+   - CRITICAL: Replace ALL pronouns (he, she, they, them, their) with explicit tags when a tag exists in the input
    - Example: "you were upset" → "@aradhya was upset", "she felt ignored" → "#Mom felt ignored", "they thought it was rude" → "#Vikram and #Raja thought it was rude"
 
 3. TAGS: 
@@ -2323,7 +2346,7 @@ Generate:
 1. A refined summary paragraph under "📌 Discussion Summary" (written from User A's "I/me/my" perspective)
 2. One empathetic insight under "💡 My Thoughts"
 
-Keep total under 100 words. Write naturally. User A must speak about themselves using only "I / me / my / myself". Address User B directly as "you / your / yourself" (no @ tags). For any other participants that were explicitly mentioned with # tags in the context, reuse those same # tags. Do not invent new people, names, or events.
+Keep total under 100 words. Write naturally. User A must speak about themselves using only "I / me / my / myself". Refer to User B in third-person (name/tag) rather than "you". For any other participants that were explicitly mentioned with # tags in the context, reuse those same # tags. Do not invent new people, names, or events.
 
 Your response MUST include both "📌 Discussion Summary" and "💡 My Thoughts" in this exact order.
 Return only two labeled sections exactly in this order:
@@ -2351,46 +2374,13 @@ Return only two labeled sections exactly in this order:
 
       if (result?.content) {
         const userAEntity =
-          entitiesFromRegistry?.find(
-            (e: any) =>
-              e.role_in_conversation === "User A" ||
-              (e.is_participant && e.participant_slot === "A")
-          ) ?? null;
+          sanitizableEntities.find((entity: any) => isUserAEntity(entity)) ?? null;
         const userBEntity =
-          entitiesFromRegistry?.find(
-            (e: any) =>
-              e.role_in_conversation === "User B" ||
-              (e.is_participant && e.participant_slot === "B")
-          ) ?? null;
-        const allowedTagSet = new Set<string>();
-        const tagRegex = /[@#][A-Za-z0-9_\-]+/g;
-        const recordAllowedTag = (tag: string) => {
-          if (!tag) return;
-          allowedTagSet.add(tag);
-          allowedTagSet.add(tag.toLowerCase());
-        };
+          sanitizableEntities.find((entity: any) => isUserBEntity(entity)) ?? null;
         const escapeRegex = (value: string) =>
           value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const addTagsFromText = (text?: string | null) => {
-          if (!text) return;
-          const matches = text.match(tagRegex);
-          if (matches) {
-            matches.forEach(recordAllowedTag);
-          }
-        };
 
-  addTagsFromText(initialDescription);
-  pairs.forEach((pair: QAPair) => {
-    addTagsFromText(pair.question);
-    addTagsFromText(pair.answer);
-  });
-  addTagsFromText(structuredAnswersText);
-  addTagsFromText(additionalInfo);
-  if (userBEntity?.entity_name) {
-    recordAllowedTag(`@${userBEntity.entity_name}`);
-  }
-
-  let rawContent = result.content;
+        let rawContent = result.content;
   
   // First, protect existing tags to avoid partial replacements (e.g., #S should not become #Sneha if #S exists)
   const existingTags = new Set<string>();
@@ -2411,7 +2401,7 @@ Return only two labeled sections exactly in this order:
   
   // Post-process summary to replace ALL pronouns with tags (except "I/me/my" for User A)
   // Process entities in reverse length order to match longer names first (e.g., "Sneha" before "S")
-  const sortedEntities = [...(entitiesFromRegistry || [])].sort((a: any, b: any) => 
+  const sortedEntities = [...sanitizableEntities].sort((a: any, b: any) => 
     (b.entity_name?.length || 0) - (a.entity_name?.length || 0)
   );
   
@@ -2422,12 +2412,12 @@ Return only two labeled sections exactly in this order:
       return;
     }
 
-    const tagSymbol = e.is_registered ? '@' : '#';
+          const tagSymbol = isUserBEntity(e) ? '@' : e.is_registered ? '@' : '#';
     const tag = `${tagSymbol}${fullName}`;
     const tagLower = tag.toLowerCase();
     const isUserA = e.role_in_conversation === 'User A' || (e.is_participant && e.participant_slot === 'A');
     const isUserB = e.role_in_conversation === 'User B' || (e.is_participant && e.participant_slot === 'B');
-    const isMentioned = allowedTagSet.has(tag) || allowedTagSet.has(tagLower);
+          const isMentioned = isUserA || isUserB || mentionedTags.has(tag) || mentionedTags.has(tagLower);
 
     if (!isUserA && !isUserB && !isMentioned) {
       return;
@@ -2460,10 +2450,15 @@ Return only two labeled sections exactly in this order:
 
     if (isUserB) {
       const escapedName = escapeRegex(fullName);
-      rawContent = rawContent.replace(new RegExp(`\\buser b\\b`, 'gi'), 'you');
-      rawContent = rawContent.replace(new RegExp(`\\bthe contact\\b`, 'gi'), 'you');
-      rawContent = rawContent.replace(new RegExp(`\\bthe recipient\\b`, 'gi'), 'you');
-      rawContent = rawContent.replace(new RegExp(`(?!__TAG_PROTECT|@|#)\\b${escapedName}\\b`, 'gi'), 'you');
+      const userBTag = `@${fullName}`;
+      rawContent = rawContent.replace(new RegExp(`\\buser b\\b`, 'gi'), userBTag);
+      rawContent = rawContent.replace(new RegExp(`\\bthe contact\\b`, 'gi'), userBTag);
+      rawContent = rawContent.replace(new RegExp(`\\bthe recipient\\b`, 'gi'), userBTag);
+      rawContent = rawContent.replace(new RegExp(`(?!__TAG_PROTECT|@|#)\\b${escapedName}\\b`, 'gi'), userBTag);
+      rawContent = rawContent.replace(/\byourselves?\b/gi, userBTag);
+      rawContent = rawContent.replace(/\byourself\b/gi, userBTag);
+      rawContent = rawContent.replace(/\byour\b/gi, `${userBTag}'s`);
+      rawContent = rawContent.replace(/\byou\b/gi, userBTag);
       return;
     }
 
@@ -2495,6 +2490,21 @@ Return only two labeled sections exactly in this order:
     return tagProtectionMap[placeholder] ?? placeholder;
   });
   
+  rawContent = rawContent.replace(/(@[A-Za-z0-9_\-]+|#[A-Za-z0-9_\-]+)/g, (tag: string) => {
+          const lower = tag.toLowerCase();
+    const userBTagLower = userBEntity?.entity_name
+      ? `@${userBEntity.entity_name.toLowerCase()}`
+      : null;
+    if (
+      mentionedTags.has(tag) ||
+      mentionedTags.has(lower) ||
+      (userBTagLower && lower === userBTagLower)
+    ) {
+            return tag;
+          }
+          return 'someone';
+        });
+
   if (userAEntity?.entity_name) {
     const escapedUserA = escapeRegex(userAEntity.entity_name);
     rawContent = rawContent.replace(new RegExp(`@${escapedUserA}'s`, 'gi'), 'my');
@@ -2503,8 +2513,8 @@ Return only two labeled sections exactly in this order:
 
   if (userBEntity?.entity_name) {
     const escapedUserB = escapeRegex(userBEntity.entity_name);
-    rawContent = rawContent.replace(new RegExp(`@${escapedUserB}'s`, 'gi'), 'your');
-    rawContent = rawContent.replace(new RegExp(`@${escapedUserB}`, 'gi'), 'you');
+    rawContent = rawContent.replace(new RegExp(`\\byour\\b`, 'gi'), `@${userBEntity.entity_name}'s`);
+    rawContent = rawContent.replace(new RegExp(`\\byou\\b`, 'gi'), `@${userBEntity.entity_name}`);
   }
   
   // Final cleanup: remove any remaining double @ or # patterns
@@ -2675,43 +2685,75 @@ for (const [idx, pair] of editedQAPairs.entries()) {
         ).join('\n');
       }
 
-      // Build entity mapping - tags and pronouns (same as generateSummary)
-      const entityTagMap: Record<string, string> = {};
-      const entityPronounMap: Record<string, string> = {};
-      
-      entitiesFromRegistry?.forEach((e: any) => {
-        const name = e.entity_name?.toLowerCase().trim();
-        const fullName = e.entity_name;
-        if (name && fullName) {
-          const tagSymbol = e.is_registered ? '@' : '#';
-          const tag = `${tagSymbol}${fullName}`;
-          entityTagMap[name] = tag;
-          
-          if (e.role_in_conversation === 'User A' || (e.is_participant && e.participant_slot === 'A')) {
-            entityPronounMap[name] = 'I/me/my';
-          } else if (e.role_in_conversation === 'User B' || (e.is_participant && e.participant_slot === 'B')) {
-            entityPronounMap[name] = 'you/your';
-          } else {
-            entityPronounMap[name] = e.preferred_pronouns || 'they/them';
-          }
-        }
-      });
+      const editTagRegex = /[@#][A-Za-z0-9_\-]+/g;
+      const editMentionedTags = new Set<string>();
+      const editRecordMention = (tag?: string | null) => {
+        if (!tag) return;
+        editMentionedTags.add(tag);
+        editMentionedTags.add(tag.toLowerCase());
+      };
+      const editCollectTagsFromText = (text?: string | null) => {
+        if (!text) return;
+        const matches = text.match(editTagRegex);
+        matches?.forEach(editRecordMention);
+      };
 
-      // Build comprehensive context with all tagged entities
-      const allTaggedEntitiesList = entitiesFromRegistry && entitiesFromRegistry.length > 0
-        ? entitiesFromRegistry.map((e: any) => {
-            const tagSymbol = e.is_registered ? '@' : '#';
-            const tag = `${tagSymbol}${e.entity_name}`;
-            let roleDesc = '';
-            if (e.role_in_conversation === 'User A' || (e.is_participant && e.participant_slot === 'A')) {
-              roleDesc = ' (User A - the person writing this summary, use "I/me/my")';
-            } else if (e.role_in_conversation === 'User B' || (e.is_participant && e.participant_slot === 'B')) {
-              roleDesc = ' (User B - the person they\'re talking to, use "you/your")';
-            } else {
-              roleDesc = ` (third party, use "${e.preferred_pronouns || 'they/them'}")`;
-            }
-            return `${tag}${roleDesc}`;
-          }).join(', ')
+      editCollectTagsFromText(initialDescription);
+      editedQAPairs.forEach((pair) => {
+        editCollectTagsFromText(pair.question);
+        editCollectTagsFromText(pair.answer);
+      });
+      editCollectTagsFromText(additionalInfo);
+      editCollectTagsFromText(additionalContext);
+      editCollectTagsFromText(structuredAnswersText);
+
+      const editIsUserAEntity = (entity: any) =>
+        entity.role_in_conversation === 'User A' ||
+        (entity.is_participant && entity.participant_slot === 'A');
+      const editIsUserBEntity = (entity: any) =>
+        entity.role_in_conversation === 'User B' ||
+        (entity.is_participant && entity.participant_slot === 'B');
+      const editGetEntityTag = (entity: any): string | null => {
+        const fullName = entity?.entity_name;
+        if (!fullName) return null;
+        const isUserBEntity =
+          entity.role_in_conversation === 'User B' ||
+          (entity.is_participant && entity.participant_slot === 'B');
+        const tagSymbol = isUserBEntity ? '@' : entity.is_registered ? '@' : '#';
+        return `${tagSymbol}${fullName}`;
+      };
+      const editEntityMatchesCurrentInput = (entity: any) => {
+        const tag = editGetEntityTag(entity);
+        if (!tag) return false;
+        return (
+          editMentionedTags.has(tag) || editMentionedTags.has(tag.toLowerCase())
+        );
+      };
+
+      const editSanitizableEntities = (entitiesFromRegistry || []).filter(
+        (entity: any) => {
+          if (editIsUserAEntity(entity) || editIsUserBEntity(entity)) {
+            return true;
+          }
+          return editEntityMatchesCurrentInput(entity);
+        }
+      );
+
+      const editPromptEntities = editSanitizableEntities.filter(
+        (entity: any) => !editIsUserAEntity(entity)
+      );
+      const allTaggedEntitiesList = editPromptEntities.length
+        ? editPromptEntities
+            .map((entity: any) => {
+              const tag = editGetEntityTag(entity);
+              if (!tag) return null;
+              const roleDesc = editIsUserBEntity(entity)
+                ? ' (User B - the person they\'re talking to, use "you/your")'
+                : ` (third party, use "${entity.preferred_pronouns || 'they/them'}")`;
+              return `${tag}${roleDesc}`;
+            })
+            .filter(Boolean)
+            .join(', ')
         : '';
 
       const entityContextText = allTaggedEntitiesList
@@ -2729,9 +2771,9 @@ CRITICAL RULES FOR PRONOUNS AND TAGS:
 
 2. PRONOUNS AND TAGS:
    - User A (the person writing) → Use "I / me / my" ONLY (keep first-person perspective)
-   - User B (the person they're talking to) → ALWAYS use their @tag (e.g., "@aradhya") - NEVER use "you/your"
+   - User B (the contact) → Refer to them using their @tag (e.g., "@aradhya") or third-person pronouns, not as "you/your".
    - Third-party people → Use their @/# tag ONLY if that tag already appears in the provided content. NEVER invent new names or tags. If no tag exists, refer to them generically (e.g., "a coworker") without guessing a name.
-   - CRITICAL: Replace ALL pronouns (you, he, she, they, them, their) with explicit tags when a tag exists in the input
+   - CRITICAL: Replace ALL pronouns (he, she, they, them, their) with explicit tags when a tag exists in the input
    - Example: "you were upset" → "@aradhya was upset", "she felt ignored" → "#Mom felt ignored", "they thought it was rude" → "#Vikram and #Raja thought it was rude"
 
 3. TAGS: 
@@ -2762,7 +2804,7 @@ Generate:
 1. A refined summary paragraph under "📌 Discussion Summary" (written from User A's "I/me/my" perspective)
 2. One empathetic insight under "💡 My Thoughts"
 
-Keep total under 100 words. Write naturally. User A must speak about themselves using only "I / me / my / myself". Address User B directly as "you / your / yourself" (no @ tags). For any other participants that were explicitly mentioned with # tags in the context, reuse those same # tags. Do not invent new people, names, or events.
+Keep total under 100 words. Write naturally. User A must speak about themselves using only "I / me / my / myself". Refer to User B using their name/tag or third-person pronouns, not as "you". For any other participants that were explicitly mentioned with # tags in the context, reuse those same # tags. Do not invent new people, names, or events.
 
 Your response MUST include both "📌 Discussion Summary" and "💡 My Thoughts" in this exact order.
 Return only two labeled sections exactly in this order:
@@ -2786,37 +2828,15 @@ Return only two labeled sections exactly in this order:
 
       const result = await response.json();
 
-     if (result?.content) {
-  const userAEntity = entitiesFromRegistry?.find((e: any) => e.role_in_conversation === 'User A' || (e.is_participant && e.participant_slot === 'A'));
-  const userBEntity = entitiesFromRegistry?.find((e: any) => e.role_in_conversation === 'User B' || (e.is_participant && e.participant_slot === 'B'));
-  const allowedTagSet = new Set<string>();
-  const tagRegex = /[@#][A-Za-z0-9_\-]+/g;
-  const recordAllowedTag = (tag: string) => {
-    if (!tag) return;
-    allowedTagSet.add(tag);
-    allowedTagSet.add(tag.toLowerCase());
-  };
-  const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const addTagsFromText = (text?: string | null) => {
-    if (!text) return;
-    const matches = text.match(tagRegex);
-    if (matches) {
-      matches.forEach(recordAllowedTag);
-    }
-  };
+      if (result?.content) {
+        const userAEntity =
+          editSanitizableEntities.find((entity: any) => editIsUserAEntity(entity)) ?? null;
+        const userBEntity =
+          editSanitizableEntities.find((entity: any) => editIsUserBEntity(entity)) ?? null;
+        const escapeRegex = (value: string) =>
+          value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-  addTagsFromText(initialDescription);
-  editedQAPairs.forEach((pair: QAPair) => {
-    addTagsFromText(pair.question);
-    addTagsFromText(pair.answer);
-  });
-  addTagsFromText(structuredAnswersText);
-  addTagsFromText(additionalInfo);
-  if (userBEntity?.entity_name) {
-    recordAllowedTag(`@${userBEntity.entity_name}`);
-  }
-
-  let rawContent = result.content;
+        let rawContent = result.content;
   
   // First, protect existing tags to avoid partial replacements (same as generateSummary)
   const existingTags = new Set<string>();
@@ -2837,7 +2857,7 @@ Return only two labeled sections exactly in this order:
   
   // Post-process summary to replace ALL pronouns with tags (except "I/me/my" for User A)
   // Process entities in reverse length order to match longer names first
-  const sortedEntities = [...(entitiesFromRegistry || [])].sort((a: any, b: any) => 
+  const sortedEntities = [...editSanitizableEntities].sort((a: any, b: any) => 
     (b.entity_name?.length || 0) - (a.entity_name?.length || 0)
   );
   
@@ -2848,12 +2868,12 @@ Return only two labeled sections exactly in this order:
       return;
     }
 
-    const tagSymbol = e.is_registered ? '@' : '#';
+    const tagSymbol = editIsUserBEntity(e) ? '@' : e.is_registered ? '@' : '#';
     const tag = `${tagSymbol}${fullName}`;
     const tagLower = tag.toLowerCase();
     const isUserA = e.role_in_conversation === 'User A' || (e.is_participant && e.participant_slot === 'A');
     const isUserB = e.role_in_conversation === 'User B' || (e.is_participant && e.participant_slot === 'B');
-    const isMentioned = allowedTagSet.has(tag) || allowedTagSet.has(tagLower);
+    const isMentioned = isUserA || isUserB || editMentionedTags.has(tag) || editMentionedTags.has(tagLower);
 
     if (!isUserA && !isUserB && !isMentioned) {
       return;
@@ -2886,10 +2906,15 @@ Return only two labeled sections exactly in this order:
 
     if (isUserB) {
       const escapedName = escapeRegex(fullName);
-      rawContent = rawContent.replace(new RegExp(`\\buser b\\b`, 'gi'), 'you');
-      rawContent = rawContent.replace(new RegExp(`\\bthe contact\\b`, 'gi'), 'you');
-      rawContent = rawContent.replace(new RegExp(`\\bthe recipient\\b`, 'gi'), 'you');
-      rawContent = rawContent.replace(new RegExp(`(?!__TAG_PROTECT|@|#)\\b${escapedName}\\b`, 'gi'), 'you');
+      const userBTag = `@${fullName}`;
+      rawContent = rawContent.replace(new RegExp(`\\buser b\\b`, 'gi'), userBTag);
+      rawContent = rawContent.replace(new RegExp(`\\bthe contact\\b`, 'gi'), userBTag);
+      rawContent = rawContent.replace(new RegExp(`\\bthe recipient\\b`, 'gi'), userBTag);
+      rawContent = rawContent.replace(new RegExp(`(?!__TAG_PROTECT|@|#)\\b${escapedName}\\b`, 'gi'), userBTag);
+      rawContent = rawContent.replace(/\byourselves?\b/gi, userBTag);
+      rawContent = rawContent.replace(/\byourself\b/gi, userBTag);
+      rawContent = rawContent.replace(/\byour\b/gi, `${userBTag}'s`);
+      rawContent = rawContent.replace(/\byou\b/gi, userBTag);
       return;
     }
 
@@ -2921,6 +2946,21 @@ Return only two labeled sections exactly in this order:
     return tagProtectionMap[placeholder] ?? placeholder;
   });
   
+  const editUserBTagLower = userBEntity?.entity_name
+    ? `@${userBEntity.entity_name.toLowerCase()}`
+    : null;
+  rawContent = rawContent.replace(/(@[A-Za-z0-9_\-]+|#[A-Za-z0-9_\-]+)/g, (tag: string) => {
+    const lower = tag.toLowerCase();
+    if (
+      editMentionedTags.has(tag) ||
+      editMentionedTags.has(lower) ||
+      (editUserBTagLower && lower === editUserBTagLower)
+    ) {
+      return tag;
+    }
+    return 'someone';
+  });
+
   if (userAEntity?.entity_name) {
     const escapedUserA = escapeRegex(userAEntity.entity_name);
     rawContent = rawContent.replace(new RegExp(`@${escapedUserA}'s`, 'gi'), 'my');
@@ -2929,8 +2969,8 @@ Return only two labeled sections exactly in this order:
 
   if (userBEntity?.entity_name) {
     const escapedUserB = escapeRegex(userBEntity.entity_name);
-    rawContent = rawContent.replace(new RegExp(`@${escapedUserB}'s`, 'gi'), 'your');
-    rawContent = rawContent.replace(new RegExp(`@${escapedUserB}`, 'gi'), 'you');
+    rawContent = rawContent.replace(new RegExp(`\\byour\\b`, 'gi'), `@${userBEntity.entity_name}'s`);
+    rawContent = rawContent.replace(new RegExp(`\\byou\\b`, 'gi'), `@${userBEntity.entity_name}`);
   }
   
   // Final cleanup: remove any remaining double @ or # patterns
@@ -2977,18 +3017,22 @@ Return only two labeled sections exactly in this order:
           setSummaryJustRegenerated(false);
         }, 500);
 
-        await updateChatRecord({
-          summary: summaryText,
-          thoughts: thoughtsText,
-          qa_pairs: editedQAPairs,
-          initial_description: initialDescription,
-          initial_description_tags: taggedEntities,
-          additional_info: additionalInfo,
-          additional_info_tags: additionalInfoTags,
-          flowStage: 'summary',
-          questionCount: editedQAPairs.length,
-          taggedEntities: [...taggedEntities, ...additionalInfoTags],
-        });
+        await updateChatRecord(
+          {},
+          {
+            summary: summaryText,
+            thoughts: thoughtsText,
+            qa_pairs: editedQAPairs,
+            initial_description: initialDescription,
+            initial_description_tags: taggedEntities,
+            additional_info: additionalInfo,
+            additional_info_tags: additionalInfoTags,
+            flowStage: 'summary',
+            questionCount: editedQAPairs.length,
+            taggedEntities: [...taggedEntities, ...additionalInfoTags],
+          }
+        );
+        
       }
     } catch (err) {
       console.error("Failed to regenerate summary:", err);

@@ -20,6 +20,7 @@ import { Bot, Bell, MessageCircle, Users, Heart, Plus, User, History, Clock, Sea
 import NotificationsList from '@/components/NotificationsList';
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/Colors';
 import LoadingSpinner from '@/components/ui/LoadingSpinner';
+import { useChatBadge } from '@/contexts/ChatBadgeContext';
 
 interface ContactChat {
   contact_id: string;
@@ -27,6 +28,7 @@ interface ContactChat {
   contact_email: string;
   last_message: string | null;
   last_message_at: string | null;
+  last_sender_id?: string | null;
   session_count: number;
   ongoing_count: number;
   total_ongoing_count?: number;
@@ -50,6 +52,7 @@ function ChatsScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { unreadCount } = useNotifications();
+  const { setUnreadContactCount } = useChatBadge();
   const [contactChats, setContactChats] = useState<ContactChat[]>([]);
   const [loading, setLoading] = useState(true);
   const [showNotifications, setShowNotifications] = useState(false);
@@ -128,7 +131,7 @@ const chatIds = (contactChatsData || [])
   .map((chat: any) => chat.id)
   .filter((id: string | null | undefined): id is string => Boolean(id));
 
-const latestMsgMap = new Map<string, { content: string; created_at: string }>();
+const latestMsgMap = new Map<string, { content: string; created_at: string; sender_id: string | null }>();
 const messagePresenceMap = new Map<string, { hasAny: boolean; hasUserMessage: boolean }>();
 
 if (chatIds.length > 0) {
@@ -158,6 +161,7 @@ if (chatIds.length > 0) {
         latestMsgMap.set(row.chat_id, {
           content: row.content ?? 'New conversation started',
           created_at: row.created_at ?? new Date().toISOString(),
+          sender_id: row.sender_id ?? null,
         });
       }
     });
@@ -187,6 +191,7 @@ validContactChats.forEach((chat: any) => {
   let contactId: string = '';
   let contactProfile: any;
   const isMyTalk = chat.user_id === user?.id;
+  const latestMsg = latestMsgMap.get(chat.id);
 
   if (chat.user_id === user?.id) {
     contactId = chat.contact_id;
@@ -212,6 +217,7 @@ validContactChats.forEach((chat: any) => {
     contact_email: contactProfile?.email || '',
     last_message: chat.last_message || 'New conversation started',
     last_message_at: chat.last_message_at,
+    last_sender_id: latestMsg?.sender_id ?? null,
     session_count: 1,
     ongoing_count: 0, // will set after loop from maps
     total_ongoing_count: 0, // will set after loop from maps
@@ -233,6 +239,7 @@ validContactChats.forEach((chat: any) => {
     ) {
       existingContact.last_message = chat.last_message || 'New conversation started';
       existingContact.last_message_at = chat.last_message_at;
+      existingContact.last_sender_id = latestMsg?.sender_id ?? existingContact.last_sender_id ?? null;
     }
     existingContact.session_count += 1;
   }
@@ -292,15 +299,23 @@ finalChats.sort((a, b) => {
   return dateB - dateA;
 });
 
+const unreadContactsCount = finalChats.reduce((count, chat) => {
+  if (!chat.last_sender_id) return count;
+  return count + (String(chat.last_sender_id) !== String(user?.id || '') ? 1 : 0);
+}, 0);
+
+setUnreadContactCount(unreadContactsCount);
+
 setContactChats(finalChats);
 
 
     } catch (error) {
       console.error('💥 Error in fetchAllChats:', error);
+      setUnreadContactCount(0);
     } finally {
       setLoading(false);
     }
-  }, [user?.id]);
+  }, [user?.id, setUnreadContactCount]);
 
   useEffect(() => {
     if (!user) {

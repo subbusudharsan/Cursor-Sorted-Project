@@ -1,10 +1,10 @@
 import { Tabs } from 'expo-router';
 import { MessageCircle, Users, Heart, Settings } from 'lucide-react-native';
-import { useNotifications } from '@/contexts/NotificationContext';
+import { useChatBadge } from '@/contexts/ChatBadgeContext';
 import { View, Text, StyleSheet } from 'react-native';
 
 function TabLayout() {
-  const { unreadCount } = useNotifications();
+  const { unreadContactCount } = useChatBadge();
 
   return (
     <Tabs
@@ -34,10 +34,10 @@ function TabLayout() {
           tabBarIcon: ({ size, color }) => (
             <View style={styles.iconContainer}>
               <MessageCircle size={size} color={color} />
-              {unreadCount > 0 && (
+              {unreadContactCount > 0 && (
                 <View style={styles.badge}>
                   <Text style={styles.badgeText}>
-                    {unreadCount > 99 ? '99+' : unreadCount.toString()}
+                    {unreadContactCount > 99 ? '99+' : unreadContactCount.toString()}
                   </Text>
                 </View>
               )}

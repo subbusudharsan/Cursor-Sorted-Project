@@ -52,7 +52,7 @@ Deno.serve(async (req) => {
     const prompt = buildPrompt(text.trim());
 
     const claudePayload = {
-      model: "claude-3-haiku-20240307",
+      model: "claude-3-5-haiku-20241022",
       max_tokens: 400,
       temperature: 0.4,
       system: "You analyze journal reflections and provide gentle, empathetic insights.",

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
   View,
   Text,
@@ -11,8 +11,11 @@ import {
   ActivityIndicator,
   TextInput,
   Animated,
+  Easing,
   Modal,
+  Pressable,
 } from "react-native";
+import type { LayoutChangeEvent, NativeScrollEvent, NativeSyntheticEvent } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from "expo-router";
 import { useAuth } from "@/contexts/AuthContext";
@@ -23,13 +26,24 @@ import { getLastTypingTag, replaceTypingTag, parseTaggedEntities, getCommonHashT
 import LoadingSpinner from '@/components/ui/LoadingSpinner';
 import NotificationBanner from '@/components/ui/NotificationBanner';
 import { useFocusEffect } from "@react-navigation/native";
-import { useCallback } from "react";
-
 import type { RealtimeChannel } from "@supabase/supabase-js";
-
 // ADD THIS LINE HERE
 import { useNavigation } from '@react-navigation/native';
 
+type MessageAnimationState = {
+  bubbleOpacity: Animated.Value;
+  bubbleTranslate: Animated.Value;
+  bubbleScale: Animated.Value;
+  timeOpacity: Animated.Value;
+};
+
+type OptionAnimationState = {
+  appear: Animated.Value;
+  translate: Animated.Value;
+  scale: Animated.Value;
+  rippleScale: Animated.Value;
+  rippleOpacity: Animated.Value;
+};
 
 interface Message {
   id: string;
@@ -50,17 +64,13 @@ interface Contact {
 // 🛡️ CLIENT-SIDE SAFETY NET: Clean any leaked names from options
 const cleanOptionsForDisplay = (options: string[], contactName: string | null): string[] => {
   if (!contactName) return options;
-
   return options.map(opt => {
     if (!opt || typeof opt !== 'string') return opt;
-
     const escapedName = contactName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
     // Replace name with "you/your" in all forms
     let cleaned = opt;
     cleaned = cleaned.replace(new RegExp(`\\b${escapedName}'s\\b`, 'gi'), 'your');
     cleaned = cleaned.replace(new RegExp(`\\b${escapedName}\\b`, 'gi'), 'you');
-
     return cleaned;
   });
 };
@@ -73,6 +83,8 @@ type ContactChatParams = {
   aiContext?: string;
 };
 
+const INITIAL_VISIBLE_MESSAGES = 18;
+
 function ContactChatScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
@@ -84,50 +96,41 @@ function ContactChatScreen() {
     aiContext: aiContextParam,
   } = useLocalSearchParams<ContactChatParams>();
   const navigation = useNavigation();
-
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
   const [contact, setContact] = useState<Contact | null>(null);
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
-
   const [showSuggestedOptions, setShowSuggestedOptions] = useState(false);
   const [suggestedOptions, setSuggestedOptions] = useState<string[]>([]);
   const [waitingForOptions, setWaitingForOptions] = useState(false);
-
   // 🧠 cached chat context
   const [chatSummary, setChatSummary] = useState<string>("");
   const [chatThoughts, setChatThoughts] = useState<string>("");
-
   // 🌟 NEW — extra context from AI (if provided)
   const [aiPerspective, setAiPerspective] = useState<string>("");
   const [aiClosure, setAiClosure] = useState<string>("");
-
   // 💬 Hint banner for User B
   const [hintToContact, setHintToContact] = useState<{issue: string, timeline: string, full_text: string} | null>(null);
   const [showHintBanner, setShowHintBanner] = useState(false);
-
   // 🎯 AI confidence tracking
   const [aiConfidence, setAiConfidence] = useState<string>("high");
   const [conversationPhase, setConversationPhase] = useState<string>("opening");
-
   // 🧠 Cached chat context (avoid redundant fetches)
   const [chatContext, setChatContext] = useState<any>(null);
-
   // 🔄 Conversation tracking (for context aggregator compatibility)
   const [conversationStage, setConversationStage] = useState<string>("warmup");
   const [turnCount, setTurnCount] = useState<number>(0);
-
   // Add local state for the tip box
   const [showTipBox, setShowTipBox] = useState(false);
   const [tipText, setTipText] = useState("");
-
   // Tagging state for hint submission
   const [hintTaggedEntities, setHintTaggedEntities] = useState<TaggedEntity[]>([]);
   const [hintShowTagDropdown, setHintShowTagDropdown] = useState<'@' | '#' | null>(null);
   const [hintContactSuggestions, setHintContactSuggestions] = useState<Contact[]>([]);
   const [hintHashSuggestions, setHintHashSuggestions] = useState<string[]>([]);
   const [hintCursorPos, setHintCursorPos] = useState<number>(0);
+
   const [notification, setNotification] = useState<{
     visible: boolean;
     type: 'success' | 'error' | 'info' | 'warning';
@@ -138,51 +141,148 @@ function ContactChatScreen() {
     type: 'info',
     title: '',
   });
-
   //Hint Submission
   const [hintSubmitted, setHintSubmitted] = useState(false);
   const tipBoxSlideAnim = React.useRef(new Animated.Value(0)).current;
   const optionsSlideAnim = React.useRef(new Animated.Value(300)).current;
+  const headerGlowAnim = React.useRef(new Animated.Value(0)).current;
+  const headerIntroAnim = useRef(new Animated.Value(0)).current;
+  const headerInfoIntroAnim = useRef(new Animated.Value(0)).current;
+  const headerActionsIntroAnim = useRef(new Animated.Value(0)).current;
+  const messageAnimationsRef = useRef<Record<string, MessageAnimationState>>({});
+  const previousMessageIdsRef = useRef<string[]>([]);
+  const initialMessageRenderRef = useRef(true);
+  const pulseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [activePulseId, setActivePulseId] = useState<string | null>(null);
+  const optionAnimationsRef = useRef<OptionAnimationState[]>([]);
+  const optionShimmerAnim = useRef(new Animated.Value(0)).current;
+  const scrollAnim = useRef(new Animated.Value(0)).current; // ← ADD: For custom smooth scroll
+  const scrollListenerRef = useRef<string | null>(null);
+  const scrollOffsetRef = useRef(0);
+  const contentHeightRef = useRef(0);
+  const containerHeightRef = useRef(0);
+  const pendingAutoScrollRef = useRef(false);
+  const isAutoScrollingRef = useRef(false);
+const hasAutoScrolledInitially = useRef(false);
+const pendingOptionsRecipientRef = useRef<string | null>(null);
+const pendingOptionsExpectedIdRef = useRef<string | null>(null);
+const pendingOptionsPrevSignatureRef = useRef<string | null>(null);
+const pendingOptionsSinceRef = useRef<number | null>(null);
 
+  const optionShimmerLoopRef = useRef<Animated.CompositeAnimation | null>(null);
+  const [showFullHistory, setShowFullHistory] = useState(false);
+  useEffect(() => {
+    setShowFullHistory(false);
+    hasAutoScrolledInitially.current = false;
+  }, [chatId]);
+  const [activeOptionIndex, setActiveOptionIndex] = useState<number | null>(null);
+  const stopOptionShimmer = useCallback(() => {
+    if (optionShimmerLoopRef.current) {
+      optionShimmerLoopRef.current.stop();
+      optionShimmerLoopRef.current = null;
+    }
+    // FIX: Stop and reset to avoid native/JS conflict on re-use
+    optionShimmerAnim.stopAnimation(() => {
+      optionShimmerAnim.setValue(0);
+    });
+  }, [optionShimmerAnim]);
   // ✅ NEW: History view with filters
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [historyFilter, setHistoryFilter] = useState<'all' | 'mine' | 'theirs'>('all');
-
   // 🔄 Recovery mechanism state
   const [optionsGenerationFailed, setOptionsGenerationFailed] = useState(false);
   const [manualInputMode, setManualInputMode] = useState(false);
-
   // 🔄 Option refresh tracking
   const [lastOptionRefreshTime, setLastOptionRefreshTime] = useState<number>(0);
   const OPTION_REFRESH_COOLDOWN = 30000; // 30 seconds
-  const [isUpdatingOptions, setIsUpdatingOptions] = useState(false);
-  const optionsUpdateTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const optionsRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastOptionsSignatureRef = useRef<string | null>(null);
+  const optionsFallbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fadeOutCurrentOptions = useCallback(() => {
+    optionAnimationsRef.current.forEach((state) => {
+      if (!state) return;
+      // FIX: Change to true (opacity/translate supported by native)
+      Animated.parallel([
+        Animated.timing(state.appear, {
+          toValue: 0,
+          duration: 120,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true, // FIX: Was false
+        }),
+        Animated.timing(state.translate, {
+          toValue: 6,
+          duration: 120,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true, // FIX: Was false
+        }),
+      ]).start();
+    });
+  }, []);
+const enterWaitingForOptions = useCallback(
+  (recipientId?: string, expectedOptionId?: string | null) => {
+    fadeOutCurrentOptions();
+    stopOptionShimmer();
+    setActiveOptionIndex(null);
+    optionAnimationsRef.current = [];
+    setShowSuggestedOptions(false);
+    setSuggestedOptions([]);
+    setManualInputMode(false);
+    pendingOptionsRecipientRef.current =
+      recipientId ?? (user?.id ? String(user.id) : null);
+    pendingOptionsExpectedIdRef.current = expectedOptionId ?? null;
+    pendingOptionsPrevSignatureRef.current = lastOptionsSignatureRef.current;
+    pendingOptionsSinceRef.current = Date.now();
+    if (!waitingForOptions) {
+      setWaitingForOptions(true);
+    }
+    lastOptionsSignatureRef.current = null;
+  },
+  [fadeOutCurrentOptions, stopOptionShimmer, waitingForOptions, user?.id]
+);
 
+const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
+  if (
+    recipientId === null ||
+    recipientId === undefined ||
+    !pendingOptionsRecipientRef.current
+  ) {
+    pendingOptionsRecipientRef.current = null;
+    pendingOptionsExpectedIdRef.current = null;
+    pendingOptionsPrevSignatureRef.current = null;
+    pendingOptionsSinceRef.current = null;
+    setWaitingForOptions(false);
+    return;
+  }
+  if (
+    pendingOptionsRecipientRef.current &&
+    String(pendingOptionsRecipientRef.current) === String(recipientId)
+  ) {
+    pendingOptionsRecipientRef.current = null;
+    pendingOptionsExpectedIdRef.current = null;
+    pendingOptionsPrevSignatureRef.current = null;
+    pendingOptionsSinceRef.current = null;
+    setWaitingForOptions(false);
+  }
+}, []);
   // ---- add near the other state declarations ----
-  const hasSentMessage = useRef(false);          // ← NEW
-
+  const hasSentMessage = useRef(false); // ← NEW
   // 🌈 NEW — closure resolution indicator + animation
   const [isResolved, setIsResolved] = useState(false);
   const closureAnim = useRef(new Animated.Value(0)).current;
-
   const showNotification = (type: 'success' | 'error' | 'info' | 'warning', title: string, message?: string) => {
     setNotification({ visible: true, type, title, message });
   };
-
-
   const scrollViewRef = useRef<ScrollView>(null);
   const manualInputRef = useRef<string>('');
+  const userScrollingRef = useRef(false); // ← ADD: Tracks manual scroll (disables auto during touch)
 
+  
   // ---- helpers ----
   const trimHistory = (arr: { sender_id: string; content: string }[], keep = 8) =>
     arr.slice(Math.max(0, arr.length - keep));
-
   const buildHistory = (extra?: { sender_id: string; content: string }) => {
     const base = messages.map((m) => ({ sender_id: m.sender_id, content: m.content }));
     return trimHistory(extra ? [...base, extra] : base, 8);
   };
-
   const fetchChatContext = async (cid: string) => {
     try {
       const { data, error } = await supabase
@@ -190,54 +290,44 @@ function ContactChatScreen() {
         .select("context_data, user_id, contact_id, ai_confidence_level, conversation_phase, is_resolved, ai_source_chat_id, session_name, user_a_smiley_sent, user_b_smiley_sent")
         .eq("id", cid)
         .maybeSingle();
-
       if (!error && data?.context_data) {
         setChatContext(data);
         // Set User A's context
         setChatSummary(String(data.context_data.summary_a || data.context_data.summary || ""));
         setChatThoughts(String(data.context_data.thoughts_a || data.context_data.thoughts || ""));
-
         // 💬 Show hint banner if current user is User B
         if (user?.id === data.contact_id && data.context_data.hint_to_contact) {
           setHintToContact(data.context_data.hint_to_contact);
           setShowHintBanner(true);
         }
-
         // 🌟 Only show tip box if User B hasn't provided hint yet
         if (user?.id === data.contact_id && !data.context_data.hint_from_b) {
           setShowTipBox(true);
         }
-
         // 🎯 Update AI confidence and phase
         setAiConfidence(data.ai_confidence_level || "high");
         setConversationPhase(data.conversation_phase || "opening");
-
-      // 🌈 If chat already resolved, show closure banner with fade-in/out
-if (data?.is_resolved) {
-  setIsResolved(true);
-
-  Animated.timing(closureAnim, {
-    toValue: 1,
-    duration: 600,
-    useNativeDriver: true,
-  }).start();
-
-  setTimeout(() => {
-    Animated.timing(closureAnim, {
-      toValue: 0,
-      duration: 800,
-      useNativeDriver: true,
-    }).start(() => setIsResolved(false));
-  }, 5000);
-}
-
-
+        // 🌈 If chat already resolved, show closure banner with fade-in/out
+        if (data?.is_resolved) {
+          setIsResolved(true);
+          Animated.timing(closureAnim, {
+            toValue: 1,
+            duration: 600,
+            useNativeDriver: true,
+          }).start();
+          setTimeout(() => {
+            Animated.timing(closureAnim, {
+              toValue: 0,
+              duration: 800,
+              useNativeDriver: true,
+            }).start(() => setIsResolved(false));
+          }, 5000);
+        }
       }
     } catch (e) {
       console.log("ℹ️ fetchChatContext failed (non-blocking)", e);
     }
   };
-
   // ---- effects ----
   useEffect(() => {
     if (user && contactId) {
@@ -247,14 +337,11 @@ if (data?.is_resolved) {
       });
     }
   }, [user, contactId]);
-
   useEffect(() => {
     let unsubscribeOptions: (() => void) | undefined;
-
     if (user && chatId) {
       const id = chatId as string;
       console.log('🚀 CONTACT CHAT INITIALIZATION:', { chatId: id, userId: user.id });
-
       try {
         setCurrentChatId(id);
         fetchChatContext(id).catch(err => console.error('⚠️ fetchChatContext error:', err));
@@ -274,76 +361,67 @@ if (data?.is_resolved) {
         setInitialLoading(false);
       }
     }
-
     // ✅ FIX: Cleanup timeout on unmount
     return () => {
-      if (optionsRefreshTimeoutRef.current) {
-        clearTimeout(optionsRefreshTimeoutRef.current);
-        optionsRefreshTimeoutRef.current = null;
+      if (optionsFallbackTimeoutRef.current) {
+        clearTimeout(optionsFallbackTimeoutRef.current);
+        optionsFallbackTimeoutRef.current = null;
       }
+      lastOptionsSignatureRef.current = null;
       if (typeof unsubscribeOptions === 'function') {
         unsubscribeOptions();
       }
+      isAutoScrollingRef.current = false; // ← ADD: Reset scroll guard on exit (stops orphans)
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, chatId]);
-
-
-// ✨ Replace any old router.addListener or useEffect for closure animation
-useFocusEffect(
-  useCallback(() => {
-    if (isResolved) {
-      // Immediately reset the animation value
-      closureAnim.setValue(1);
-
-      // Fade out smoothly
-      Animated.timing(closureAnim, {
-        toValue: 0,
-        duration: 800,
-        useNativeDriver: true,
-      }).start(() => setIsResolved(false));
-    }
-  }, [isResolved])
-);
-
-// 🔄 Tab focus refresh logic - regenerate options when user returns
-useFocusEffect(
-  useCallback(() => {
-    const refreshOptionsOnFocus = async () => {
-      if (!currentChatId || !user) return;
-
-      const now = Date.now();
-      const timeSinceLastRefresh = now - lastOptionRefreshTime;
-
-      // Check if it's the user's turn and cooldown has passed
-      if (messages.length > 0) {
-        const lastMessage = messages[messages.length - 1];
-        const isMyTurn = lastMessage.sender_id !== user.id;
-
-        if (isMyTurn && timeSinceLastRefresh > OPTION_REFRESH_COOLDOWN) {
-          console.log('🔄 Tab focused - refreshing options');
-          setShowSuggestedOptions(false);
-          setLastOptionRefreshTime(now);
-
-          // Wait a moment then fetch fresh options
-          setTimeout(() => {
-            fetchInitialOptions(currentChatId, user.id);
-          }, 500);
+  // ✨ Replace any old router.addListener or useEffect for closure animation
+  useFocusEffect(
+    useCallback(() => {
+      if (isResolved) {
+        // FIX: Stop any running anim before reset to avoid native state issues
+        closureAnim.stopAnimation();
+        // Immediately reset the animation value
+        closureAnim.setValue(1);
+        // Fade out smoothly
+        Animated.timing(closureAnim, {
+          toValue: 0,
+          duration: 800,
+          useNativeDriver: true,
+        }).start(() => setIsResolved(false));
+      }
+    }, [isResolved])
+  );
+  // 🔄 Tab focus refresh logic - regenerate options when user returns
+  useFocusEffect(
+    useCallback(() => {
+      const refreshOptionsOnFocus = async () => {
+        if (!currentChatId || !user) return;
+        const now = Date.now();
+        const timeSinceLastRefresh = now - lastOptionRefreshTime;
+        // Check if it's the user's turn and cooldown has passed
+        if (messages.length > 0) {
+          const lastMessage = messages[messages.length - 1];
+          const isMyTurn = lastMessage.sender_id !== user.id;
+          if (isMyTurn && timeSinceLastRefresh > OPTION_REFRESH_COOLDOWN) {
+            console.log('🔄 Tab focused - refreshing options');
+            setShowSuggestedOptions(false);
+            setLastOptionRefreshTime(now);
+            // Wait a moment then fetch fresh options
+            setTimeout(() => {
+              fetchInitialOptions(currentChatId, user.id);
+            }, 500);
+          }
         }
-      }
-    };
-
-    refreshOptionsOnFocus();
-
-    return () => {
-      if (showSuggestedOptions) {
-        console.log('👋 Tab unfocused - clearing options display');
-      }
-    };
-  }, [currentChatId, user, messages, lastOptionRefreshTime, showSuggestedOptions])
-);
-
-
+      };
+      refreshOptionsOnFocus();
+      return () => {
+        if (showSuggestedOptions) {
+          console.log('👋 Tab unfocused - clearing options display');
+        }
+      };
+    }, [currentChatId, user, messages, lastOptionRefreshTime, showSuggestedOptions])
+  );
   useEffect(() => {
     navigation.setOptions({
       headerLeft: () => (
@@ -377,53 +455,148 @@ useFocusEffect(
       ),
     });
   }, [navigation, contactId, chatId, summaryParam, thoughtsParam, aiContextParam, hasSentMessage]);
-
-
-
-useEffect(() => {
-  Animated.timing(tipBoxSlideAnim, {
-    toValue: 1,
-    duration: 400,
-    useNativeDriver: true,
-  }).start();
-}, []);
-
-useEffect(() => {
-  if (showSuggestedOptions) {
-    Animated.timing(optionsSlideAnim, {
-      toValue: 0,
+  useEffect(() => {
+    Animated.timing(tipBoxSlideAnim, {
+      toValue: 1,
       duration: 400,
       useNativeDriver: true,
     }).start();
-  } else {
-    Animated.timing(optionsSlideAnim, {
-      toValue: 300,
-      duration: 300,
-      useNativeDriver: true,
-    }).start();
-  }
-}, [showSuggestedOptions]);
-
-  
-useEffect(() => {
-  if (hintSubmitted) {
-    const timer = setTimeout(() => {
-      setHintSubmitted(false);  // hide the green box after 5s
-    }, 10000);  // 5000 ms = 5 seconds
-
-    return () => clearTimeout(timer); // cleanup if component re-renders
-  }
-}, [hintSubmitted]);
-
-  
+  }, []);
   useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+    if (showSuggestedOptions) {
+      Animated.timing(optionsSlideAnim, {
+        toValue: 0,
+        duration: 480,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
+    } else {
+      Animated.timing(optionsSlideAnim, {
+        toValue: 300,
+        duration: 340,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [showSuggestedOptions]);
+ 
+  useEffect(() => {
+    if (hintSubmitted) {
+      const timer = setTimeout(() => {
+        setHintSubmitted(false); // hide the green box after 5s
+      }, 10000); // 5000 ms = 5 seconds
+      return () => clearTimeout(timer); // cleanup if component re-renders
+    }
+  }, [hintSubmitted]);
+ 
+  const attachScrollListener = useCallback(() => {
+    if (scrollListenerRef.current) {
+      scrollAnim.removeListener(scrollListenerRef.current);
+    }
+    scrollListenerRef.current = scrollAnim.addListener(({ value }) => {
+      if (scrollViewRef.current) {
+        scrollViewRef.current.scrollTo({ y: value, animated: false });
+      }
+    });
+  }, [scrollAnim]);
 
-  const scrollToBottom = () => {
-    setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 100);
-  };
+  const detachScrollListener = useCallback(() => {
+    if (scrollListenerRef.current) {
+      scrollAnim.removeListener(scrollListenerRef.current);
+      scrollListenerRef.current = null;
+    }
+  }, [scrollAnim]);
 
+  const displayedMessages = useMemo(() => {
+    if (showFullHistory) {
+      return messages;
+    }
+    const start = Math.max(0, messages.length - INITIAL_VISIBLE_MESSAGES);
+    return messages.slice(start);
+  }, [messages, showFullHistory]);
+
+  const scrollToBottom = useCallback(
+    (options: { immediate?: boolean } = {}) => {
+      if (!scrollViewRef.current) return;
+
+      const { immediate = false } = options;
+      const shouldImmediate = immediate || !hasAutoScrolledInitially.current;
+      const containerHeight = containerHeightRef.current;
+      const contentHeight = contentHeightRef.current;
+      const tentativeOffset = Math.max(0, contentHeight - containerHeight);
+      const targetOffset = Math.max(scrollOffsetRef.current, tentativeOffset);
+
+      if (containerHeight <= 0) {
+        pendingAutoScrollRef.current = true;
+        scrollOffsetRef.current = targetOffset;
+        return;
+      }
+
+      if (shouldImmediate) {
+        pendingAutoScrollRef.current = false;
+        isAutoScrollingRef.current = false;
+        scrollAnim.stopAnimation();
+        detachScrollListener();
+        scrollOffsetRef.current = targetOffset;
+        hasAutoScrolledInitially.current = true;
+        scrollViewRef.current.scrollTo({ y: targetOffset, animated: false });
+        return;
+      }
+
+      if (userScrollingRef.current) {
+        pendingAutoScrollRef.current = true;
+        return;
+      }
+
+      if (Math.abs(targetOffset - scrollOffsetRef.current) < 1) {
+        pendingAutoScrollRef.current = false;
+        return;
+      }
+
+      scrollAnim.stopAnimation((value) => {
+        if (typeof value === "number") {
+          scrollOffsetRef.current = value;
+        }
+      });
+
+      pendingAutoScrollRef.current = false;
+      isAutoScrollingRef.current = false;
+      scrollOffsetRef.current = targetOffset;
+      scrollViewRef.current.scrollTo({ y: targetOffset, animated: false });
+      if (!hasAutoScrolledInitially.current) {
+        hasAutoScrolledInitially.current = true;
+      }
+    },
+    [attachScrollListener, detachScrollListener, scrollAnim]
+  );
+
+  useEffect(() => {
+    return () => {
+      detachScrollListener();
+      scrollAnim.stopAnimation();
+      isAutoScrollingRef.current = false;
+      pendingAutoScrollRef.current = false;
+    };
+  }, [detachScrollListener, scrollAnim]);
+
+  useEffect(() => {
+    if (!hasAutoScrolledInitially.current) {
+      if (!userScrollingRef.current) {
+        scrollToBottom({ immediate: true });
+      }
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      if (!userScrollingRef.current) {
+        scrollToBottom();
+      } else {
+        pendingAutoScrollRef.current = true;
+      }
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [messages.length, scrollToBottom]);
   // ---- data fetch ----
   const fetchContactInfo = async () => {
     try {
@@ -441,9 +614,7 @@ useEffect(() => {
         .eq("user_id", user?.id)
         .eq("contact_id", contactId)
         .maybeSingle();
-
       if (error) throw error;
-
       if (data) {
         const profile = Array.isArray(data.contact_profile) ? data.contact_profile[0] : data.contact_profile;
         setContact({
@@ -458,7 +629,6 @@ useEffect(() => {
       Alert.alert("Error", "Failed to load contact info");
     }
   };
-
   const fetchMessages = async () => {
     if (!chatId) return;
     try {
@@ -468,7 +638,6 @@ useEffect(() => {
         .eq("chat_id", chatId)
         .order("created_at", { ascending: true });
       if (error) throw error;
-
       setMessages(
         (data || []).map((msg) => ({
           id: msg.id,
@@ -484,68 +653,123 @@ useEffect(() => {
       setInitialLoading(false);
     }
   };
-
   // ---- options bootstrap ----
-  const fetchInitialOptions = async (chatId: string, userId: string, retryCount = 0) => {
+  const fetchInitialOptions = async (
+    chatId: string,
+    userId: string,
+    retryCount = 0,
+    options: { force?: boolean } = {}
+  ) => {
+    const { force = false } = options;
     const maxRetries = 5;
     console.log("🔍 FETCHING INITIAL OPTIONS", { chatId, userId, retryCount });
-
-    // ✅ First check if it's actually user's turn before fetching options
-    const { data: messagesData } = await supabase
-      .from("messages")
-      .select("sender_id")
-      .eq("chat_id", chatId)
-      .order("created_at", { ascending: false })
-      .limit(1);
-
-    if (messagesData && messagesData.length > 0) {
-      const lastSenderId = messagesData[0].sender_id;
-      if (lastSenderId === userId) {
-        console.log("⛔ Not user's turn - they sent the last message");
-        setShowSuggestedOptions(false);
-        setWaitingForOptions(false);
-        return;
+    if (!force) {
+      const { data: messagesData } = await supabase
+        .from("messages")
+        .select("sender_id")
+        .eq("chat_id", chatId)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      if (messagesData && messagesData.length > 0) {
+        const lastSenderId = messagesData[0].sender_id;
+        if (lastSenderId === userId) {
+          console.log("⛔ Not user's turn - they sent the last message");
+          setShowSuggestedOptions(false);
+          setSuggestedOptions([]);
+          resolveWaitingForOptions(userId);
+          return;
+        }
       }
     }
-
     const { data, error } = await supabase
       .from("message_options")
-      .select("options, context_data, recipient_id")
+      .select("id, options, context_data, recipient_id, created_at")
       .eq("chat_id", chatId)
       .eq("recipient_id", userId)
       .order("created_at", { ascending: false })
       .limit(1);
-
     if (error) {
       console.error("❌ Failed to fetch initial options:", error);
       if (retryCount < maxRetries) {
         const delay = Math.min(1000 * Math.pow(1.5, retryCount), 5000);
         console.log(`🔄 Retrying in ${delay}ms...`);
-        setTimeout(() => fetchInitialOptions(chatId, userId, retryCount + 1), delay);
+        setTimeout(() => fetchInitialOptions(chatId, userId, retryCount + 1, options), delay);
       } else {
         console.error("❌ Max retries reached for fetching initial options");
-        setWaitingForOptions(false);
+        resolveWaitingForOptions(userId);
         setOptionsGenerationFailed(true);
         showNotification('error', 'Options Failed', 'Response options could not load. Try regenerating or use manual input.');
       }
     } else if (data && data.length > 0 && data[0].options && Array.isArray(data[0].options) && data[0].options.length >= 1) {
       console.log(`✅ INITIAL OPTIONS FOUND (${data[0].options.length} total)`, data[0].options);
-      console.log("   Recipient ID from DB:", data[0].recipient_id);
-      console.log("   Current User ID:", userId);
-
-      // 🛡️ Apply client-side safety cleaning to remove any leaked names
+      console.log(" Recipient ID from DB:", data[0].recipient_id);
+      console.log(" Current User ID:", userId);
+      const signature = `${data[0].id || ""}|${JSON.stringify(data[0].options || [])}`;
+      if (signature && lastOptionsSignatureRef.current === signature) {
+        console.log("ℹ️ Options already applied from initial fetch");
+        resolveWaitingForOptions(userId);
+        return;
+      }
+      const fetchedOptionId = data[0].id ? String(data[0].id) : null;
+      const awaitingForCurrentUser =
+        waitingForOptions &&
+        pendingOptionsRecipientRef.current &&
+        String(pendingOptionsRecipientRef.current) === String(userId);
+      const createdAtMs = data[0].created_at ? Date.parse(data[0].created_at) : Date.now();
+      if (
+        awaitingForCurrentUser &&
+        pendingOptionsExpectedIdRef.current &&
+        fetchedOptionId &&
+        pendingOptionsExpectedIdRef.current !== fetchedOptionId
+      ) {
+        console.log("ℹ️ Ignoring options (unexpected id) while waiting for fresh batch (initial fetch)");
+        return;
+      }
+      if (
+        awaitingForCurrentUser &&
+        pendingOptionsExpectedIdRef.current &&
+        !fetchedOptionId
+      ) {
+        console.log("ℹ️ Ignoring options without id while waiting for specific batch (initial fetch)");
+        return;
+      }
+      const isPendingForCurrentUser =
+        waitingForOptions &&
+        pendingOptionsRecipientRef.current &&
+        String(pendingOptionsRecipientRef.current) === String(userId);
+      if (
+        isPendingForCurrentUser &&
+        pendingOptionsSinceRef.current &&
+        createdAtMs < pendingOptionsSinceRef.current
+      ) {
+        console.log("ℹ️ Ignoring stale options while waiting for fresh batch (initial fetch)");
+        return;
+      }
+      const shouldApplyOptions =
+        !isPendingForCurrentUser ||
+        !pendingOptionsSinceRef.current ||
+        createdAtMs >= pendingOptionsSinceRef.current;
+      if (!shouldApplyOptions) {
+        console.log("ℹ️ Ignoring stale options while waiting for fresh batch (initial fetch)");
+        return;
+      }
+      lastOptionsSignatureRef.current = signature;
+      pendingOptionsPrevSignatureRef.current = null;
       const cleanedOptions = cleanOptionsForDisplay(data[0].options || [], contact?.full_name || null);
-      console.log("   After client-side cleaning:", cleanedOptions);
-
+      console.log(" After client-side cleaning:", cleanedOptions);
+      if (optionsFallbackTimeoutRef.current) {
+        clearTimeout(optionsFallbackTimeoutRef.current);
+        optionsFallbackTimeoutRef.current = null;
+      }
       setSuggestedOptions(cleanedOptions);
       setShowSuggestedOptions(true);
-      setWaitingForOptions(false);
-
+      pendingOptionsExpectedIdRef.current = null;
+      resolveWaitingForOptions(userId);
+      setLastOptionRefreshTime(Date.now());
       // 🌟 Capture extra fields if present
       if (data[0].context_data) {
         setAiPerspective(data[0].context_data.newPerspective || "");
         setAiClosure(data[0].context_data.closure || "");
-
         // 🎭 Update stage tracking (if present in context_data)
         if (data[0].context_data.conversationStage) {
           setConversationStage(data[0].context_data.conversationStage);
@@ -559,19 +783,17 @@ useEffect(() => {
       if (retryCount < maxRetries) {
         const delay = Math.min(1000 * Math.pow(1.5, retryCount), 5000);
         console.log(`🔄 Retrying in ${delay}ms...`);
-        setTimeout(() => fetchInitialOptions(chatId, userId, retryCount + 1), delay);
+        setTimeout(() => fetchInitialOptions(chatId, userId, retryCount + 1, options), delay);
       } else {
         console.error("❌ Max retries reached, options not available");
-        setWaitingForOptions(false);
+        resolveWaitingForOptions(userId);
         showNotification('warning', 'Options Delayed', 'Response options are taking longer than expected. They will appear when ready.');
       }
     }
   };
-
   const ensureInitialOptions = async (chatId: string) => {
     if (!user) return;
     console.log("🔍 ENSURING INITIAL OPTIONS EXIST", { chatId, userId: user.id });
-
     try {
       const { data, error } = await supabase
         .from("message_options")
@@ -580,16 +802,13 @@ useEffect(() => {
         .eq("recipient_id", user.id)
         .order("created_at", { ascending: false })
         .limit(1);
-
       if (error) throw error;
-
       if (!data || data.length === 0 || data[0].options.length < 3) {
         console.log("ℹ️ No initial options found in DB — waiting for generation.");
-        setWaitingForOptions(true);
-
+        enterWaitingForOptions(String(user.id));
         // Set a timeout to stop waiting after 20 seconds
         setTimeout(() => {
-          setWaitingForOptions(false);
+          resolveWaitingForOptions(String(user.id));
           if (!showSuggestedOptions) {
             console.warn("⚠️ Options generation timeout after 20 seconds");
             showNotification('info', 'Options Delayed', 'You can send a message manually or wait for AI-generated options.');
@@ -597,103 +816,104 @@ useEffect(() => {
         }, 20000);
       } else {
         console.log("✅ Options already exist, no need to wait");
-        setWaitingForOptions(false);
+        resolveWaitingForOptions(String(user.id));
       }
     } catch (err) {
       console.error("❌ ensureInitialOptions error:", err);
-      setWaitingForOptions(false);
+      resolveWaitingForOptions(user ? String(user.id) : null);
     }
   };
-
   // ---- realtime: options ----
   const subscribeToOptions = (chatId: string, currentUserId: string) => {
     console.log("🔔 SETTING UP OPTIONS SUBSCRIPTION", { chatId, currentUserId });
-
     const handleOptionsUpdate = async (payload: any) => {
       console.log("📨 OPTIONS SUBSCRIPTION RECEIVED", payload);
       const newOptions = payload.new.options || [];
-
       if (payload.new.chat_id && payload.new.chat_id !== chatId) {
         console.log("ℹ️ Ignoring options for different chat", payload.new.chat_id);
         return;
       }
-
-      if (payload.new.recipient_id !== currentUserId) {
-        console.log("ℹ️ OPTIONS FOR OTHER USER", payload.new.recipient_id);
+      const recipientId = String(payload.new.recipient_id);
+      const isForCurrentUser = recipientId === String(currentUserId);
+      const createdAtMs = payload.new.created_at ? Date.parse(payload.new.created_at) : Date.now();
+      const isPendingForCurrentUser =
+        waitingForOptions &&
+        pendingOptionsRecipientRef.current &&
+        recipientId === String(pendingOptionsRecipientRef.current);
+      if (
+        isPendingForCurrentUser &&
+        pendingOptionsSinceRef.current &&
+        createdAtMs < pendingOptionsSinceRef.current
+      ) {
+        console.log("ℹ️ Received stale options snapshot; still waiting");
         return;
       }
-
-      if (isUpdatingOptions) {
-        console.log("⏳ Skipping overlapping update — waiting for debounce");
+      const payloadOptionId = payload.new.id ? String(payload.new.id) : null;
+      const signature = `${payload.new.id || ""}|${JSON.stringify(newOptions || [])}`;
+      if (
+        isPendingForCurrentUser &&
+        signature &&
+        pendingOptionsPrevSignatureRef.current &&
+        signature === pendingOptionsPrevSignatureRef.current
+      ) {
+        console.log("ℹ️ Ignoring previous options while waiting for fresh batch (subscription signature match)");
         return;
       }
-      setIsUpdatingOptions(true);
-      if (optionsUpdateTimeoutRef.current) clearTimeout(optionsUpdateTimeoutRef.current);
-      
-
-      const { data: messagesData } = await supabase
-        .from("messages")
-        .select("sender_id")
-        .eq("chat_id", chatId)
-        .order("created_at", { ascending: false })
-        .limit(1);
-
-      if (messagesData && messagesData.length > 0) {
-        const lastSenderId = messagesData[0].sender_id;
-        if (lastSenderId === currentUserId) {
-          console.log("⛔ Not user's turn - they sent the last message, hiding options");
-          setShowSuggestedOptions(false);
-          setWaitingForOptions(false);
-          setIsUpdatingOptions(false);
-          return;
-        }
+      if (!isForCurrentUser) {
+        console.log("⚠️ Ignoring options not meant for this user:", payload.new.recipient_id);
+        return;
       }
-
-      console.log("✅ OPTIONS RECEIVED FOR CURRENT USER", newOptions.length, "options");
-
-      if (newOptions && Array.isArray(newOptions) && newOptions.length >= 1) {
-        if (optionsUpdateTimeoutRef.current) {
-          clearTimeout(optionsUpdateTimeoutRef.current);
+      if (
+        isPendingForCurrentUser &&
+        pendingOptionsExpectedIdRef.current &&
+        payloadOptionId &&
+        pendingOptionsExpectedIdRef.current !== payloadOptionId
+      ) {
+        console.log("ℹ️ Received options for a different batch id; still waiting");
+        return;
+      }
+      if (
+        isPendingForCurrentUser &&
+        pendingOptionsExpectedIdRef.current &&
+        !payloadOptionId
+      ) {
+        console.log("ℹ️ Received options without id while waiting for specific batch; still waiting");
+        return;
+      }
+      if (!Array.isArray(newOptions) || newOptions.length === 0) {
+        console.warn("⚠️ Received empty options payload");
+        return;
+      }
+      if (signature && lastOptionsSignatureRef.current === signature) {
+        console.log("ℹ️ Options already rendered for this payload");
+        return;
+      }
+      lastOptionsSignatureRef.current = signature;
+      if (optionsFallbackTimeoutRef.current) {
+        clearTimeout(optionsFallbackTimeoutRef.current);
+        optionsFallbackTimeoutRef.current = null;
+      }
+      const cleanedOptions = cleanOptionsForDisplay(newOptions, contact?.full_name || null);
+      if (
+        !isPendingForCurrentUser ||
+        !pendingOptionsSinceRef.current ||
+        createdAtMs >= pendingOptionsSinceRef.current
+      ) {
+        console.log("✅ Applying options:", cleanedOptions);
+        pendingOptionsPrevSignatureRef.current = null;
+        pendingOptionsExpectedIdRef.current = null;
+        setSuggestedOptions(cleanedOptions);
+        setShowSuggestedOptions(true);
+        resolveWaitingForOptions(recipientId);
+        setLastOptionRefreshTime(Date.now());
+        if (payload.new.context_data) {
+          setAiPerspective(payload.new.context_data.newPerspective || "");
+          setAiClosure(payload.new.context_data.closure || "");
         }
-        if (optionsRefreshTimeoutRef.current) {
-          clearTimeout(optionsRefreshTimeoutRef.current);
-          optionsRefreshTimeoutRef.current = null;
-        }
-
-        setWaitingForOptions(false);
-
-        optionsUpdateTimeoutRef.current = setTimeout(() => {
-          console.log(`✅ Debounced display (${newOptions.length}) options for user`);
-        
-          const cleanedOptions = cleanOptionsForDisplay(newOptions, contact?.full_name || null);
-        
-          // Prevent stale overwrite if user switched chat
-          if (chatId !== currentChatId) {
-            console.log("⚠️ Ignoring late options for previous chat");
-            setIsUpdatingOptions(false);
-            return;
-          }
-        
-          setSuggestedOptions(cleanedOptions);
-          setShowSuggestedOptions(true);
-          setWaitingForOptions(false);
-          setLastOptionRefreshTime(Date.now()); // 🩵 Forces React re-render and focus sync
-
-        
-          if (payload.new.context_data) {
-            setAiPerspective(payload.new.context_data.newPerspective || "");
-            setAiClosure(payload.new.context_data.closure || "");
-          }
-        
-          setIsUpdatingOptions(false);
-        }, 250);
-        
       } else {
-        console.warn("⚠️ Received incomplete options set:", newOptions.length);
-        setIsUpdatingOptions(false);
+        console.log("ℹ️ Ignoring options received before pending timestamp");
       }
     };
-
     const channel = supabase
       .channel(`options-${chatId}`)
       .on(
@@ -726,36 +946,22 @@ useEffect(() => {
         },
         (payload) => {
           if (payload.old?.recipient_id !== currentUserId) return;
-
-          console.log("🧹 Options deleted for current user - hiding while regeneration runs");
-          if (optionsUpdateTimeoutRef.current) {
-            clearTimeout(optionsUpdateTimeoutRef.current);
-          }
-          setShowSuggestedOptions(false);
-          setSuggestedOptions([]);
-          setWaitingForOptions(true);
-          setIsUpdatingOptions(false);
+          console.log("🧹 Options deleted for current user - waiting for regenerated set");
+          lastOptionsSignatureRef.current = null;
+          enterWaitingForOptions(String(payload.old.recipient_id));
         }
       )
       .subscribe((status) => {
         console.log("📡 Options subscription status:", status);
-        if (status === "SUBSCRIBED") {
-          console.log("✅ Successfully subscribed to options updates (INSERT + UPDATE)");
-        } else if (status === "CHANNEL_ERROR") {
-          console.error("❌ Options subscription error");
-        }
       });
-
     return () => {
       console.log("🔌 Unsubscribing from options channel");
       supabase.removeChannel(channel);
     };
   };
-
   // ---- realtime: closure state ----
   const subscribeToClosureState = (chatId: string) => {
     console.log("🔔 SETTING UP CLOSURE STATE SUBSCRIPTION", { chatId });
-
     const channel = supabase
       .channel(`closure-${chatId}`)
       .on(
@@ -769,87 +975,48 @@ useEffect(() => {
         async (payload) => {
           const updatedChat = payload.new;
           console.log("🎉 CLOSURE STATE CHANGED", updatedChat);
-
-if (updatedChat.closure_state === 'closed' && updatedChat.is_resolved) {
-  console.log("🎉 Both smileys detected → showing closure banner");
-  setIsResolved(true);
-  showNotification('success', 'Conversation Closed', '🌈 This conversation has peacefully concluded.');
-
-  Animated.timing(closureAnim, {
-    toValue: 1,
-    duration: 600,
-    useNativeDriver: true,
-  }).start();
-
-  setTimeout(() => {
-    Animated.timing(closureAnim, {
-      toValue: 0,
-      duration: 800,
-      useNativeDriver: true,
-    }).start(() => setIsResolved(false));
-  }, 5000);
-
-  // ✅ FIX: Navigate to history tab instead of chats tab
-  setTimeout(() => {
-    router.push({
-      pathname: '/contact-chat-details',
-      params: { contactId: contactId || '', autoSwitchToHistory: 'true' }
-    });
-  }, 2500);
-}
-
-
-
-          // Check if conversation is now closed
+          // FIX: Removed duplicate if-block; consolidated logic
           if (updatedChat.closure_state === 'closed' && updatedChat.is_resolved) {
+            console.log("🎉 Both smileys detected → showing closure banner");
             setIsResolved(true);
-showNotification('success', 'Conversation Closed', '🌈 This conversation is complete now');
-
-// 🌟 Fade-in animation
-Animated.timing(closureAnim, {
-  toValue: 1,
-  duration: 600,
-  useNativeDriver: true,
-}).start();
-
-// 🌟 Auto fade-out after 5 seconds
-setTimeout(() => {
-  Animated.timing(closureAnim, {
-    toValue: 0,
-    duration: 800,
-    useNativeDriver: true,
-  }).start(() => setIsResolved(false)); // hide after fade-out
-}, 5000);
-
-            console.log("✅ Conversation closed! Navigating to home...");
-
-            // Small delay to let users see final message
+            showNotification('success', 'Conversation Closed', '🌈 This conversation has peacefully concluded.');
+            // FIX: Stop before new anim to clear native state
+            closureAnim.stopAnimation();
+            Animated.timing(closureAnim, {
+              toValue: 1,
+              duration: 600,
+              useNativeDriver: true,
+            }).start();
+            setTimeout(() => {
+              Animated.timing(closureAnim, {
+                toValue: 0,
+                duration: 800,
+                useNativeDriver: true,
+              }).start(() => setIsResolved(false));
+            }, 5000);
             // ✅ FIX: Navigate to history tab instead of chats tab
             setTimeout(() => {
               router.push({
                 pathname: '/contact-chat-details',
                 params: { contactId: contactId || '', autoSwitchToHistory: 'true' }
               });
-            }, 2000);
+            }, 2500);
           }
         }
       )
       .subscribe();
-
     return () => {
       supabase.removeChannel(channel);
     };
   };
-
   // ---- realtime: messages ----
   const subscribeToMessages = (chatId: string, currentUserId: string) => {
     console.log("\n" + "🔔".repeat(30));
     console.log("📡 SETTING UP MESSAGE SUBSCRIPTION");
-    console.log("  Chat ID:", chatId);
-    console.log("  Current User ID:", currentUserId);
-    console.log("  Filter:", `chat_id=eq.${chatId}`);
+    console.log(" Chat ID:", chatId);
+    console.log(" Current User ID:", currentUserId);
+    console.log(" Filter:", `chat_id=eq.${chatId}`);
     console.log("🔔".repeat(30) + "\n");
-
     const channel = supabase
       .channel(`messages-${chatId}`)
       .on(
@@ -862,23 +1029,20 @@ setTimeout(() => {
         },
         async (payload) => {
           const newMsg = payload.new;
-
+          console.log("📨 LIVE MESSAGE RECEIVED:", newMsg.content);
           console.log("\n" + "📨".repeat(30));
           console.log("📬 NEW MESSAGE RECEIVED VIA REALTIME");
-          console.log("  Message ID:", newMsg.id);
-          console.log("  Sender ID:", newMsg.sender_id);
-          console.log("  Current User ID:", currentUserId);
-          console.log("  Content:", newMsg.content?.substring(0, 50));
-          console.log("  Is from current user?", newMsg.sender_id === currentUserId);
-          console.log("  Will display as:", newMsg.sender_id === currentUserId ? "user" : "contact");
+          console.log(" Message ID:", newMsg.id);
+          console.log(" Sender ID:", newMsg.sender_id);
+          console.log(" Current User ID:", currentUserId);
+          console.log(" Content:", newMsg.content?.substring(0, 50));
+          console.log(" Is from current user?", newMsg.sender_id === currentUserId);
+          console.log(" Will display as:", newMsg.sender_id === currentUserId ? "user" : "contact");
           console.log("📨".repeat(30) + "\n");
-
           setMessages((prev) => {
             const exists = prev.some((m) => m.id === newMsg.id);
-            console.log("  Message already in list?", exists);
-
+            console.log(" Message already in list?", exists);
             if (exists) return prev;
-
             const newMessage: Message = {
               id: newMsg.id,
               content: newMsg.content,
@@ -886,79 +1050,64 @@ setTimeout(() => {
               sender_id: newMsg.sender_id,
               created_at: newMsg.created_at,
             };
-
-            console.log("  ✅ Adding message to list as:", newMessage.sender_type);
+            console.log(" ✅ Adding message to list as:", newMessage.sender_type);
             return [...prev, newMessage];
           });
-
-        if (String(newMsg.sender_id) !== String(currentUserId)) {
-          console.log("🧹 Clearing existing suggestions while waiting for new options...");
-          if (optionsRefreshTimeoutRef.current) {
-            clearTimeout(optionsRefreshTimeoutRef.current);
+          setTimeout(() => {
+            scrollToBottom();
+          }, 150);
+          const messageFromOtherUser = String(newMsg.sender_id) !== String(currentUserId);
+          if (messageFromOtherUser) {
+            console.log("🧹 New message from other user → hide old options, wait for fresh ones");
+            if (optionsFallbackTimeoutRef.current) {
+              clearTimeout(optionsFallbackTimeoutRef.current);
+              optionsFallbackTimeoutRef.current = null;
+            }
+            lastOptionsSignatureRef.current = null;
+            optionsFallbackTimeoutRef.current = setTimeout(async () => {
+              console.log("⏱️ Options fallback refresh");
+              await fetchInitialOptions(chatId, currentUserId, 0, { force: true });
+              optionsFallbackTimeoutRef.current = null;
+            }, 4000);
           }
-          setShowSuggestedOptions(false);
-          setSuggestedOptions([]);
-          setWaitingForOptions(true);
-
-          // Trigger a light refresh once — no polling loops
-if (optionsRefreshTimeoutRef.current) clearTimeout(optionsRefreshTimeoutRef.current);
-optionsRefreshTimeoutRef.current = setTimeout(async () => {
-  console.log("🔄 Refreshing options (debounced)");
-  await fetchInitialOptions(chatId, currentUserId);
-}, 1200);
-
-        }
-
           // CONTACT replied → generate options for current user
-          console.log("  Checking if should generate options...");
-          console.log("  newMsg.sender_id:", newMsg.sender_id);
-          console.log("  contactId:", contactId);
-          console.log("  contactId type:", typeof contactId);
-          console.log("  Matches?", newMsg.sender_id === contactId);
-          console.log("  Matches (string)?", String(newMsg.sender_id) === String(contactId));
-
+          console.log(" Checking if should generate options...");
+          console.log(" newMsg.sender_id:", newMsg.sender_id);
+          console.log(" contactId:", contactId);
+          console.log(" contactId type:", typeof contactId);
+          console.log(" Matches?", newMsg.sender_id === contactId);
+          console.log(" Matches (string)?", String(newMsg.sender_id) === String(contactId));
           if (String(newMsg.sender_id) === String(contactId)) {
             console.log("\n" + "=".repeat(60));
             console.log("📤 CONTACT REPLIED - GENERATING OPTIONS FOR CURRENT USER");
             console.log("=".repeat(60));
             console.log("📬 Contact's message (currentMessage):", newMsg.content.substring(0, 80));
-            setWaitingForOptions(true);
-
+            enterWaitingForOptions(currentUserId);
             const conversationHistory = buildHistory({
               sender_id: String(newMsg.sender_id),
               content: String(newMsg.content || ""),
             });
-
             const { data: chatCtx } = await supabase
               .from("chats")
               .select("context_data, user_id, contact_id")
               .eq("id", chatId)
               .single();
-
-            // ✅ FIX: Determine if current user is User A or User B
             const isCurrentUserA = currentUserId === chatCtx?.user_id;
-
             console.log("💾 Context data being sent to validation:");
-            console.log("   Role:", isCurrentUserA ? "User A" : "User B");
-            console.log("   Summary:", (isCurrentUserA ? chatCtx?.context_data?.summary_a : chatCtx?.context_data?.summary_b)?.substring(0, 50) || "❌ MISSING");
-            console.log("   Thoughts:", (isCurrentUserA ? chatCtx?.context_data?.thoughts_a : chatCtx?.context_data?.thoughts_b)?.substring(0, 50) || "❌ MISSING");
-            console.log("   Hint from B:", chatCtx?.context_data?.hint_from_b?.substring(0, 50) || "⚠️ Not provided");
-            console.log("   History length:", conversationHistory.length);
-
-            // ✅ CRITICAL: Always include User A's original issue context in all generations
+            console.log(" Role:", isCurrentUserA ? "User A" : "User B");
+            console.log(" Summary:", (isCurrentUserA ? chatCtx?.context_data?.summary_a : chatCtx?.context_data?.summary_b)?.substring(0, 50) || "❌ MISSING");
+            console.log(" Thoughts:", (isCurrentUserA ? chatCtx?.context_data?.thoughts_a : chatCtx?.context_data?.thoughts_b)?.substring(0, 50) || "❌ MISSING");
+            console.log(" Hint from B:", chatCtx?.context_data?.hint_from_b?.substring(0, 50) || "⚠️ Not provided");
+            console.log(" History length:", conversationHistory.length);
             const summaryA = chatCtx?.context_data?.summary_a || chatCtx?.context_data?.summary || "";
             const thoughtsA = chatCtx?.context_data?.thoughts_a || chatCtx?.context_data?.thoughts || "";
             const summaryB = chatCtx?.context_data?.summary_b || "";
             const thoughtsB = chatCtx?.context_data?.thoughts_b || "";
-
-            // Send correct context based on who is receiving the options
-            const summaryToSend = isCurrentUserA ? summaryA : summaryB;
-            const thoughtsToSend = isCurrentUserA ? thoughtsA : thoughtsB;
-
+            const summaryToSend = isCurrentUserA ? summaryA : (summaryB || summaryA);
+            const thoughtsToSend = isCurrentUserA ? thoughtsA : (thoughtsB || thoughtsA);
             console.log("📤 Generating options with FULL context:");
-            console.log("   Original Issue (User A):", summaryA.substring(0, 60));
-            console.log("   Recipient context:", summaryToSend.substring(0, 60));
-
+            console.log(" Original Issue (User A):", summaryA.substring(0, 60));
+            console.log(" Recipient context:", summaryToSend.substring(0, 60));
             // 🧠 STEP 1: Call orchestrate-conversation FIRST to get intelligent guidance
             console.log("🧠 ORCHESTRATION: Calling orchestrate-conversation for intelligent coordination...");
             let orchestrationGuidance = null;
@@ -970,68 +1119,76 @@ optionsRefreshTimeoutRef.current = setTimeout(async () => {
                     chatId,
                     recipientId: currentUserId,
                     currentUserId: currentUserId,
-                    currentMessage: String(newMsg.content || ""),
+                    currentMessage: String(newMsg.content || ""), // ✅ CRITICAL: Latest message from contact
                     summary: summaryToSend,
                     thoughts: thoughtsToSend,
+                    // ✅ CRITICAL: Always pass User A's original issue context
+                    originalIssue: {
+                      summary: summaryA,
+                      thoughts: thoughtsA,
+                    },
+                    hintFromB: chatCtx?.context_data?.hint_from_b || "",
+                    hintToContact: chatCtx?.context_data?.hint_to_contact || null,
                     summaryB: summaryB,
                     thoughtsB: thoughtsB,
-                    hintFromB: chatCtx?.context_data?.hint_from_b || "",
                     conversationHistory,
-                    contactCategory: contact?.category || "General",
                     isInitial: false,
+                    contactCategory: contact?.category || "General",
+                    conversationPhase,
+                    resolutionDetected: false,
+                    lastMessageTimestamp: newMsg.created_at,
+                    wordLimit: 15,
                   },
                 }
               );
-
               if (orchError) {
-                console.error("⚠️ Orchestration failed (non-blocking):", orchError);
+                console.error("❌ Orchestration guidance failed:", orchError);
               } else {
-                orchestrationGuidance = orchData;
-                console.log("✅ Orchestration guidance received:", {
-                  emotionIntent: orchData?.emotionIntent,
-                  closureReadiness: orchData?.closureReadiness,
-                });
+                orchestrationGuidance = orchData?.guidance ?? null;
+                console.log("✅ Orchestration guidance received:", orchestrationGuidance);
               }
-            } catch (err) {
-              console.error("⚠️ Orchestration error (continuing anyway):", err);
+            } catch (orchCallError) {
+              console.error("💥 Orchestration call failed:", orchCallError);
             }
-
-            // 🎯 STEP 2: Generate options WITH orchestration guidance
-            const { error } = await supabase.functions.invoke(
-              "generate-contextual-options",
-              {
-                body: {
-                  chatId,
-                  recipientId: currentUserId,
-                  currentUserId: currentUserId,
-                  currentMessage: String(newMsg.content || ""), // ✅ CRITICAL: Latest message from contact
-                  summary: summaryToSend,
-                  thoughts: thoughtsToSend,
-                  // ✅ CRITICAL: Always pass User A's original issue context
-                  originalIssue: {
-                    summary: summaryA,
-                    thoughts: thoughtsA,
+            // 🧠 STEP 2: Generate contextual options with Claude (orchestration guidance included)
+            console.log("🧠 CLAUDE: Generating contextual options (with fallbacks)...");
+            try {
+              const { data: optionsResponse, error } = await supabase.functions.invoke(
+                "generate-contextual-options",
+                {
+                  body: {
+                    chatId,
+                    recipientId: currentUserId,
+                    currentUserId,
+                    summary: summaryToSend,
+                    thoughts: thoughtsToSend,
+                    summaryB,
+                    thoughtsB,
+                    conversationHistory,
+                    contactCategory: contact?.category || "General",
+                    orchestrationGuidance,
+                    hintFromB: chatCtx?.context_data?.hint_from_b || "",
+                    hintToContact: chatCtx?.context_data?.hint_to_contact || null,
+                    conversationPhase,
+                    lastMessage: newMsg.content || "",
+                    isVeryFirstMessage: false,
                   },
-                  hintFromB: chatCtx?.context_data?.hint_from_b || "",
-                  hintToContact: chatCtx?.context_data?.hint_to_contact || null,
-                  summaryB: summaryB,
-                  thoughtsB: thoughtsB,
-                  conversationHistory,
-                  isInitial: false,
-                  contactCategory: contact?.category || "General",
-                  conversationPhase: conversationPhase,
-                  resolutionDetected: false,
-                  lastMessageTimestamp: newMsg.created_at, // ⏰ For timing-aware context
-                  wordLimit: 15, // ✅ Pass word limit
-                },
+                }
+              );
+              if (error) {
+                console.error("❌ Failed to generate options:", error);
+                showNotification('error', 'Options Failed', 'Could not generate response options. You can type manually.');
+                resolveWaitingForOptions(currentUserId);
+              } else {
+                console.log("✅ Options generation request sent with original issue context");
+                if (optionsResponse?.optionId) {
+                  pendingOptionsExpectedIdRef.current = String(optionsResponse.optionId);
+                }
               }
-            );
-
-            if (error) {
-              console.error("❌ Failed to generate options:", error);
-              showNotification('error', 'Options Failed', 'Could not generate response options. You can type manually.');
-            } else {
-              console.log("✅ Options generation request sent with original issue context");
+            } catch (generationError) {
+              console.error("💥 ERROR generating options:", generationError);
+              showNotification('error', 'Options Failed', 'Could not generate response options. Please try again.');
+              resolveWaitingForOptions(currentUserId);
             }
           }
         }
@@ -1046,460 +1203,748 @@ optionsRefreshTimeoutRef.current = setTimeout(async () => {
           console.error("⏱️ Message subscription timed out for chat:", chatId);
         }
       });
-
     return () => {
       console.log("🔌 UNSUBSCRIBING from messages for chat:", chatId);
       supabase.removeChannel(channel);
     };
   };
-
   // ---- send message ----
-const sendMessage = async (messageContent: string) => {
-  const content = messageContent.trim();
-  if (!content || !currentChatId || loading) return;
-
-    // ← ADD THIS LINE
-    hasSentMessage.current = true;
-
-  // Check if conversation is already resolved
-  const { data: chatCheck } = await supabase
-    .from("chats")
-    .select("is_resolved, closure_state")
-    .eq("id", currentChatId)
-    .single();
-
-  if (chatCheck?.is_resolved && chatCheck?.closure_state === 'closed') {
-    console.log("🛑 Conversation is already closed - preventing new messages");
-    showNotification('info', 'Conversation Closed', 'This conversation has been completed and closed.');
-    return;
-  }
-
-  console.log("\n" + "🚀".repeat(30));
-  console.log("📤 SENDING MESSAGE");
-  console.log("  From User ID:", user?.id);
-  console.log("  To Chat ID:", currentChatId);
-  console.log("  Content:", content.substring(0, 50));
-  console.log("🚀".repeat(30) + "\n");
-
-  setLoading(true);
-  setShowSuggestedOptions(false);
-
-  try {
-    const { data, error } = await supabase
-      .from("messages")
-      .insert({
-        chat_id: currentChatId,
-        sender_type: "user",
-        sender_id: user?.id,
-        content,
-        message_type: "text",
-      })
-      .select()
+  const sendMessage = async (messageContent: string) => {
+    const content = messageContent.trim();
+    if (!content || !currentChatId || loading) return;
+      // ← ADD THIS LINE
+      hasSentMessage.current = true;
+    // Check if conversation is already resolved
+    const { data: chatCheck } = await supabase
+      .from("chats")
+      .select("is_resolved, closure_state, user_id, contact_id, user_a_smiley_sent, user_b_smiley_sent")
+      .eq("id", currentChatId)
       .single();
-
-    if (error) {
-      console.error("❌ MESSAGE INSERT FAILED:", error);
-      throw error;
+    if (chatCheck?.is_resolved && chatCheck?.closure_state === 'closed') {
+      console.log("🛑 Conversation is already closed - preventing new messages");
+      showNotification('info', 'Conversation Closed', 'This conversation has been completed and closed.');
+      return;
     }
-
-    console.log("✅ MESSAGE INSERTED INTO DATABASE");
-    console.log("  Message ID:", data.id);
-    console.log("  Sender ID:", data.sender_id);
-    console.log("  Chat ID:", data.chat_id);
-
-    // 😊 Mutual smiley detection for proper closure
-    const CLOSURE_SMILEYS = ["👍", "🙂", "🤝", "❤️", "😊", "💖", "🌟", "✨", "🙏"];
-    const isSmiley = CLOSURE_SMILEYS.some(smiley => content.trim() === smiley);
-
-    if (isSmiley) {
-      const { data: chatData } = await supabase
-        .from("chats")
-        .select("user_id, contact_id, context_data, user_a_smiley_sent, user_b_smiley_sent, closure_state")
-        .eq("id", currentChatId)
+    console.log("\n" + "🚀".repeat(30));
+    console.log("📤 SENDING MESSAGE");
+    console.log(" From User ID:", user?.id);
+    console.log(" To Chat ID:", currentChatId);
+    console.log(" Content:", content.substring(0, 50));
+    console.log("🚀".repeat(30) + "\n");
+    setLoading(true);
+    setShowSuggestedOptions(false);
+    const recipientId = contactId ? String(contactId) : null;
+    try {
+      const { data, error } = await supabase
+        .from("messages")
+        .insert({
+          chat_id: currentChatId,
+          sender_type: "user",
+          sender_id: user?.id,
+          content,
+          message_type: "text",
+        })
+        .select()
         .single();
-
-      if (chatData) {
-        const isUserA = user?.id === chatData.user_id;
-        const isUserB = user?.id === chatData.contact_id;
-
-        // Update smiley sent status
-        const updateData: any = {};
-        if (isUserA) {
-          updateData.user_a_smiley_sent = true;
-        } else if (isUserB) {
-          updateData.user_b_smiley_sent = true;
-        }
-
-        // Check if both have sent smileys
-        const userASent = isUserA ? true : chatData.user_a_smiley_sent;
-        const userBSent = isUserB ? true : chatData.user_b_smiley_sent;
-
-        if (userASent && userBSent) {
-  // ✅ Both users sent smileys → fully closed
-  updateData.closure_state = 'closed';
-  updateData.is_resolved = true;
-  updateData.closure_achieved_at = new Date().toISOString();
-  console.log("✅ Both users sent smileys - conversation closed!");
-
-  // Notify both via Supabase trigger — don't show banner here yet
-} else {
-  // 🕊 One user sent smiley → only mark pending, no closure yet
-  updateData.closure_state = isUserA
-    ? 'pending_user_b_smiley'
-    : 'pending_user_a_smiley';
-
-  console.log(`⏳ Waiting for ${isUserA ? 'User B' : 'User A'} to send closure smiley`);
-  showNotification('info', 'Closure Pending', 'Waiting for the other person to confirm completion');
-}
-
-        await supabase
+      if (error) {
+        console.error("❌ MESSAGE INSERT FAILED:", error);
+        throw error;
+      }
+      console.log("✅ MESSAGE INSERTED INTO DATABASE");
+      console.log(" Message ID:", data.id);
+      // 😊 Mutual smiley detection for proper closure
+      const CLOSURE_SMILEYS = ["👍", "🙂", "🤝", "❤️", "😊", "💖", "🌟", "✨", "🙏"];
+      const isSmiley = CLOSURE_SMILEYS.some(smiley => content.trim() === smiley);
+      if (isSmiley) {
+        const { data: chatData } = await supabase
           .from("chats")
-          .update(updateData)
-          .eq("id", currentChatId);
-
-        if (userASent && userBSent) {
-          try {
-            const contextData = (chatData as any)?.context_data ?? {};
-            const summaryA = contextData.summary_a || contextData.summary || '';
-            const thoughtsA = contextData.thoughts_a || contextData.thoughts || '';
-            const hintFromB = contextData.hint_from_b || contextData.hintToContact || null;
-
-            const perspectiveLines: string[] = [];
-            if (summaryA) {
-              perspectiveLines.push(`My perspective: ${summaryA}`);
+          .select("user_id, contact_id, context_data, user_a_smiley_sent, user_b_smiley_sent, closure_state")
+          .eq("id", currentChatId)
+          .single();
+        if (chatData) {
+          const isUserA = user?.id === chatData.user_id;
+          const isUserB = user?.id === chatData.contact_id;
+          // Update smiley sent status
+          const updateData: any = {};
+          if (isUserA) {
+            updateData.user_a_smiley_sent = true;
+          } else if (isUserB) {
+            updateData.user_b_smiley_sent = true;
+          }
+          // Check if both have sent smileys
+          const userASent = isUserA ? true : chatData.user_a_smiley_sent;
+          const userBSent = isUserB ? true : chatData.user_b_smiley_sent;
+          if (userASent && userBSent) {
+            // ✅ Both users sent smileys → fully closed
+            updateData.closure_state = 'closed';
+            updateData.is_resolved = true;
+            updateData.closure_achieved_at = new Date().toISOString();
+            console.log("✅ Both users sent smileys - conversation closed!");
+            // Notify both via Supabase trigger — don't show banner here yet
+          } else {
+            // 🕊 One user sent smiley → only mark pending, no closure yet
+            updateData.closure_state = isUserA
+              ? 'pending_user_b_smiley'
+              : 'pending_user_a_smiley';
+            console.log(`⏳ Waiting for ${isUserA ? 'User B' : 'User A'} to send closure smiley`);
+            showNotification('info', 'Closure Pending', 'Waiting for the other person to confirm completion');
+          }
+          await supabase
+            .from("chats")
+            .update(updateData)
+            .eq("id", currentChatId);
+          if (userASent && userBSent) {
+            try {
+              const contextData = (chatData as any)?.context_data ?? {};
+              const summaryA = contextData.summary_a || contextData.summary || '';
+              const thoughtsA = contextData.thoughts_a || contextData.thoughts || '';
+              const hintFromB = contextData.hint_from_b || contextData.hintToContact || null;
+              const perspectiveLines: string[] = [];
+              if (summaryA) {
+                perspectiveLines.push(`My perspective: ${summaryA}`);
+              }
+              if (thoughtsA) {
+                perspectiveLines.push(`My thoughts: ${thoughtsA}`);
+              }
+              if (hintFromB) {
+                perspectiveLines.push(`Their perspective: ${hintFromB}`);
+              }
+              perspectiveLines.push(`Final note I sent: ${content}`);
+              const tags = ['closure'];
+              if (contactId) {
+                tags.push(`contact:${contactId}`);
+              }
+              if (currentChatId) {
+                tags.push(`chat:${currentChatId}`);
+              }
+              const closureMood = typeof contextData.closure_mood === 'string' && contextData.closure_mood.trim()
+                ? contextData.closure_mood.trim().toLowerCase()
+                : 'peaceful';
+              await supabase
+                .from('soulroom_entries')
+                .insert({
+                  user_id: user?.id,
+                  title: `Post-conversation note`,
+                  content: perspectiveLines.join('\n\n'),
+                  mood: closureMood,
+                  tags,
+                  ai_summary: null,
+                  emotion_tag: 'relieved',
+                });
+            } catch (closureLogError) {
+              console.warn('⚠️ Failed to log closure in Soulroom:', closureLogError);
             }
-            if (thoughtsA) {
-              perspectiveLines.push(`My thoughts: ${thoughtsA}`);
-            }
-            if (hintFromB) {
-              perspectiveLines.push(`Their perspective: ${hintFromB}`);
-            }
-            perspectiveLines.push(`Final note I sent: ${content}`);
-
-            const tags = ['closure'];
-            if (contactId) {
-              tags.push(`contact:${contactId}`);
-            }
-            if (currentChatId) {
-              tags.push(`chat:${currentChatId}`);
-            }
-
-            const closureMood = typeof contextData.closure_mood === 'string' && contextData.closure_mood.trim()
-              ? contextData.closure_mood.trim().toLowerCase()
-              : 'peaceful';
-
-            await supabase
-              .from('soulroom_entries')
-              .insert({
-                user_id: user?.id,
-                title: `Post-conversation note`,
-                content: perspectiveLines.join('\n\n'),
-                mood: closureMood,
-                tags,
-                ai_summary: null,
-                emotion_tag: 'relieved',
-              });
-          } catch (closureLogError) {
-            console.warn('⚠️ Failed to log closure in Soulroom:', closureLogError);
           }
         }
+      } else if (chatCheck) {
+        if (
+          chatCheck.user_a_smiley_sent ||
+          chatCheck.user_b_smiley_sent ||
+          chatCheck.closure_state !== 'active'
+        ) {
+          const resetData: Record<string, any> = {
+            user_a_smiley_sent: false,
+            user_b_smiley_sent: false,
+            closure_state: 'active',
+            is_resolved: false,
+          };
+          await supabase
+            .from("chats")
+            .update(resetData)
+            .eq("id", currentChatId);
+        }
       }
-    }
-
-    let chatData = chatContext;
-    if (!chatData) {
-      const { data: fetched } = await supabase
+      let chatData = chatContext;
+      if (!chatData) {
+        const { data: fetched } = await supabase
+          .from("chats")
+          .select("user_id, contact_id, context_data, ai_source_chat_id, session_name, ai_confidence_level, conversation_phase, is_resolved, user_a_smiley_sent, user_b_smiley_sent")
+          .eq("id", currentChatId)
+          .single();
+        if (fetched) {
+          chatData = fetched;
+          setChatContext(fetched);
+        }
+      }
+      if (!chatData) {
+        throw new Error("Chat context unavailable");
+      }
+      const sessionId = chatData.session_name || (currentChatId as string);
+      console.log("\n" + "=".repeat(60));
+      console.log("📤 USER SENT MESSAGE - GENERATING OPTIONS FOR RECIPIENT");
+      console.log("=".repeat(60));
+      console.log("📬 User's message (currentMessage for recipient):", content.substring(0, 80));
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === data.id)) return prev;
+        return [
+          ...prev,
+          {
+            id: data.id,
+            content: data.content,
+            sender_type: "user",
+            sender_id: user?.id || "",
+            created_at: data.created_at,
+          },
+        ];
+      });
+      const updatedContextData = chatData?.context_data
+        ? { ...chatData.context_data, initial_pending: false, session_promoted: true }
+        : { initial_pending: false, session_promoted: true };
+      await supabase
         .from("chats")
-        .select("user_id, contact_id, context_data, ai_source_chat_id, session_name, ai_confidence_level, conversation_phase, is_resolved, user_a_smiley_sent, user_b_smiley_sent")
-        .eq("id", currentChatId)
-        .single();
-      if (fetched) {
-        chatData = fetched;
-        setChatContext(fetched);
+        .update({
+          last_message: content,
+          last_message_at: new Date().toISOString(),
+          context_data: updatedContextData,
+        })
+        .eq("id", currentChatId);
+      if (recipientId) {
+        enterWaitingForOptions(recipientId);
       }
-    }
-
-    if (!chatData) {
-      throw new Error("Chat context unavailable");
-    }
-
-    const sessionId = chatData.session_name || (currentChatId as string);
-
-    console.log("\n" + "=".repeat(60));
-    console.log("📤 USER SENT MESSAGE - GENERATING OPTIONS FOR RECIPIENT");
-    console.log("=".repeat(60));
-    console.log("📬 User's message (currentMessage for recipient):", content.substring(0, 80));
-
-    setMessages((prev) => {
-      if (prev.some((m) => m.id === data.id)) return prev;
-      return [
-        ...prev,
-        {
-          id: data.id,
-          content: data.content,
-          sender_type: "user",
-          sender_id: user?.id || "",
-          created_at: data.created_at,
-        },
-      ];
-    });
-
-    const updatedContextData = chatData?.context_data
-      ? { ...chatData.context_data, initial_pending: false, session_promoted: true }
-      : { initial_pending: false, session_promoted: true };
-
-    await supabase
-      .from("chats")
-      .update({
-        last_message: content,
-        last_message_at: new Date().toISOString(),
-        context_data: updatedContextData,
-      })
-      .eq("id", currentChatId);
-
-    const recipientId = contactId as string;
-
-    const conversationHistory = buildHistory({
-      sender_id: String(user?.id || ""),
-      content,
-    }) || []; // ✅ Ensure it's always an array
-
-    // ✅ FIX: Determine if current user is User A or User B to send correct context
-    const isCurrentUserA = user?.id === chatData.user_id;
-
-    // ✅ FIX: Use fresh context from database, not stale component state
-    // Send User A's context when generating options for User B
-    // ✅ CRITICAL: Always include User A's original issue context in all generations
-    const summaryA = chatData.context_data?.summary_a || chatData.context_data?.summary || "";
-    const thoughtsA = chatData.context_data?.thoughts_a || chatData.context_data?.thoughts || "";
-    const summaryB = chatData.context_data?.summary_b || "";
-    const thoughtsB = chatData.context_data?.thoughts_b || "";
-
-    // Determine recipient's context
-    const isRecipientUserA = recipientId === chatData.user_id;
-    const recipientSummary = isRecipientUserA ? summaryA : summaryB;
-    const recipientThoughts = isRecipientUserA ? thoughtsA : thoughtsB;
-
-    console.log("💾 Context data being sent to edge function:", {
-      currentUserRole: isCurrentUserA ? "User A" : "User B",
-      recipientRole: isRecipientUserA ? "User A" : "User B",
-      originalIssueSummary: summaryA.substring(0, 60) || "❌ MISSING",
-      recipientSummary: recipientSummary?.substring(0, 50) || "❌ MISSING",
-      hint_from_b: chatData.context_data?.hint_from_b?.substring(0, 50) || "⚠️ Not provided",
-      conversationHistoryLength: conversationHistory.length,
-      contactCategory: contact?.category || "General",
-    });
-
-    // 🧠 STEP 1: Call orchestrate-conversation FIRST for intelligent guidance
-    console.log("🧠 ORCHESTRATION: Calling orchestrate-conversation...");
-    let orchestrationGuidance = null;
-    try {
-      const { data: orchData, error: orchError } = await supabase.functions.invoke(
-        "orchestrate-conversation",
+      const conversationHistory = buildHistory({
+        sender_id: String(user?.id || ""),
+        content,
+      }) || []; // ✅ Ensure it's always an array
+      // ✅ FIX: Determine if current user is User A or User B to send correct context
+      const isCurrentUserA = user?.id === chatData.user_id;
+      // ✅ FIX: Use fresh context from database, not stale component state
+      // Send User A's context when generating options for User B
+      // ✅ CRITICAL: Always include User A's original issue context in all generations
+      const summaryA = chatData.context_data?.summary_a || chatData.context_data?.summary || "";
+      const thoughtsA = chatData.context_data?.thoughts_a || chatData.context_data?.thoughts || "";
+      const summaryB = chatData.context_data?.summary_b || "";
+      const thoughtsB = chatData.context_data?.thoughts_b || "";
+      // Determine recipient's context
+      const isRecipientUserA = recipientId === chatData.user_id;
+      const recipientSummary = isRecipientUserA ? summaryA : summaryB;
+      const recipientThoughts = isRecipientUserA ? thoughtsA : thoughtsB;
+      console.log("💾 Context data being sent to edge function:", {
+        currentUserRole: isCurrentUserA ? "User A" : "User B",
+        recipientRole: isRecipientUserA ? "User A" : "User B",
+        originalIssueSummary: summaryA.substring(0, 60) || "❌ MISSING",
+        recipientSummary: recipientSummary?.substring(0, 50) || "❌ MISSING",
+        hint_from_b: chatData.context_data?.hint_from_b?.substring(0, 50) || "⚠️ Not provided",
+        conversationHistoryLength: conversationHistory.length,
+        contactCategory: contact?.category || "General",
+      });
+      // 🧠 STEP 1: Call orchestrate-conversation FIRST for intelligent guidance
+      console.log("🧠 ORCHESTRATION: Calling orchestrate-conversation...");
+      let orchestrationGuidance = null;
+      try {
+        const { data: orchData, error: orchError } = await supabase.functions.invoke(
+          "orchestrate-conversation",
+          {
+            body: {
+              chatId: currentChatId,
+              recipientId,
+              currentUserId: user?.id,
+              currentMessage: content,
+              summary: recipientSummary,
+              thoughts: recipientThoughts,
+              summaryB: summaryB,
+              thoughtsB: thoughtsB,
+              hintFromB: chatData.context_data?.hint_from_b || "",
+              conversationHistory,
+              contactCategory: contact?.category || "General",
+              isInitial: false,
+            },
+          }
+        );
+        if (orchError) {
+          console.error("⚠️ Orchestration failed (non-blocking):", orchError);
+        } else {
+          orchestrationGuidance = orchData;
+          console.log("✅ Orchestration guidance received:", {
+            emotionIntent: orchData?.emotionIntent,
+            closureReadiness: orchData?.closureReadiness,
+          });
+        }
+      } catch (err) {
+        console.error("⚠️ Orchestration error (continuing anyway):", err);
+      }
+      // 🎯 STEP 2: Generate options WITH orchestration guidance
+      const { data: optionsResponse, error: funcError } = await supabase.functions.invoke(
+        "generate-contextual-options",
         {
           body: {
             chatId: currentChatId,
             recipientId,
             currentUserId: user?.id,
-            currentMessage: content,
-            summary: recipientSummary,
-            thoughts: recipientThoughts,
-            summaryB: summaryB,
-            thoughtsB: thoughtsB,
+            currentMessage: String(content || ""), // ✅ CRITICAL: User's latest message for recipient to respond to
+            summary: recipientSummary || "",
+            thoughts: recipientThoughts || "",
+            originalIssueSummary: summaryA || "",
+            recipientSummary: summaryB || "",
+            hint_from_b: chatData.context_data?.hint_from_b || '',
+            // ✅ CRITICAL: Always pass User A's original issue context
+            originalIssue: {
+              summary: summaryA,
+              thoughts: thoughtsA,
+            },
             hintFromB: chatData.context_data?.hint_from_b || "",
-            conversationHistory,
-            contactCategory: contact?.category || "General",
+            hintToContact: chatData.context_data?.hint_to_contact || null,
+            summaryB: summaryB || "",
+            thoughtsB: thoughtsB || "",
+            conversationHistory: Array.isArray(conversationHistory) ? conversationHistory : [],
             isInitial: false,
+            contactCategory: contact?.category || "General",
+            conversationPhase: conversationPhase,
+            resolutionDetected: false,
+            lastMessageTimestamp: data.created_at, // ⏰ For timing-aware context
+            wordLimit: 15, // ✅ Pass word limit
           },
         }
       );
-
-      if (orchError) {
-        console.error("⚠️ Orchestration failed (non-blocking):", orchError);
+      if (funcError) {
+        console.error("❌ Edge function error:", funcError);
+        console.error(" Error details:", JSON.stringify(funcError, null, 2));
+        console.error(" Chat ID:", currentChatId);
+        console.error(" Recipient ID (User B):", recipientId);
+        console.error(" Current User ID (User A):", user?.id);
+       
+        // ✅ Don't block the chat flow - allow manual typing
+        showNotification('error', 'Options Failed', 'Could not generate response options. You can type manually.');
+        resolveWaitingForOptions(recipientId);
+        // Don't throw - allow user to continue chatting manually
       } else {
-        orchestrationGuidance = orchData;
-        console.log("✅ Orchestration guidance received:", {
-          emotionIntent: orchData?.emotionIntent,
-          closureReadiness: orchData?.closureReadiness,
-        });
+        console.log("✅ Options generation completed for recipient:", recipientId);
+        console.log(" Original issue context: INCLUDED");
+        console.log(" Options will be validated and context-aware");
+        console.log(" User B should see these options in their chat screen");
+        console.log("=".repeat(60) + "\n");
+        if (recipientId && optionsResponse?.optionId) {
+          pendingOptionsExpectedIdRef.current = String(optionsResponse.optionId);
+        }
       }
     } catch (err) {
-      console.error("⚠️ Orchestration error (continuing anyway):", err);
+      console.error("❌ Error sending message:", err);
+      resolveWaitingForOptions(recipientId);
+      Alert.alert("Error", "Failed to send message");
+    } finally {
+      setLoading(false);
     }
-
-    // 🎯 STEP 2: Generate options WITH orchestration guidance
-    const { error: funcError } = await supabase.functions.invoke(
-      "generate-contextual-options",
-      {
-        body: {
-          chatId: currentChatId,
-          recipientId,
-          currentUserId: user?.id,
-          currentMessage: String(content || ""), // ✅ CRITICAL: User's latest message for recipient to respond to
-          summary: recipientSummary || "",
-          thoughts: recipientThoughts || "",
-          originalIssueSummary: summaryA || "",
-          recipientSummary: summaryB || "",
-          hint_from_b: chatData.context_data?.hint_from_b || '',
-
-          // ✅ CRITICAL: Always pass User A's original issue context
-          originalIssue: {
-            summary: summaryA,
-            thoughts: thoughtsA,
+  };
+  const handleSuggestedOptionPress = (option: string, index: number) => {
+    hasSentMessage.current = true;
+    triggerOptionSelectVisuals(index);
+    setTimeout(() => {
+      setShowSuggestedOptions(false);
+      sendMessage(option);
+    }, 140);
+  };
+  // 🔄 Regenerate options function
+  const regenerateOptions = async () => {
+    if (!currentChatId || !user) return;
+    enterWaitingForOptions(String(user.id));
+    setOptionsGenerationFailed(false);
+    try {
+      // Get the latest message from contact to respond to
+      const latestContactMessage = messages
+        .filter((m) => m.sender_id === contactId)
+        .pop();
+      if (!latestContactMessage) {
+        showNotification('info', 'No Messages', 'Wait for a message from your contact first.');
+        resolveWaitingForOptions(String(user.id));
+        return;
+      }
+      let chatCtx = chatContext;
+      if (!chatCtx) {
+        const { data: fetched } = await supabase
+          .from("chats")
+          .select("context_data, user_id, contact_id, ai_confidence_level, conversation_phase, is_resolved, ai_source_chat_id, session_name, user_a_smiley_sent, user_b_smiley_sent")
+          .eq("id", currentChatId)
+          .single();
+        if (fetched) {
+          chatCtx = fetched;
+          setChatContext(fetched);
+        }
+      }
+      if (!chatCtx) {
+        throw new Error("Chat context not found");
+      }
+      const conversationHistory = buildHistory();
+      const isCurrentUserA = user.id === chatCtx.user_id;
+      const summaryA = chatCtx.context_data?.summary_a || chatCtx.context_data?.summary || "";
+      const thoughtsA = chatCtx.context_data?.thoughts_a || chatCtx.context_data?.thoughts || "";
+      const summaryB = chatCtx.context_data?.summary_b || "";
+      const thoughtsB = chatCtx.context_data?.thoughts_b || "";
+      const summaryToSend = isCurrentUserA ? summaryA : summaryB;
+      const thoughtsToSend = isCurrentUserA ? thoughtsA : thoughtsB;
+      console.log("🔄 Manually regenerating options");
+      const { data: optionsResponse, error } = await supabase.functions.invoke(
+        "generate-contextual-options",
+        {
+          body: {
+            chatId: currentChatId,
+            recipientId: user.id,
+            currentUserId: user.id,
+            currentMessage: latestContactMessage.content,
+            summary: summaryToSend,
+            thoughts: thoughtsToSend,
+            originalIssue: {
+              summary: summaryA,
+              thoughts: thoughtsA,
+            },
+            hintFromB: chatCtx.context_data?.hint_from_b || "",
+            hintToContact: chatCtx.context_data?.hint_to_contact || null,
+            summaryB: summaryB,
+            thoughtsB: thoughtsB,
+            conversationHistory,
+            isInitial: false,
+            contactCategory: contact?.category || "General",
+            conversationPhase: conversationPhase,
+            resolutionDetected: false,
+            lastMessageTimestamp: latestContactMessage.created_at, // ⏰ For timing-aware context
+            wordLimit: 15, // ✅ Pass word limit
           },
-          hintFromB: chatData.context_data?.hint_from_b || "",
-          hintToContact: chatData.context_data?.hint_to_contact || null,
-          summaryB: summaryB || "",
-          thoughtsB: thoughtsB || "",
-          conversationHistory: Array.isArray(conversationHistory) ? conversationHistory : [],
-          isInitial: false,
-          contactCategory: contact?.category || "General",
-          conversationPhase: conversationPhase,
-          resolutionDetected: false,
-          lastMessageTimestamp: data.created_at, // ⏰ For timing-aware context
-          wordLimit: 15, // ✅ Pass word limit
-        },
+        }
+      );
+      if (error) {
+        throw error;
       }
-    );
-
-    if (funcError) {
-      console.error("❌ Edge function error:", funcError);
-      console.error("   Error details:", JSON.stringify(funcError, null, 2));
-      console.error("   Chat ID:", currentChatId);
-      console.error("   Recipient ID (User B):", recipientId);
-      console.error("   Current User ID (User A):", user?.id);
-      
-      // ✅ Don't block the chat flow - allow manual typing
-      showNotification('error', 'Options Failed', 'Could not generate response options. You can type manually.');
-      // Don't throw - allow user to continue chatting manually
-    } else {
-      console.log("✅ Options generation completed for recipient:", recipientId);
-      console.log("   Original issue context: INCLUDED");
-      console.log("   Options will be validated and context-aware");
-      console.log("   User B should see these options in their chat screen");
-      console.log("=".repeat(60) + "\n");
-    }
-  } catch (err) {
-    console.error("❌ Error sending message:", err);
-    Alert.alert("Error", "Failed to send message");
-  } finally {
-    setLoading(false);
-  }
-};
-
-const handleSuggestedOptionPress = (option: string) => {
-  hasSentMessage.current = true;   // ← NEW
-  setShowSuggestedOptions(false);
-  sendMessage(option);
-};
-
-// 🔄 Regenerate options function
-const regenerateOptions = async () => {
-  if (!currentChatId || !user) return;
-
-  setWaitingForOptions(true);
-  setOptionsGenerationFailed(false);
-
-  try {
-    // Get the latest message from contact to respond to
-    const latestContactMessage = messages
-      .filter((m) => m.sender_id === contactId)
-      .pop();
-
-    if (!latestContactMessage) {
-      showNotification('info', 'No Messages', 'Wait for a message from your contact first.');
-      setWaitingForOptions(false);
-      return;
-    }
-
-    let chatCtx = chatContext;
-    if (!chatCtx) {
-      const { data: fetched } = await supabase
-        .from("chats")
-        .select("context_data, user_id, contact_id, ai_confidence_level, conversation_phase, is_resolved, ai_source_chat_id, session_name, user_a_smiley_sent, user_b_smiley_sent")
-        .eq("id", currentChatId)
-        .single();
-      if (fetched) {
-        chatCtx = fetched;
-        setChatContext(fetched);
+      showNotification('success', 'Options Regenerated', 'New response options are being generated.');
+      if (optionsResponse?.optionId) {
+        pendingOptionsExpectedIdRef.current = String(optionsResponse.optionId);
       }
+    } catch (err) {
+      console.error("❌ Failed to regenerate options:", err);
+      setOptionsGenerationFailed(true);
+      showNotification('error', 'Regeneration Failed', 'Could not generate new options. Try manual input mode.');
+    } finally {
+      resolveWaitingForOptions(String(user.id));
     }
-
-    if (!chatCtx) {
-      throw new Error("Chat context not found");
-    }
-
-    const conversationHistory = buildHistory();
-    const isCurrentUserA = user.id === chatCtx.user_id;
-
-    const summaryA = chatCtx.context_data?.summary_a || chatCtx.context_data?.summary || "";
-    const thoughtsA = chatCtx.context_data?.thoughts_a || chatCtx.context_data?.thoughts || "";
-    const summaryB = chatCtx.context_data?.summary_b || "";
-    const thoughtsB = chatCtx.context_data?.thoughts_b || "";
-
-    const summaryToSend = isCurrentUserA ? summaryA : summaryB;
-    const thoughtsToSend = isCurrentUserA ? thoughtsA : thoughtsB;
-
-    console.log("🔄 Manually regenerating options");
-
-    const { error } = await supabase.functions.invoke(
-      "generate-contextual-options",
-      {
-        body: {
-          chatId: currentChatId,
-          recipientId: user.id,
-          currentUserId: user.id,
-          currentMessage: latestContactMessage.content,
-          summary: summaryToSend,
-          thoughts: thoughtsToSend,
-          originalIssue: {
-            summary: summaryA,
-            thoughts: thoughtsA,
-          },
-          hintFromB: chatCtx.context_data?.hint_from_b || "",
-          hintToContact: chatCtx.context_data?.hint_to_contact || null,
-          summaryB: summaryB,
-          thoughtsB: thoughtsB,
-          conversationHistory,
-          isInitial: false,
-          contactCategory: contact?.category || "General",
-          conversationPhase: conversationPhase,
-          resolutionDetected: false,
-          lastMessageTimestamp: latestContactMessage.created_at, // ⏰ For timing-aware context
-          wordLimit: 15, // ✅ Pass word limit
-        },
-      }
-    );
-
-    if (error) {
-      throw error;
-    }
-
-    showNotification('success', 'Options Regenerated', 'New response options are being generated.');
-  } catch (err) {
-    console.error("❌ Failed to regenerate options:", err);
-    setOptionsGenerationFailed(true);
-    showNotification('error', 'Regeneration Failed', 'Could not generate new options. Try manual input mode.');
-  } finally {
-    setWaitingForOptions(false);
-  }
-};
-
-
+  };
   const formatTime = (ts: string) =>
     new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-
+  useEffect(() => {
+    // FIX: Set to false for header (conflicts with color interpolates)
+    Animated.timing(headerIntroAnim, {
+      toValue: 1,
+      duration: 480,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: false, // FIX: Was true
+    }).start();
+    Animated.stagger(120, [
+      Animated.timing(headerInfoIntroAnim, {
+        toValue: 1,
+        duration: 420,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: false, // FIX: Was true
+      }),
+      Animated.timing(headerActionsIntroAnim, {
+        toValue: 1,
+        duration: 420,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: false, // FIX: Was true
+      }),
+    ]).start();
+  }, [headerIntroAnim, headerInfoIntroAnim, headerActionsIntroAnim]);
+  useEffect(() => {
+    const glowLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(headerGlowAnim, {
+          toValue: 1,
+          duration: 2600,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: false,
+        }),
+        Animated.timing(headerGlowAnim, {
+          toValue: 0,
+          duration: 2600,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: false,
+        }),
+      ])
+    );
+    glowLoop.start();
+    return () => {
+      glowLoop.stop();
+    };
+  }, [headerGlowAnim]);
+  useEffect(() => {
+    const animations = messageAnimationsRef.current;
+    const currentIds = messages.map((m) => m.id);
+    Object.keys(animations).forEach((id) => {
+      if (!currentIds.includes(id)) {
+        delete animations[id];
+      }
+    });
+    const lastMessage = messages[messages.length - 1];
+    if (
+      lastMessage &&
+      !previousMessageIdsRef.current.includes(lastMessage.id) &&
+      lastMessage.sender_id === user?.id
+    ) {
+      const state = animations[lastMessage.id];
+      if (state) {
+        // FIX: Change to true (scale supported)
+        Animated.sequence([
+          Animated.spring(state.bubbleScale, {
+            toValue: 1.05,
+            friction: 5,
+            tension: 90,
+            useNativeDriver: true, // FIX: Was false
+          }),
+          Animated.spring(state.bubbleScale, {
+            toValue: 1,
+            friction: 6,
+            tension: 90,
+            useNativeDriver: true, // FIX: Was false
+          }),
+        ]).start();
+      }
+    }
+    previousMessageIdsRef.current = currentIds;
+    if (initialMessageRenderRef.current) {
+      initialMessageRenderRef.current = false;
+    }
+  }, [messages, user?.id]);
+  useEffect(() => {
+    return () => {
+      if (pulseTimeoutRef.current) {
+        clearTimeout(pulseTimeoutRef.current);
+      }
+    };
+  }, []);
+  useEffect(() => {
+    if (!showSuggestedOptions || suggestedOptions.length === 0) {
+      optionAnimationsRef.current = [];
+      setActiveOptionIndex(null);
+      stopOptionShimmer();
+      return;
+    }
+    optionAnimationsRef.current = [];
+    setActiveOptionIndex(null);
+    stopOptionShimmer();
+    optionShimmerLoopRef.current = Animated.loop(
+      Animated.sequence([
+        Animated.timing(optionShimmerAnim, {
+          toValue: 1,
+          duration: 1800,
+          useNativeDriver: true,
+        }),
+        Animated.timing(optionShimmerAnim, {
+          toValue: 0,
+          duration: 1800,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    optionShimmerLoopRef.current.start();
+  }, [optionShimmerAnim, showSuggestedOptions, stopOptionShimmer, suggestedOptions]);
+  useEffect(() => () => {
+    stopOptionShimmer();
+  }, [stopOptionShimmer]);
+  const ensureMessageAnimationState = useCallback((message: Message, index: number) => {
+    let state = messageAnimationsRef.current[message.id];
+    if (!state) {
+      state = {
+        bubbleOpacity: new Animated.Value(0),
+        bubbleTranslate: new Animated.Value(12),
+        bubbleScale: new Animated.Value(0.95),
+        timeOpacity: new Animated.Value(0),
+      };
+      messageAnimationsRef.current[message.id] = state;
+      const baseDelay = initialMessageRenderRef.current ? index * 100 : 0;
+      // FIX: All supported by native; change to true
+      Animated.sequence([
+        Animated.delay(baseDelay),
+        Animated.parallel([
+          Animated.timing(state.bubbleOpacity, {
+            toValue: 1,
+            duration: 400,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true, // FIX: Was false
+          }),
+          Animated.timing(state.bubbleTranslate, {
+            toValue: 0,
+            duration: 400,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true, // FIX: Was false
+          }),
+          Animated.timing(state.bubbleScale, {
+            toValue: 1,
+            duration: 400,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true, // FIX: Was false
+          }),
+        ]),
+        Animated.delay(150),
+        Animated.timing(state.timeOpacity, {
+          toValue: 1,
+          duration: 240,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true, // FIX: Was false
+        }),
+      ]).start();
+    }
+    return state;
+  }, []);
+  const runMessagePulse = useCallback((id: string) => {
+    const state = messageAnimationsRef.current[id];
+    if (!state) return;
+    if (pulseTimeoutRef.current) {
+      clearTimeout(pulseTimeoutRef.current);
+    }
+    setActivePulseId(id);
+    // FIX: Change to true (scale supported)
+    Animated.sequence([
+      Animated.spring(state.bubbleScale, {
+        toValue: 1.04,
+        friction: 6,
+        tension: 120,
+        useNativeDriver: true, // FIX: Was false
+      }),
+      Animated.spring(state.bubbleScale, {
+        toValue: 1,
+        friction: 6,
+        tension: 120,
+        useNativeDriver: true, // FIX: Was false
+      }),
+    ]).start();
+    pulseTimeoutRef.current = setTimeout(() => {
+      setActivePulseId((current) => (current === id ? null : current));
+    }, 180);
+  }, []);
+  const ensureOptionAnimationState = useCallback((index: number) => {
+    let state = optionAnimationsRef.current[index];
+    if (!state) {
+      state = {
+        appear: new Animated.Value(0),
+        translate: new Animated.Value(12),
+        scale: new Animated.Value(1),
+        rippleScale: new Animated.Value(0),
+        rippleOpacity: new Animated.Value(0),
+      };
+      optionAnimationsRef.current[index] = state;
+      // FIX: Change to true (opacity/translate supported)
+      Animated.sequence([
+        Animated.delay(index * 100),
+        Animated.parallel([
+          Animated.timing(state.appear, {
+            toValue: 1,
+            duration: 280,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true, // FIX: Was false
+          }),
+          Animated.timing(state.translate, {
+            toValue: 0,
+            duration: 280,
+            easing: Easing.out(Easing.cubic),
+            useNativeDriver: true, // FIX: Was false
+          }),
+        ]),
+      ]).start();
+    }
+    return state;
+  }, []);
+  const handleOptionPressIn = useCallback((index: number) => {
+     const state = optionAnimationsRef.current[index];
+     if (!state) return;
+     // FIX: Change to true (scale supported)
+     Animated.spring(state.scale, {
+       toValue: 0.96,
+       friction: 6,
+       tension: 140,
+       useNativeDriver: true, // FIX: Was false
+     }).start();
+   }, []);
+   const handleOptionPressOut = useCallback((index: number) => {
+     const state = optionAnimationsRef.current[index];
+     if (!state) return;
+     // FIX: Change to true
+     Animated.spring(state.scale, {
+       toValue: 1,
+       friction: 6,
+       tension: 140,
+       useNativeDriver: true, // FIX: Was false
+     }).start();
+   }, []);
+  const triggerOptionSelectVisuals = useCallback((index: number) => {
+    const state = optionAnimationsRef.current[index];
+    if (!state) return;
+    setActiveOptionIndex(index);
+    // FIX: Change to true (opacity/scale supported)
+    Animated.parallel([
+      Animated.timing(state.rippleOpacity, {
+        toValue: 0.25,
+        duration: 120,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true, // FIX: Was false
+       }),
+       Animated.timing(state.rippleScale, {
+         toValue: 1,
+         duration: 260,
+         easing: Easing.out(Easing.cubic),
+         useNativeDriver: true, // FIX: Was false
+       }),
+    ]).start(() => {
+      state.rippleOpacity.setValue(0);
+      state.rippleScale.setValue(0);
+    });
+    // FIX: Change to true
+    Animated.sequence([
+      Animated.spring(state.scale, {
+        toValue: 1.03,
+        friction: 5,
+        tension: 140,
+        useNativeDriver: true, // FIX: Was false
+      }),
+      Animated.spring(state.scale, {
+        toValue: 1,
+        friction: 6,
+        tension: 120,
+        useNativeDriver: true, // FIX: Was false
+      }),
+    ]).start();
+  }, []);
+  const headerBackground = headerGlowAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ["#FFF176", "#FFF9C4"],
+  });
+  const headerBorder = headerGlowAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: ["#F9E79F", "#FFE082"],
+  });
+  const headerLift = headerGlowAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, -2],
+  });
+  const headerIntroTranslate = headerIntroAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [-12, 0],
+  });
+  const headerInfoTranslate = headerInfoIntroAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [8, 0],
+  });
+  const headerActionsTranslate = headerActionsIntroAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [8, 0],
+  });
+  const recentMessageLift = optionsSlideAnim.interpolate({
+    inputRange: [0, 300],
+    outputRange: [-Spacing.sm, 0],
+    extrapolate: 'clamp',
+  });
   if (initialLoading) {
     return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.loadingContainer}>
-          <LoadingSpinner size="large" />
-          <Text style={styles.loadingText}>Loading conversation...</Text>
-        </View>
+      <SafeAreaView style={styles.loadingContainer}>
+        <LoadingSpinner size="large" />
+        <Text style={styles.loadingText}>Loading conversation...</Text>
       </SafeAreaView>
     );
   }
-
+  const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
+  const isUserTurn =
+    !lastMessage || String(lastMessage.sender_id) !== String(user?.id || '');
+  const isPendingForCurrentUser =
+    waitingForOptions &&
+    !!user?.id &&
+    pendingOptionsRecipientRef.current !== null &&
+    String(pendingOptionsRecipientRef.current) === String(user.id);
+  const shouldShowComposing = waitingForOptions && isPendingForCurrentUser && isUserTurn;
+  const recentThreshold = Math.max(0, displayedMessages.length - 2);
   return (
     <>
       <NotificationBanner
@@ -1507,747 +1952,898 @@ const regenerateOptions = async () => {
         onDismiss={() => setNotification(prev => ({ ...prev, visible: false }))}
       />
       <SafeAreaView style={styles.container}>
-        <View style={[styles.header, { paddingTop: insets.top }]}>
-          
-          <View style={[styles.headerInfo, { marginLeft: Spacing.sm }] }>
-            {!showSuggestedOptions && (
-              <View style={styles.contactAvatar}>
-                <User size={20} color={Colors.success[500]} />
-              </View>
-            )}
-            <View style={styles.contactInfo}>
-              <Text style={styles.headerTitle}>
-                {contact?.full_name || contact?.email || "Contact"}
-              </Text>
-              {contact?.category && (
-                <Text style={styles.headerCategory}>{contact.category}</Text>
-              )}
-            </View>
-          </View>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <TouchableOpacity
-              style={styles.historyButton}
-              onPress={() => router.push('/(tabs)/chats')}
-            >
-              <Home size={24} color={Colors.text.secondary} />
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.historyButton}
-              onPress={() => setShowHistoryModal(true)}
-            >
-              <History size={24} color={Colors.text.secondary} />
-            </TouchableOpacity>
-          </View>
-        </View>
-
-  {/* 🌈 Peaceful Closure Banner (Animated) */}
-{isResolved && (
-  <Animated.View
-    style={[
-      styles.closureBanner,
-      {
-        opacity: closureAnim,
-        transform: [
+      {/* 🌟 Animated Header with Fade + Slide */}
+      <Animated.View
+        style={[
+          styles.header,
+          { marginTop: insets.top ? 0 : Spacing.xs },
           {
-            translateY: closureAnim.interpolate({
+            backgroundColor: headerBackground,
+            borderColor: headerBorder,
+            opacity: headerIntroAnim,
+            transform: [{ translateY: headerIntroTranslate }, { translateY: headerLift }],
+            shadowOpacity: headerGlowAnim.interpolate({
               inputRange: [0, 1],
-              outputRange: [-10, 0],
+              outputRange: [0.15, 0.35],
             }),
           },
-        ],
-      },
-    ]}
-  >
-    <Text style={styles.closureBannerText}>
-      🌈 This conversation has reached emotional peace.
-    </Text>
-  </Animated.View>
-)}
-
-
-        
-        {/* 💬 Scrollable Hint Banner for User B */}
-        {showHintBanner && hintToContact && (
-          <View style={styles.hintBannerWrapper}>
-            <ScrollView
-  key="hint"
-  style={styles.hintBannerScrollView}
-  contentContainerStyle={styles.hintBannerScrollContent}
-  showsVerticalScrollIndicator={true}
->
-              <View style={styles.hintBannerContent}>
-                <Text style={styles.hintBannerText}>
-                  {hintToContact.full_text}
-                </Text>
-                <TouchableOpacity
-                  style={styles.hintBannerCloseButton}
-                  onPress={() => setShowHintBanner(false)}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                >
-                  <X size={18} color={Colors.text.tertiary} />
-                </TouchableOpacity>
-              </View>
-            </ScrollView>
-          </View>
-        )}
-
-
-        <KeyboardAvoidingView
-          style={styles.chatContainer}
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
+        ]}
+      >
+        {/* Avatar + Contact Info */}
+        <Animated.View
+          style={[
+            styles.headerInfo,
+            { marginLeft: Spacing.sm },
+            {
+              opacity: headerInfoIntroAnim,
+              transform: [{ translateY: headerInfoTranslate }],
+            },
+          ]}
         >
-          <ScrollView
-            ref={scrollViewRef}
-            style={styles.messagesContainer}
-            contentContainerStyle={styles.messagesContent}
-            showsVerticalScrollIndicator={false}
-          >
-            {messages.map((m) => (
-              <View
-                key={m.id}
-                style={[
-                  styles.messageContainer,
-                  m.sender_type === "user"
-                    ? styles.userMessageContainer
-                    : styles.contactMessageContainer,
-                ]}
-              >
-                <View
-                  style={[
-                    styles.messageBubble,
-                    m.sender_type === "user"
-                      ? styles.userMessageBubble
-                      : styles.contactMessageBubble,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.messageText,
-                      m.sender_type === "user"
-                        ? styles.userMessageText
-                        : styles.contactMessageText,
-                    ]}
-                  >
-                    {m.content}
-                  </Text>
-                  <Text
-                    style={[
-                      styles.messageTime,
-                      m.sender_type === "user"
-                        ? styles.userMessageTime
-                        : styles.contactMessageTime,
-                    ]}
-                  >
-                    {formatTime(m.created_at)}
-                  </Text>
-                </View>
-              </View>
-            ))}
-
-            {/* 🌟 NEW: show extra AI context if available */}
-            {aiPerspective ? (
-              <View style={styles.aiNoteContainer}>
-                <Text style={styles.aiNoteTitle}>🧠 Perspective</Text>
-                <Text style={styles.aiNoteText}>{aiPerspective}</Text>
-              </View>
-            ) : null}
-
-            {aiClosure ? (
-              <View style={styles.aiNoteContainer}>
-                <Text style={styles.aiNoteTitle}>✅ Toward Closure</Text>
-                <Text style={styles.aiNoteText}>{aiClosure}</Text>
-              </View>
-            ) : null}
-            
-            {showTipBox && (
-              <Animated.View 
-                style={[
-                  styles.tipBoxContainer,
-                  {
-                    transform: [{ translateY: tipBoxSlideAnim }],
-                  },
-                ]}
-              >
-                <Text style={styles.tipBoxTitle}>
-                  💡 Share your side (stays private):
-                </Text>
-
-                {/* Tag Dropdown for Hint Input - @ for contacts */}
-                {hintShowTagDropdown === '@' && hintContactSuggestions.length > 0 && (
-                  <View style={styles.hintTagDropdown}>
-                    <Text style={styles.hintDropdownHeader}>
-                      <AtSign size={12} color={Colors.success[600]} /> People in this conversation
-                    </Text>
-                    {hintContactSuggestions.map((c) => (
-                      <TouchableOpacity
-                        key={c.id}
-                        style={styles.hintTagItem}
-                        onPress={() => {
-                          const typingTag = getLastTypingTag(tipText, hintCursorPos);
-                          if (typingTag.type === '@') {
-                            const newText = replaceTypingTag(
-                              tipText,
-                              typingTag.startPos,
-                              '@',
-                              c.full_name || c.email
-                            );
-                            setTipText(newText);
-                            setHintContactSuggestions([]);
-                            setHintShowTagDropdown(null);
-                          }
-                        }}
-                      >
-                        <View style={[styles.hintTagIndicator, { backgroundColor: Colors.success[100] }]}>
-                          <AtSign size={12} color={Colors.success[600]} />
-                        </View>
-                        <Text style={styles.hintTagName}>{c.full_name || c.email}</Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                )}
-
-                {/* Tag Dropdown for Hint Input - # for custom entities */}
-                {hintShowTagDropdown === '#' && hintHashSuggestions.length > 0 && (
-                  <View style={styles.hintTagDropdown}>
-                    <Text style={styles.hintDropdownHeader}>
-                      <Hash size={12} color={Colors.warning[600]} /> People/Groups (not in app)
-                    </Text>
-                    {hintHashSuggestions.map((tag, index) => (
-                      <TouchableOpacity
-                        key={index}
-                        style={styles.hintTagItem}
-                        onPress={() => {
-                          const typingTag = getLastTypingTag(tipText, hintCursorPos);
-                          if (typingTag.type === '#') {
-                            const newText = replaceTypingTag(
-                              tipText,
-                              typingTag.startPos,
-                              '#',
-                              tag
-                            );
-                            setTipText(newText);
-                            setHintHashSuggestions([]);
-                            setHintShowTagDropdown(null);
-                          }
-                        }}
-                      >
-                        <View style={[styles.hintTagIndicator, { backgroundColor: Colors.warning[100] }]}>
-                          <Hash size={12} color={Colors.warning[600]} />
-                        </View>
-                        <Text style={styles.hintTagName}>#{tag}</Text>
-                      </TouchableOpacity>
-                    ))}
-                    <Text style={styles.hintDropdownFooter}>
-                      Type any name after # to create custom tag
-                    </Text>
-                  </View>
-                )}
-
-                <TextInput
-                  value={tipText}
-                  onChangeText={async (text) => {
-                    if (text.length <= 200) {
-                      setTipText(text);
-
-                      // Handle tagging
-                      const typingTag = getLastTypingTag(text, hintCursorPos);
-
-                      if (typingTag.type === '@') {
-                        setHintShowTagDropdown('@');
-                        // Search contacts
-                        try {
-                          const { data, error } = await supabase
-                            .from("contacts")
-                            .select(
-                              `contact_profile:profiles!contacts_contact_id_fkey (
-                                id,
-                                full_name,
-                                email,
-                                avatar_url
-                              )`
-                            )
-                            .eq("user_id", user?.id)
-                            .eq("status", "accepted")
-                            .limit(5);
-
-                          if (!error && data) {
-                            const filtered = data
-                              .map((c) => {
-                                const profile = Array.isArray(c.contact_profile) ? c.contact_profile[0] : c.contact_profile;
-                                return profile;
-                              })
-                              .filter(
-                                (profile) =>
-                                  profile &&
-                                  (profile.full_name?.toLowerCase().includes(typingTag.search.toLowerCase()) ||
-                                    profile.email?.toLowerCase().includes(typingTag.search.toLowerCase()))
-                              ) as Contact[];
-                            setHintContactSuggestions(filtered);
-                          }
-                        } catch (err) {
-                          console.error("Error searching contacts for hint:", err);
-                        }
-                        setHintHashSuggestions([]);
-                      } else if (typingTag.type === '#') {
-                        setHintShowTagDropdown('#');
-                        const commonTags = getCommonHashTags();
-                        const filtered = typingTag.search
-                          ? commonTags.filter(t => t.toLowerCase().includes(typingTag.search.toLowerCase()))
-                          : commonTags;
-                        setHintHashSuggestions(filtered);
-                        setHintContactSuggestions([]);
-                      } else {
-                        setHintShowTagDropdown(null);
-                        setHintContactSuggestions([]);
-                        setHintHashSuggestions([]);
-                      }
-
-                      // Parse tagged entities
-                      try {
-                        const { data } = await supabase
-                          .from("contacts")
-                          .select(`contact_profile:profiles!contacts_contact_id_fkey (id, full_name, email)`)
-                          .eq("user_id", user?.id)
-                          .eq("status", "accepted");
-
-                        const contacts = (data || []).map(c => {
-                          const profile = Array.isArray(c.contact_profile) ? c.contact_profile[0] : c.contact_profile;
-                          return {
-                            id: profile?.id || '',
-                            name: profile?.full_name || profile?.email || '',
-                          };
-                        });
-
-                        const entities = parseTaggedEntities(text, contacts);
-                        setHintTaggedEntities(entities);
-                      } catch (err) {
-                        console.error('Failed to parse hint tags:', err);
-                      }
-                    }
-                  }}
-                  placeholder="e.g. I've been stressed with work, or use @ for people, # for others"
-                  placeholderTextColor={Colors.text.tertiary}
-                  maxLength={200}
-                  style={styles.tipBoxInput}
-                  multiline
-                  onSelectionChange={(event) => {
-                    setHintCursorPos(event.nativeEvent.selection.start);
-                  }}
-                />
-                <Text style={[
-                  styles.tipBoxCharCount,
-                  { color: tipText.length >= 200 ? Colors.error[500] : Colors.text.tertiary }
-                ]}>
-                  {tipText.length}/200 characters
-                  {tipText.length >= 200 ? " (limit reached)" : ""}
-                </Text>
-                <View style={styles.tipBoxActions}>
-                  <TouchableOpacity
-                    style={styles.tipBoxSkipButton}
-                    onPress={() => setShowTipBox(false)}
-                  >
-                    <Text style={styles.tipBoxSkipText}>Skip</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.tipBoxSubmitButton}
-                    onPress={async () => {
-                      try {
-                        const { data: existing, error: fetchErr } = await supabase
-                          .from("chats")
-                          .select("context_data, user_id, contact_id")
-                          .eq("id", currentChatId)
-                          .single();
-
-                        if (fetchErr) throw fetchErr;
-
-                        const mergedContext = {
-                          ...(existing?.context_data || {}),
-                          hint_from_b: tipText,
-                          hint_submitted_at: new Date().toISOString(),
-                          hint_tagged_entities: hintTaggedEntities, // Store tagged entities from hint
-                        };
-
-                        await supabase
-                          .from("chats")
-                          .update({ context_data: mergedContext })
-                          .eq("id", currentChatId);
-
-                        console.log("✅ Hint saved:", tipText.substring(0, 50));
-                        setShowTipBox(false);
-                        setHintSubmitted(true);
-
-                        // ✅ FIX: Always regenerate options immediately after hint submission
-                        console.log("🔄 Hint submitted - regenerating options immediately with hint context");
-
-                        setWaitingForOptions(true);
-                        setShowSuggestedOptions(false);
-
-                        // Get latest message from contact to respond to
-                        const latestContactMessage = messages
-                          .filter((m) => m.sender_id === contactId)
-                          .pop();
-
-                        if (latestContactMessage) {
-                          const conversationHistory = buildHistory();
-
-                          // Determine if current user is User A or User B
-                          const isCurrentUserA = user?.id === existing?.user_id;
-
-                          console.log("📤 Regenerating options with hint:", {
-                            currentUserRole: isCurrentUserA ? "User A" : "User B",
-                            hintLength: tipText.length,
-                            latestMessagePreview: latestContactMessage.content.substring(0, 50),
-                          });
-
-                          // Regenerate options with hint included - CRITICAL: Include ALL context
-                          const summaryA = existing?.context_data?.summary_a || existing?.context_data?.summary || "";
-                          const thoughtsA = existing?.context_data?.thoughts_a || existing?.context_data?.thoughts || "";
-
-                          if (!user) {
-                            console.error('User not available for regenerating options');
-                            return;
-                          }
-
-                          const { error: regenError } = await supabase.functions.invoke(
-                            "generate-contextual-options",
-                            {
-                              body: {
-                                chatId: currentChatId,
-                                recipientId: user.id,
-                                currentUserId: user.id,
-                                currentMessage: latestContactMessage.content,
-                                summary: isCurrentUserA
-                                  ? summaryA
-                                  : (existing?.context_data?.summary_b || ""),
-                                thoughts: isCurrentUserA
-                                  ? thoughtsA
-                                  : (existing?.context_data?.thoughts_b || ""),
-                                // ✅ CRITICAL: Always include User A's original issue
-                                originalIssue: {
-                                  summary: summaryA,
-                                  thoughts: thoughtsA,
-                                },
-                                hintFromB: tipText.trim(), // ⭐ NEW HINT - User B's perspective
-                                hintToContact: existing?.context_data?.hint_to_contact || null,
-                                summaryB: existing?.context_data?.summary_b || "",
-                                thoughtsB: existing?.context_data?.thoughts_b || "",
-                                conversationHistory,
-                                isInitial: false,
-                                contactCategory: contact?.category || "General",
-                                conversationPhase: conversationPhase,
-                                resolutionDetected: false,
-                                lastMessageTimestamp: latestContactMessage.created_at, // ⏰ For timing-aware context
-                                wordLimit: 15, // ✅ Pass word limit
-                              },
-                            }
-                          );
-
-                          if (regenError) {
-                            console.error("❌ Failed to regenerate options with hint:", regenError);
-                            showNotification('warning', 'Context Saved', 'Your perspective is saved but options could not be updated');
-                          } else {
-                            console.log("✅ Options regenerated with hint context");
-                            showNotification('success', 'Options Updated', 'Your response choices now reflect your perspective');
-                          }
-                        } else {
-                          showNotification('success', 'Context Saved', 'Your perspective will guide future responses');
-                        }
-                      } catch (err) {
-                        console.error("❌ Failed to save hint:", err);
-                        showNotification('error', 'Save Failed', 'Could not save your perspective. Please try again.');
-                      }
-                    }}
-                  >
-                    <Text style={styles.tipBoxSubmitText}>Submit</Text>
-                  </TouchableOpacity>
-                </View>
-              </Animated.View>
-            )}
-
-            {hintSubmitted && (
-              <Animated.View style={styles.hintSubmittedBanner}>
-                <Text style={styles.hintSubmittedText}>
-                  ✅ Your perspective is noted. It stays private and won't be shown to the other side, but it may help clear misunderstandings.
-                </Text>
-              </Animated.View>
-            )}
-
-{waitingForOptions && (
-  <View style={styles.notificationContainer}>
-    <Text style={styles.notificationText}>
-    💞 Composing some thoughtful replies... one sec!
-    </Text>
-  </View>
-)}
-
-
-            {/* 🔄 Recovery UI: Show when options failed to generate */}
-            {optionsGenerationFailed && !waitingForOptions && !showSuggestedOptions && (
-              <View style={styles.recoveryContainer}>
-                <Text style={styles.recoveryTitle}>Options Not Available</Text>
-                <Text style={styles.recoveryText}>
-                  Response options couldn't be generated. You can:
-                </Text>
-                <View style={styles.recoveryButtonsContainer}>
-                <TouchableOpacity
-  style={styles.recoveryButton}
-  onPress={regenerateOptions}
-  disabled={waitingForOptions}  // ← NEW: stops clicking while loading
+          {!showSuggestedOptions && (
+            <View style={styles.contactAvatar}>
+              <User size={22} color={Colors.success[500]} />
+            </View>
+          )}
+          <Text 
+  style={styles.headerTitle}
+  numberOfLines={1} // Limits to 1 line with ellipsis (...) if too long
+  ellipsizeMode="tail" // Adds ... at end for overflow
 >
-  {waitingForOptions ? (
-    <ActivityIndicator color="#fff" size="small" />
-  ) : (
-    <Text style={styles.recoveryButtonText}>Try Again</Text>
+  {contact?.full_name || contact?.email || "Contact"}
+</Text>
+        </Animated.View>
+        {/* Icons row */}
+<Animated.View
+  style={[
+    styles.headerActions,
+    {
+      opacity: headerActionsIntroAnim,
+      transform: [{ translateY: headerActionsTranslate }], // No anim mix (from prior fix)
+    },
+  ]}
+>
+  <TouchableOpacity 
+    style={styles.historyButton} 
+    onPress={() => router.push('/(tabs)/chats')}
+    activeOpacity={0.7} // Subtle press feedback
+  >
+    <Text style={{ 
+      fontSize: 16, // Matches contact name
+      color: '#6A1B9A', // Bright purple
+      textShadowColor: 'rgba(0,0,0,0.1)',
+      textShadowOffset: { width: 0, height: 0.5 },
+      textShadowRadius: 1,
+      lineHeight: 16, // Perfect centering
+    }}>
+      🏠
+    </Text>
+  </TouchableOpacity>
+  <TouchableOpacity 
+    style={styles.historyButton} 
+    onPress={() => setShowHistoryModal(true)}
+    activeOpacity={0.7} // Subtle press feedback
+  >
+    <Text style={{ 
+      fontSize: 16, // Matches contact name
+      color: '#1565C0', // Bright blue
+      textShadowColor: 'rgba(0,0,0,0.1)',
+      textShadowOffset: { width: 0, height: 0.5 },
+      textShadowRadius: 1,
+      lineHeight: 16, // Perfect centering
+    }}>
+      ⏰
+    </Text>
+  </TouchableOpacity>
+</Animated.View>
+      </Animated.View>
+    {/* 🌈 Peaceful Closure Banner (Animated) */}
+  {isResolved && (
+    <Animated.View
+      style={[
+        styles.closureBanner,
+        {
+          opacity: closureAnim,
+          transform: [
+            {
+              translateY: closureAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [-10, 0],
+              }),
+            },
+          ],
+        },
+      ]}
+    >
+      <Text style={styles.closureBannerText}>
+        🌈 This conversation has reached emotional peace.
+      </Text>
+    </Animated.View>
   )}
-</TouchableOpacity>
-                  <TouchableOpacity
-                    style={[styles.recoveryButton, styles.manualInputButton]}
-                    onPress={() => {
-                      setManualInputMode(true);
-                      setOptionsGenerationFailed(false);
-                    }}
-                  >
-                    <Text style={styles.recoveryButtonText}>✍️ Type Manually</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            )}
+       
+      {/* 💬 Scrollable Hint Banner for User B */}
+      {showHintBanner && hintToContact && (
+        <View style={styles.hintBannerWrapper}>
+          <ScrollView
+    key="hint"
+    style={styles.hintBannerScrollView}
+    contentContainerStyle={styles.hintBannerScrollContent}
+    showsVerticalScrollIndicator={true}
+  >
+            <View style={styles.hintBannerContent}>
+              <Text style={styles.hintBannerText}>
+                {hintToContact.full_text}
+              </Text>
+              <TouchableOpacity
+                style={styles.hintBannerCloseButton}
+                onPress={() => setShowHintBanner(false)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <X size={18} color={Colors.text.tertiary} />
+              </TouchableOpacity>
+            </View>
           </ScrollView>
-
-          {showSuggestedOptions && suggestedOptions.length > 0 && !manualInputMode && (
+        </View>
+      )}
+      <KeyboardAvoidingView
+        style={styles.chatContainer}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
+        <ScrollView
+             ref={scrollViewRef}
+             style={styles.messagesContainer}
+             contentContainerStyle={[
+               styles.messagesContent,
+               waitingForOptions ? styles.messagesContentAwaiting : null,
+             ]}
+             showsVerticalScrollIndicator={false}
+             onLayout={(event: LayoutChangeEvent) => {
+               containerHeightRef.current = event.nativeEvent.layout.height;
+               if (!userScrollingRef.current) {
+                 scrollToBottom({ immediate: !hasAutoScrolledInitially.current });
+               }
+             }}
+             onContentSizeChange={(_: number, height: number) => {
+               contentHeightRef.current = height;
+               if (userScrollingRef.current) {
+                 pendingAutoScrollRef.current = true;
+               } else {
+                 scrollToBottom({ immediate: !hasAutoScrolledInitially.current });
+               }
+             }}
+            onScroll={(event: NativeSyntheticEvent<NativeScrollEvent>) => {
+              const offsetY = event.nativeEvent.contentOffset.y;
+              scrollOffsetRef.current = offsetY;
+              if (
+                !showFullHistory &&
+                hasAutoScrolledInitially.current &&
+                offsetY <= 12 &&
+                messages.length > displayedMessages.length
+              ) {
+                setShowFullHistory(true);
+              }
+            }}
+             onScrollBeginDrag={() => {
+               userScrollingRef.current = true;
+               pendingAutoScrollRef.current = false;
+               if (isAutoScrollingRef.current) {
+                 scrollAnim.stopAnimation();
+                 detachScrollListener();
+                 isAutoScrollingRef.current = false;
+               }
+             }}
+             onScrollEndDrag={() => {
+               userScrollingRef.current = false;
+               if (pendingAutoScrollRef.current) {
+                 const shouldScroll = pendingAutoScrollRef.current;
+                 pendingAutoScrollRef.current = false;
+                 if (shouldScroll) {
+                   scrollToBottom();
+                 }
+               }
+             }}
+             onMomentumScrollEnd={() => {
+               userScrollingRef.current = false;
+               if (pendingAutoScrollRef.current) {
+                 const shouldScroll = pendingAutoScrollRef.current;
+                 pendingAutoScrollRef.current = false;
+                 if (shouldScroll) {
+                   scrollToBottom();
+                 }
+               }
+             }}
+             scrollEventThrottle={16}
+           >
+          {displayedMessages.map((m, index) => {
+             const animState = ensureMessageAnimationState(m, index);
+             const transforms: any[] = [];
+             const containerAnimatedStyle: any = {};
+             if (animState) {
+               containerAnimatedStyle.opacity = animState.bubbleOpacity;
+               transforms.push({ translateY: animState.bubbleTranslate });
+             }
+             const isRecent = index >= recentThreshold;
+             if (isRecent) {
+               transforms.push({ translateY: recentMessageLift });
+             }
+             if (transforms.length > 0) {
+               containerAnimatedStyle.transform = transforms;
+             }
+             const bubbleAnimatedStyle = animState
+               ? {
+                   transform: [{ scale: animState.bubbleScale }],
+                 }
+               : undefined;
+             const timeAnimatedStyle = animState
+               ? { opacity: animState.timeOpacity }
+               : undefined;
+             return (
+               <Animated.View
+                 key={m.id}
+                 style={[
+                   styles.messageContainer,
+                   m.sender_type === "user"
+                     ? styles.userMessageContainer
+                     : styles.contactMessageContainer,
+                   containerAnimatedStyle,
+                 ]}
+               >
+                 <Pressable
+                   onPress={() => runMessagePulse(m.id)}
+                   android_ripple={{ color: "rgba(255,255,255,0.08)", borderless: false }}
+                   style={styles.messagePressable}
+                 >
+                   <Animated.View
+                     style={[
+                       styles.messageBubble,
+                       m.sender_type === "user"
+                         ? styles.userMessageBubble
+                         : styles.contactMessageBubble,
+                       bubbleAnimatedStyle,
+                       activePulseId === m.id ? styles.messagePulseShadow : null,
+                     ]}
+                   >
+                     <Text
+                       style={[
+                         styles.messageText,
+                         m.sender_type === "user"
+                           ? styles.userMessageText
+                           : styles.contactMessageText,
+                       ]}
+                     >
+                       {m.content}
+                     </Text>
+                     <Animated.Text
+                       style={[
+                         styles.messageTime,
+                         m.sender_type === "user"
+                           ? styles.userMessageTime
+                           : styles.contactMessageTime,
+                         timeAnimatedStyle,
+                       ]}
+                     >
+                       {formatTime(m.created_at)}
+                     </Animated.Text>
+                   </Animated.View>
+                 </Pressable>
+               </Animated.View>
+             );
+           })}
+          {/* 🌟 NEW: show extra AI context if available */}
+          {aiPerspective ? (
+            <View style={styles.aiNoteContainer}>
+              <Text style={styles.aiNoteTitle}>🧠 Perspective</Text>
+              <Text style={styles.aiNoteText}>{aiPerspective}</Text>
+            </View>
+          ) : null}
+          {aiClosure ? (
+            <View style={styles.aiNoteContainer}>
+              <Text style={styles.aiNoteTitle}>✅ Toward Closure</Text>
+              <Text style={styles.aiNoteText}>{aiClosure}</Text>
+            </View>
+          ) : null}
+         
+          {showTipBox && (
             <Animated.View
               style={[
-                styles.suggestedOptionsContainer,
+                styles.tipBoxContainer,
                 {
-                  transform: [{ translateY: optionsSlideAnim }],
-                  paddingBottom: Math.max(Spacing.md, insets.bottom),
+                  transform: [{ translateY: tipBoxSlideAnim }],
                 },
               ]}
             >
-              <View style={styles.suggestedOptionsHeader}>
-                <Text style={styles.suggestedOptionsTitle}>
-                  Choose response:
-                </Text>
+              <Text style={styles.tipBoxTitle}>
+                💡 Share your side (stays private):
+              </Text>
+              {/* Tag Dropdown for Hint Input - @ for contacts */}
+              {hintShowTagDropdown === '@' && hintContactSuggestions.length > 0 && (
+                <View style={styles.hintTagDropdown}>
+                  <Text style={styles.hintDropdownHeader}>
+                    <AtSign size={12} color={Colors.success[600]} /> People in this conversation
+                  </Text>
+                  {hintContactSuggestions.map((c) => (
+                    <TouchableOpacity
+                      key={c.id}
+                      style={styles.hintTagItem}
+                      onPress={() => {
+                        const typingTag = getLastTypingTag(tipText, hintCursorPos);
+                        if (typingTag.type === '@') {
+                          const newText = replaceTypingTag(
+                            tipText,
+                            typingTag.startPos,
+                            '@',
+                            c.full_name || c.email
+                          );
+                          setTipText(newText);
+                          setHintContactSuggestions([]);
+                          setHintShowTagDropdown(null);
+                        }
+                      }}
+                    >
+                      <View style={[styles.hintTagIndicator, { backgroundColor: Colors.success[100] }]}>
+                        <AtSign size={12} color={Colors.success[600]} />
+                      </View>
+                      <Text style={styles.hintTagName}>{c.full_name || c.email}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
+              {/* Tag Dropdown for Hint Input - # for custom entities */}
+              {hintShowTagDropdown === '#' && hintHashSuggestions.length > 0 && (
+                <View style={styles.hintTagDropdown}>
+                  <Text style={styles.hintDropdownHeader}>
+                    <Hash size={12} color={Colors.warning[600]} /> People/Groups (not in app)
+                  </Text>
+                  {hintHashSuggestions.map((tag, index) => (
+                    <TouchableOpacity
+                      key={index}
+                      style={styles.hintTagItem}
+                      onPress={() => {
+                        const typingTag = getLastTypingTag(tipText, hintCursorPos);
+                        if (typingTag.type === '#') {
+                          const newText = replaceTypingTag(
+                            tipText,
+                            typingTag.startPos,
+                            '#',
+                            tag
+                          );
+                          setTipText(newText);
+                          setHintHashSuggestions([]);
+                          setHintShowTagDropdown(null);
+                        }
+                      }}
+                    >
+                      <View style={[styles.hintTagIndicator, { backgroundColor: Colors.warning[100] }]}>
+                        <Hash size={12} color={Colors.warning[600]} />
+                      </View>
+                      <Text style={styles.hintTagName}>#{tag}</Text>
+                    </TouchableOpacity>
+                  ))}
+                  <Text style={styles.hintDropdownFooter}>
+                    Type any name after # to create custom tag
+                  </Text>
+                </View>
+              )}
+              <TextInput
+                value={tipText}
+                onChangeText={async (text) => {
+                  if (text.length <= 200) {
+                    setTipText(text);
+                    // Handle tagging
+                    const typingTag = getLastTypingTag(text, hintCursorPos);
+                    if (typingTag.type === '@') {
+                      setHintShowTagDropdown('@');
+                      // Search contacts
+                      try {
+                        const { data, error } = await supabase
+                          .from("contacts")
+                          .select(
+                            `contact_profile:profiles!contacts_contact_id_fkey (
+                              id,
+                              full_name,
+                              email,
+                              avatar_url
+                            )`
+                          )
+                          .eq("user_id", user?.id)
+                          .eq("status", "accepted")
+                          .limit(5);
+                        if (!error && data) {
+                          const filtered = data
+                            .map((c) => {
+                              const profile = Array.isArray(c.contact_profile) ? c.contact_profile[0] : c.contact_profile;
+                              return profile;
+                            })
+                            .filter(
+                              (profile) =>
+                                profile &&
+                                (profile.full_name?.toLowerCase().includes(typingTag.search.toLowerCase()) ||
+                                  profile.email?.toLowerCase().includes(typingTag.search.toLowerCase()))
+                            ) as Contact[];
+                          setHintContactSuggestions(filtered);
+                        }
+                      } catch (err) {
+                        console.error("Error searching contacts for hint:", err);
+                      }
+                      setHintHashSuggestions([]);
+                    } else if (typingTag.type === '#') {
+                      setHintShowTagDropdown('#');
+                      const commonTags = getCommonHashTags();
+                      const filtered = typingTag.search
+                        ? commonTags.filter(t => t.toLowerCase().includes(typingTag.search.toLowerCase()))
+                        : commonTags;
+                      setHintHashSuggestions(filtered);
+                      setHintContactSuggestions([]);
+                    } else {
+                      setHintShowTagDropdown(null);
+                      setHintContactSuggestions([]);
+                      setHintHashSuggestions([]);
+                    }
+                    // Parse tagged entities
+                    try {
+                      const { data } = await supabase
+                        .from("contacts")
+                        .select(`contact_profile:profiles!contacts_contact_id_fkey (id, full_name, email)`)
+                        .eq("user_id", user?.id)
+                        .eq("status", "accepted");
+                      const contacts = (data || []).map(c => {
+                        const profile = Array.isArray(c.contact_profile) ? c.contact_profile[0] : c.contact_profile;
+                        return {
+                          id: profile?.id || '',
+                          name: profile?.full_name || profile?.email || '',
+                        };
+                      });
+                      const entities = parseTaggedEntities(text, contacts);
+                      setHintTaggedEntities(entities);
+                    } catch (err) {
+                      console.error('Failed to parse hint tags:', err);
+                    }
+                  }
+                }}
+                placeholder="e.g. I've been stressed with work, or use @ for people, # for others"
+                placeholderTextColor={Colors.text.tertiary}
+                maxLength={200}
+                style={styles.tipBoxInput}
+                multiline
+                onSelectionChange={(event) => {
+                  setHintCursorPos(event.nativeEvent.selection.start);
+                }}
+              />
+              <Text style={[
+                styles.tipBoxCharCount,
+                { color: tipText.length >= 200 ? Colors.error[500] : Colors.text.tertiary }
+              ]}>
+                {tipText.length}/200 characters
+                {tipText.length >= 200 ? " (limit reached)" : ""}
+              </Text>
+              <View style={styles.tipBoxActions}>
                 <TouchableOpacity
-                  style={styles.switchToManualButton}
-                  onPress={() => setManualInputMode(true)}
+                  style={styles.tipBoxSkipButton}
+                  onPress={() => setShowTipBox(false)}
                 >
-                  <Text style={styles.switchToManualText}>Type instead</Text>
+                  <Text style={styles.tipBoxSkipText}>Skip</Text>
                 </TouchableOpacity>
-              </View>
-
-              {/* Navigation shortcuts removed; Home icon remains in header */}
-              <View style={styles.optionsContainer}>
-                {suggestedOptions.map((opt, i) => (
-                  <TouchableOpacity
-                    key={i}
-                    style={[
-                      styles.suggestedOptionButton,
-                      opt === "🙂" && styles.closureOptionButton
-                    ]}
-                    onPress={() => handleSuggestedOptionPress(opt)}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={[
-                      styles.suggestedOptionText,
-                      opt === "🙂" && styles.closureOptionText
-                    ]}>{opt}</Text>
-                  </TouchableOpacity>
-                ))}
+                <TouchableOpacity
+                  style={styles.tipBoxSubmitButton}
+                  onPress={async () => {
+                    try {
+                      const { data: existing, error: fetchErr } = await supabase
+                        .from("chats")
+                        .select("context_data, user_id, contact_id")
+                        .eq("id", currentChatId)
+                        .single();
+                      if (fetchErr) throw fetchErr;
+                      const mergedContext = {
+                        ...(existing?.context_data || {}),
+                        hint_from_b: tipText,
+                        hint_submitted_at: new Date().toISOString(),
+                        hint_tagged_entities: hintTaggedEntities, // Store tagged entities from hint
+                      };
+                      await supabase
+                        .from("chats")
+                        .update({ context_data: mergedContext })
+                        .eq("id", currentChatId);
+                      console.log("✅ Hint saved:", tipText.substring(0, 50));
+                      setShowTipBox(false);
+                      setHintSubmitted(true);
+                      // ✅ FIX: Always regenerate options immediately after hint submission
+                      console.log("🔄 Hint submitted - regenerating options immediately with hint context");
+                      enterWaitingForOptions(user?.id ? String(user.id) : undefined);
+                      // Get latest message from contact to respond to
+                      const latestContactMessage = messages
+                        .filter((m) => m.sender_id === contactId)
+                        .pop();
+                      if (latestContactMessage) {
+                        const conversationHistory = buildHistory();
+                        // Determine if current user is User A or User B
+                        const isCurrentUserA = user?.id === existing?.user_id;
+                        console.log("📤 Regenerating options with hint:", {
+                          currentUserRole: isCurrentUserA ? "User A" : "User B",
+                          hintLength: tipText.length,
+                          latestMessagePreview: latestContactMessage.content.substring(0, 50),
+                        });
+                        // Regenerate options with hint included - CRITICAL: Include ALL context
+                        const summaryA = existing?.context_data?.summary_a || existing?.context_data?.summary || "";
+                        const thoughtsA = existing?.context_data?.thoughts_a || existing?.context_data?.thoughts || "";
+                        if (!user) {
+                          console.error('User not available for regenerating options');
+                          return;
+                        }
+                        const { data: regenResponse, error: regenError } = await supabase.functions.invoke(
+                          "generate-contextual-options",
+                          {
+                            body: {
+                              chatId: currentChatId,
+                              recipientId: user.id,
+                              currentUserId: user.id,
+                              currentMessage: latestContactMessage.content,
+                              summary: isCurrentUserA
+                                ? summaryA
+                                : (existing?.context_data?.summary_b || ""),
+                              thoughts: isCurrentUserA
+                                ? thoughtsA
+                                : (existing?.context_data?.thoughts_b || ""),
+                              // ✅ CRITICAL: Always include User A's original issue
+                              originalIssue: {
+                                summary: summaryA,
+                                thoughts: thoughtsA,
+                              },
+                              hintFromB: tipText.trim(), // ⭐ NEW HINT - User B's perspective
+                              hintToContact: existing?.context_data?.hint_to_contact || null,
+                              summaryB: existing?.context_data?.summary_b || "",
+                              thoughtsB: existing?.context_data?.thoughts_b || "",
+                              conversationHistory,
+                              isInitial: false,
+                              contactCategory: contact?.category || "General",
+                              conversationPhase: conversationPhase,
+                              resolutionDetected: false,
+                              lastMessageTimestamp: latestContactMessage.created_at, // ⏰ For timing-aware context
+                              wordLimit: 15, // ✅ Pass word limit
+                            },
+                          }
+                        );
+                        if (regenError) {
+                          console.error("❌ Failed to regenerate options with hint:", regenError);
+                          showNotification('warning', 'Context Saved', 'Your perspective is saved but options could not be updated');
+                        } else {
+                          console.log("✅ Options regenerated with hint context");
+                          showNotification('success', 'Options Updated', 'Your response choices now reflect your perspective');
+                          if (regenResponse?.optionId) {
+                            pendingOptionsExpectedIdRef.current = String(regenResponse.optionId);
+                          }
+                        }
+                      } else {
+                        showNotification('success', 'Context Saved', 'Your perspective will guide future responses');
+                      }
+                    } catch (err) {
+                      console.error("❌ Failed to save hint:", err);
+                      showNotification('error', 'Save Failed', 'Could not save your perspective. Please try again.');
+                    }
+                  }}
+                >
+                  <Text style={styles.tipBoxSubmitText}>Submit</Text>
+                </TouchableOpacity>
               </View>
             </Animated.View>
           )}
-
-          {/* ✍️ Manual Input Mode */}
-          {manualInputMode && (
-            <View style={styles.manualInputContainer}>
-              <View style={styles.manualInputHeader}>
-                <Text style={styles.manualInputTitle}>Type your response:</Text>
-                {showSuggestedOptions && suggestedOptions.length > 0 && (
-                  <TouchableOpacity
-                    style={styles.switchToOptionsButton}
-                    onPress={() => setManualInputMode(false)}
-                  >
-                    <Text style={styles.switchToOptionsText}>Use options</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-              <View style={styles.manualInputRow}>
-                <TextInput
-                  ref={(ref) => {
-                    if (ref && manualInputMode) {
-                      // Store ref for later use
-                      (ref as any)._manualInputRef = true;
-                    }
-                  }}
-                  style={styles.manualTextInput}
-                  placeholder="Type your message..."
-                  placeholderTextColor={Colors.text.tertiary}
-                  multiline
-                  maxLength={500}
-                  onChangeText={(text) => {
-                    // Store text in a ref for sending
-                    (manualInputRef as any).current = text;
-                  }}
-                />
-                <TouchableOpacity
-                  style={styles.manualSendButton}
-                  onPress={() => {
-                    const text = (manualInputRef as any).current;
-                    if (text?.trim()) {
-                      hasSentMessage.current = true;   // ← NEW
-                      sendMessage(text.trim());
-                      (manualInputRef as any).current = '';
-                      setManualInputMode(false);
-                    }
-                  }}
-                >
-                  <Text style={styles.manualSendButtonText}>Send</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
+          {hintSubmitted && (
+            <Animated.View style={styles.hintSubmittedBanner}>
+              <Text style={styles.hintSubmittedText}>
+                ✅ Your perspective is noted. It stays private and won't be shown to the other side, but it may help clear misunderstandings.
+              </Text>
+            </Animated.View>
           )}
-
-        </KeyboardAvoidingView>
-
-        {/* ✅ NEW: Unified History Modal with Filter Toggles */}
-        <Modal
-          visible={showHistoryModal}
-          animationType="slide"
-          presentationStyle="pageSheet"
-          onRequestClose={() => setShowHistoryModal(false)}
-        >
-          <SafeAreaView style={styles.historyModalContainer}>
-            <View style={styles.historyModalHeader}>
-              <Text style={styles.historyModalTitle}>Conversation History</Text>
+  {shouldShowComposing && (
+    <View style={styles.notificationContainer}>
+      <Text style={styles.notificationText}>
+      💞 Composing some thoughtful replies... one sec!
+      </Text>
+    </View>
+  )}
+          {/* 🔄 Recovery UI: Show when options failed to generate */}
+          {optionsGenerationFailed && !waitingForOptions && !showSuggestedOptions && (
+            <View style={styles.recoveryContainer}>
+              <Text style={styles.recoveryTitle}>Options Not Available</Text>
+              <Text style={styles.recoveryText}>
+                Response options couldn't be generated. You can:
+              </Text>
+              <View style={styles.recoveryButtonsContainer}>
               <TouchableOpacity
-                style={styles.historyModalCloseButton}
-                onPress={() => setShowHistoryModal(false)}
+        style={styles.recoveryButton}
+        onPress={regenerateOptions}
+        disabled={waitingForOptions} // ← NEW: stops clicking while loading
+      >
+        {waitingForOptions ? (
+          <ActivityIndicator color="#fff" size="small" />
+        ) : (
+          <Text style={styles.recoveryButtonText}>Try Again</Text>
+        )}
+      </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.recoveryButton, styles.manualInputButton]}
+                onPress={() => {
+                  setManualInputMode(true);
+                  setOptionsGenerationFailed(false);
+                }}
               >
-                <X size={24} color={Colors.text.secondary} />
+                <Text style={styles.recoveryButtonText}>✍️ Type Manually</Text>
               </TouchableOpacity>
             </View>
-
-            {/* Filter Toggle Buttons */}
-            <View style={styles.historyFilterContainer}>
+          </View>
+        )}
+        </ScrollView>
+        {showSuggestedOptions && suggestedOptions.length > 0 && !manualInputMode && !waitingForOptions && (
+          <Animated.View
+            style={[
+              styles.suggestedOptionsContainer,
+              {
+                transform: [{ translateY: optionsSlideAnim }],
+                paddingBottom: Math.max(Spacing.md, insets.bottom),
+              },
+            ]}
+          >
+            <View style={styles.suggestedOptionsHeader}>
+              <Text style={styles.suggestedOptionsTitle}>
+                Choose response:
+              </Text>
               <TouchableOpacity
-                style={[
-                  styles.historyFilterButton,
-                  historyFilter === 'all' && styles.historyFilterButtonActive
-                ]}
-                onPress={() => setHistoryFilter('all')}
+                style={styles.switchToManualButton}
+                onPress={() => setManualInputMode(true)}
               >
-                <Text style={[
-                  styles.historyFilterText,
-                  historyFilter === 'all' && styles.historyFilterTextActive
-                ]}>
-                  All Messages
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[
-                  styles.historyFilterButton,
-                  historyFilter === 'mine' && styles.historyFilterButtonActive
-                ]}
-                onPress={() => setHistoryFilter('mine')}
-              >
-                <Text style={[
-                  styles.historyFilterText,
-                  historyFilter === 'mine' && styles.historyFilterTextActive
-                ]}>
-                  My Messages
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[
-                  styles.historyFilterButton,
-                  historyFilter === 'theirs' && styles.historyFilterButtonActive
-                ]}
-                onPress={() => setHistoryFilter('theirs')}
-              >
-                <Text style={[
-                  styles.historyFilterText,
-                  historyFilter === 'theirs' && styles.historyFilterTextActive
-                ]}>
-                  {contact?.full_name?.split(' ')[0] || 'Their'} Messages
-                </Text>
+                <Text style={styles.switchToManualText}>Type instead</Text>
               </TouchableOpacity>
             </View>
-
-            {/* Unified Message History */}
-            <ScrollView style={styles.historyMessagesList}>
-              {messages
-                .filter(m => {
-                  if (historyFilter === 'all') return true;
-                  if (historyFilter === 'mine') return m.sender_id === user?.id;
-                  if (historyFilter === 'theirs') return m.sender_id !== user?.id;
-                  return true;
-                })
-                .map((m) => (
-                  <View
-                    key={m.id}
-                    style={[
-                      styles.historyMessageContainer,
-                      m.sender_id === user?.id
-                        ? styles.historyMessageMine
-                        : styles.historyMessageTheirs,
-                    ]}
-                  >
-                    {/* Sender name label */}
-                    <Text style={styles.historyMessageSender}>
-                      {m.sender_id === user?.id
-                        ? 'You'
-                        : contact?.full_name?.split(' ')[0] || contact?.email?.split('@')[0] || 'Contact'}
-                    </Text>
-
-                    {/* Message bubble */}
-                    <View
-                      style={[
-                        styles.historyMessageBubble,
-                        m.sender_id === user?.id
-                          ? styles.historyMessageBubbleMine
-                          : styles.historyMessageBubbleTheirs,
-                      ]}
+            {/* Navigation shortcuts removed; Home icon remains in header */}
+            <View style={styles.optionsContainer}>
+              {suggestedOptions.map((opt, i) => {
+                const anim = ensureOptionAnimationState(i);
+                const appearStyle = anim
+                  ? {
+                      opacity: anim.appear,
+                      transform: [{ translateY: anim.translate }],
+                    }
+                  : undefined;
+                const buttonAnimatedStyle = anim
+                  ? {
+                      transform: [{ scale: anim.scale }],
+                    }
+                  : undefined;
+                const rippleAnimatedStyle = anim
+                  ? {
+                      opacity: anim.rippleOpacity,
+                      transform: [{ scale: anim.rippleScale }],
+                    }
+                  : undefined;
+                const shimmerOpacity = optionShimmerAnim.interpolate({
+                  inputRange: [0, 0.5, 1],
+                  outputRange: [0, 0.18, 0],
+                });
+                const isClosureOption = opt === "🙂";
+                const isActive = activeOptionIndex === i;
+                return (
+                  <Animated.View key={i} style={[styles.optionWrapper, appearStyle]}>
+                    <Pressable
+                      onPressIn={() => handleOptionPressIn(i)}
+                      onPressOut={() => handleOptionPressOut(i)}
+                      onPress={() => handleSuggestedOptionPress(opt, i)}
+                      android_ripple={{ color: "rgba(255, 255, 255, 0.15)", borderless: false }}
+                      style={styles.optionPressable}
                     >
-                      <Text
+                      <Animated.View
                         style={[
-                          styles.historyMessageText,
-                          m.sender_id === user?.id
-                            ? styles.historyMessageTextMine
-                            : styles.historyMessageTextTheirs,
+                          styles.suggestedOptionButton,
+                          isClosureOption && styles.closureOptionButton,
+                          isActive && styles.suggestedOptionActive,
+                          buttonAnimatedStyle,
                         ]}
                       >
-                        {m.content}
-                      </Text>
-                      <Text style={styles.historyMessageTime}>
-                        {formatTime(m.created_at)}
-                      </Text>
-                    </View>
+                        <Animated.View
+                          pointerEvents="none"
+                          style={[styles.optionShimmerOverlay, { opacity: shimmerOpacity }]}
+                        />
+                        <Animated.View
+                          pointerEvents="none"
+                          style={[styles.optionRipple, rippleAnimatedStyle]}
+                        />
+                        <Text
+                          style={[
+                            styles.suggestedOptionText,
+                            isClosureOption && styles.closureOptionText,
+                          ]}
+                        >
+                          {opt}
+                        </Text>
+                      </Animated.View>
+                    </Pressable>
+                  </Animated.View>
+                );
+              })}
+            </View>
+          </Animated.View>
+        )}
+        {/* ✍️ Manual Input Mode */}
+        {manualInputMode && (
+          <View style={styles.manualInputContainer}>
+            <View style={styles.manualInputHeader}>
+              <Text style={styles.manualInputTitle}>Type your response:</Text>
+              {showSuggestedOptions && suggestedOptions.length > 0 && (
+                <TouchableOpacity
+                  style={styles.switchToOptionsButton}
+                  onPress={() => setManualInputMode(false)}
+                >
+                  <Text style={styles.switchToOptionsText}>Use options</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+            <View style={styles.manualInputRow}>
+              <TextInput
+                ref={(ref) => {
+                  if (ref && manualInputMode) {
+                    // Store ref for later use
+                    (ref as any)._manualInputRef = true;
+                  }
+                }}
+                style={styles.manualTextInput}
+                placeholder="Type your message..."
+                placeholderTextColor={Colors.text.tertiary}
+                multiline
+                maxLength={500}
+                onChangeText={(text) => {
+                  // Store text in a ref for sending
+                  (manualInputRef as any).current = text;
+                }}
+              />
+              <TouchableOpacity
+                style={styles.manualSendButton}
+                onPress={() => {
+                  const text = (manualInputRef as any).current;
+                  if (text?.trim()) {
+                    hasSentMessage.current = true; // ← NEW
+                    sendMessage(text.trim());
+                    (manualInputRef as any).current = '';
+                    setManualInputMode(false);
+                  }
+                }}
+              >
+                <Text style={styles.manualSendButtonText}>Send</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+      </KeyboardAvoidingView>
+      {/* ✅ NEW: Unified History Modal with Filter Toggles */}
+      <Modal
+        visible={showHistoryModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowHistoryModal(false)}
+      >
+        <SafeAreaView style={styles.historyModalContainer}>
+          <View style={styles.historyModalHeader}>
+            <Text style={styles.historyModalTitle}>Conversation History</Text>
+            <TouchableOpacity
+              style={styles.historyModalCloseButton}
+              onPress={() => setShowHistoryModal(false)}
+            >
+              <X size={24} color={Colors.text.secondary} />
+            </TouchableOpacity>
+          </View>
+          {/* Filter Toggle Buttons */}
+          <View style={styles.historyFilterContainer}>
+            <TouchableOpacity
+              style={[
+                styles.historyFilterButton,
+                historyFilter === 'all' && styles.historyFilterButtonActive
+              ]}
+              onPress={() => setHistoryFilter('all')}
+            >
+              <Text style={[
+                styles.historyFilterText,
+                historyFilter === 'all' && styles.historyFilterTextActive
+              ]}>
+                All Messages
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.historyFilterButton,
+                historyFilter === 'mine' && styles.historyFilterButtonActive
+              ]}
+              onPress={() => setHistoryFilter('mine')}
+            >
+              <Text style={[
+                styles.historyFilterText,
+                historyFilter === 'mine' && styles.historyFilterTextActive
+              ]}>
+                My Messages
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.historyFilterButton,
+                historyFilter === 'theirs' && styles.historyFilterButtonActive
+              ]}
+              onPress={() => setHistoryFilter('theirs')}
+            >
+              <Text style={[
+                styles.historyFilterText,
+                historyFilter === 'theirs' && styles.historyFilterTextActive
+              ]}>
+                {contact?.full_name?.split(' ')[0] || 'Their'} Messages
+              </Text>
+            </TouchableOpacity>
+          </View>
+          {/* Unified Message History */}
+          <ScrollView style={styles.historyMessagesList}>
+            {messages
+              .filter(m => {
+                if (historyFilter === 'all') return true;
+                if (historyFilter === 'mine') return m.sender_id === user?.id;
+                if (historyFilter === 'theirs') return m.sender_id !== user?.id;
+                return true;
+              })
+              .map((m) => (
+                <View
+                  key={m.id}
+                  style={[
+                    styles.historyMessageContainer,
+                    m.sender_id === user?.id
+                      ? styles.historyMessageMine
+                      : styles.historyMessageTheirs,
+                  ]}
+                >
+                  {/* Sender name label */}
+                  <Text style={styles.historyMessageSender}>
+                    {m.sender_id === user?.id
+                      ? 'You'
+                      : contact?.full_name?.split(' ')[0] || contact?.email?.split('@')[0] || 'Contact'}
+                  </Text>
+                  {/* Message bubble */}
+                  <View
+                    style={[
+                      styles.historyMessageBubble,
+                      m.sender_id === user?.id
+                        ? styles.historyMessageBubbleMine
+                        : styles.historyMessageBubbleTheirs,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.historyMessageText,
+                        m.sender_id === user?.id
+                          ? styles.historyMessageTextMine
+                          : styles.historyMessageTextTheirs,
+                      ]}
+                    >
+                      {m.content}
+                    </Text>
+                    <Text style={styles.historyMessageTime}>
+                      {formatTime(m.created_at)}
+                    </Text>
                   </View>
-                ))}
-            </ScrollView>
-          </SafeAreaView>
-        </Modal>
-      </SafeAreaView>
-    </>
-  );
+                </View>
+              ))}
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+    </SafeAreaView>
+  </>
+);
 }
 
 const styles = StyleSheet.create({
-  container: { 
-    flex: 1, 
-    backgroundColor: Colors.background 
+  container: {
+    flex: 1,
+    backgroundColor: Colors.background
   },
-  loadingContainer: { 
-    flex: 1, 
-    justifyContent: "center", 
+  loadingContainer: {
+    flex: 1,
+    justifyContent: "center",
     alignItems: "center",
     gap: Spacing.lg,
   },
-  loadingText: { 
-    fontSize: Typography.fontSize.lg, 
+  loadingText: {
+    fontSize: Typography.fontSize.lg,
     color: Colors.text.secondary,
     fontWeight: Typography.fontWeight.medium,
   },
@@ -2255,14 +2851,22 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.lg,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.borderLight,
-    backgroundColor: Colors.surfaceElevated,
-    ...Shadows.small,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: 10, // taller, elegant height
+    marginHorizontal: Spacing.md,
+    marginTop: 0,
+    marginBottom: 6,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#F9E79F", // soft lemon border
+    backgroundColor: "#FFF176", // 🍋 full lemon yellow fill
+    ...Shadows.medium,
+    minHeight: 56, // not too thin, looks balanced
   },
-  backButton: { 
+   
+ 
+ 
+  backButton: {
     width: 40,
     height: 40,
     borderRadius: BorderRadius.lg,
@@ -2278,74 +2882,104 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   contactAvatar: {
-    width: 36,
-    height: 36,
-    borderRadius: BorderRadius.lg,
-    backgroundColor: Colors.success[50],
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: Spacing.md,
+    backgroundColor: Colors.secondary[50],
+    borderWidth: 1,
+    borderColor: Colors.secondary[100],
+    marginRight: Spacing.xs,
   },
+ 
   contactInfo: {
+    alignItems: 'flex-start',
+  },
+
+  headerTitle: {
+    fontSize: Typography.fontSize.base + 1,
+    fontWeight: Typography.fontWeight.semibold,
+    color: "#333333",
+    textAlign: 'center', // Centers in available space
+    letterSpacing: 0.3,
+    flexShrink: 1, // ← ADD: Allows text to shrink without breaking layout
+    flexWrap: 'nowrap', // ← ADD: Prevents unwanted wrapping
+  },
+  headerActions: {
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: Spacing.xs,
   },
-  headerTitle: { 
-    fontSize: Typography.fontSize.lg, 
-    fontWeight: Typography.fontWeight.semibold, 
-    color: Colors.text.primary 
-  },
-  headerCategory: {
-    fontSize: Typography.fontSize.sm,
-    color: Colors.text.secondary,
-    marginTop: 2,
-  },
-  // ✅ REMOVED: placeholder style (replaced by historyButton)
+  historyButton: {
+  width: 34,
+  height: 34,
+  borderRadius: 8,
+  backgroundColor: "#FFF9C4", // lighter yellow tone
+  justifyContent: 'center',
+  alignItems: 'center',
+  borderWidth: 1,
+  borderColor: "#F9E79F",
+  ...Shadows.small,
+},
+ 
   chatContainer: { flex: 1 },
   messagesContainer: { flex: 1 },
   messagesContent: {
-    padding: Spacing.lg,
-    paddingTop: Spacing.xl,
-    paddingBottom: 240,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.xl,
+  },
+  messagesContentAwaiting: {
+    paddingBottom: Spacing.xxxl,
   },
   messageContainer: { marginBottom: Spacing.lg },
   userMessageContainer: { alignItems: "flex-end" },
   contactMessageContainer: { alignItems: "flex-start" },
-  messageBubble: { 
-    maxWidth: "85%", 
-    paddingHorizontal: Spacing.lg, 
-    paddingVertical: Spacing.md, 
+  messagePressable: {
+    alignSelf: 'auto',
+    maxWidth: '100%',
+  },
+  messageBubble: {
+    maxWidth: "80%",
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
     borderRadius: BorderRadius.xl,
-    ...Shadows.small,
-  },
-  userMessageBubble: { 
-    backgroundColor: Colors.secondary[500],
-    borderBottomRightRadius: BorderRadius.sm,
-  },
-  contactMessageBubble: { 
-    backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.borderLight,
-    borderBottomLeftRadius: BorderRadius.sm,
+    backgroundColor: Colors.surface,
     ...Shadows.small,
   },
-  messageText: { 
-    fontSize: Typography.fontSize.base,
-    lineHeight: Typography.lineHeight.normal * Typography.fontSize.base,
+  userMessageBubble: {
+    backgroundColor: Colors.chat.userBubble,
+    borderColor: Colors.chat.userBubble,
+    borderBottomRightRadius: BorderRadius.md,
+  },
+  contactMessageBubble: {
+    backgroundColor: Colors.chat.contactBubble,
+    borderColor: Colors.warning[100],
+    borderBottomLeftRadius: BorderRadius.md,
+  },
+  messageText: {
+    fontSize: Typography.fontSize.xs,
+    lineHeight: Typography.fontSize.xs * 1.6,
+    fontWeight: Typography.fontWeight.medium,
   },
   userMessageText: { color: Colors.text.inverse },
   contactMessageText: { color: Colors.text.primary },
-  messageTime: { 
-    fontSize: Typography.fontSize.xs, 
+  messageTime: {
+    fontSize: Typography.fontSize.xs,
     marginTop: Spacing.xs,
+    fontWeight: Typography.fontWeight.normal,
   },
-  userMessageTime: { 
-    color: Colors.text.inverse, 
+  userMessageTime: {
+    color: Colors.text.inverse,
     textAlign: "right",
-    opacity: 0.8,
+    opacity: 0.72,
   },
-  contactMessageTime: { 
-    color: Colors.text.tertiary, 
-    textAlign: "left" 
+  contactMessageTime: {
+    color: Colors.text.secondary,
+    textAlign: "left"
   },
   loadingOptionsContainer: {
     flexDirection: "row",
@@ -2366,16 +3000,14 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
   suggestedOptionsContainer: {
-    position: 'absolute',
-    bottom: 20,
-    left: Spacing.lg,
-    right: Spacing.lg,
-    backgroundColor: Colors.surfaceElevated,
+    backgroundColor: Colors.surface,
     borderRadius: BorderRadius.xl,
     borderWidth: 1,
-    borderColor: Colors.borderLight,
+    borderColor: Colors.primary[100],
     paddingVertical: Spacing.md,
     paddingHorizontal: Spacing.md,
+    marginHorizontal: Spacing.lg,
+    marginBottom: Spacing.lg,
     ...Shadows.medium,
   },
   optionsScrollView: {
@@ -2433,29 +3065,63 @@ const styles = StyleSheet.create({
     flexDirection: 'column',
     gap: Spacing.sm,
   },
+  optionWrapper: {
+    width: '100%',
+  },
+  optionPressable: {
+    width: '100%',
+    overflow: 'hidden',
+    borderRadius: BorderRadius.lg,
+  },
   suggestedOptionButton: {
-    flexShrink: 1, // Allow button to shrink and wrap text
-    minWidth: 0, // Allow text to wrap
+    flexShrink: 1,
+    minWidth: 0,
     backgroundColor: Colors.primary[50],
     borderWidth: 1,
     borderColor: Colors.primary[200],
-    borderRadius: BorderRadius.md,
+    borderRadius: BorderRadius.lg,
     paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
+    paddingVertical: Spacing.xs,
     width: '100%',
     minHeight: 40,
     justifyContent: 'center',
     marginBottom: Spacing.xs,
     ...Shadows.small,
   },
+  suggestedOptionActive: {
+     shadowOpacity: 0.25,
+     shadowRadius: 12,
+     elevation: 8,
+     borderColor: Colors.primary[300],
+     backgroundColor: Colors.primary[100],
+   },
   suggestedOptionText: {
-    fontSize: Typography.fontSize.sm,
-    color: Colors.primary[700],
-    fontWeight: Typography.fontWeight.medium,
+    fontSize: Typography.fontSize.xs,
+    color: Colors.secondary[700],
+    fontWeight: Typography.fontWeight.semibold,
     textAlign: 'center',
-    lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
+    lineHeight: Typography.fontSize.xs * 1.5,
     flexWrap: 'wrap',
-    flexShrink: 1, // Allow text to wrap instead of truncating
+    flexShrink: 1,
+  },
+  optionRipple: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(255, 255, 255, 0.35)',
+    borderRadius: BorderRadius.lg,
+    opacity: 0,
+  },
+  optionShimmerOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: -40,
+    right: -40,
+    bottom: 0,
+    backgroundColor: 'rgba(255, 255, 255, 0.4)',
+    transform: [{ skewX: '-12deg' }],
   },
   closureOptionButton: {
     backgroundColor: Colors.success[50],
@@ -2465,7 +3131,13 @@ const styles = StyleSheet.create({
     fontSize: Typography.fontSize.xl,
     color: Colors.success[700],
   },
-
+  messagePulseShadow: {
+    shadowColor: Colors.primary[500],
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.18,
+    shadowRadius: 8,
+    elevation: 6,
+  },
   // 🌟 NEW styles
   aiNoteContainer: {
     backgroundColor: Colors.warning[50],
@@ -2567,7 +3239,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
   },
-
   // 💬 Hint banner styles (scrollable)
   hintBannerWrapper: {
     backgroundColor: Colors.primary[50],
@@ -2598,17 +3269,7 @@ const styles = StyleSheet.create({
     fontWeight: Typography.fontWeight.medium,
     lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
   },
-
   // ✅ NEW: History button and modal styles
-  historyButton: {
-    width: 40,
-    height: 40,
-    borderRadius: BorderRadius.lg,
-    backgroundColor: Colors.surface,
-    justifyContent: 'center',
-    alignItems: 'center',
-    ...Shadows.small,
-  },
   historyModalContainer: {
     flex: 1,
     backgroundColor: Colors.background,
@@ -2703,7 +3364,7 @@ const styles = StyleSheet.create({
   },
   historyMessageText: {
     fontSize: Typography.fontSize.base,
-    lineHeight: Typography.lineHeight.normal * Typography.fontSize.base,
+    lineHeight: Typography.fontSize.base * 1.45,
   },
   historyMessageTextMine: {
     color: Colors.text.inverse,
@@ -2716,7 +3377,6 @@ const styles = StyleSheet.create({
     marginTop: Spacing.xs,
     color: Colors.text.tertiary,
   },
-
   // 🔄 Recovery mechanism styles
   recoveryContainer: {
     backgroundColor: Colors.warning[50],
@@ -2761,7 +3421,6 @@ const styles = StyleSheet.create({
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.text.inverse,
   },
-
   // ✍️ Manual input mode styles
   manualInputContainer: {
     backgroundColor: Colors.surfaceElevated,
@@ -2846,7 +3505,6 @@ closureBannerText: {
   fontWeight: Typography.fontWeight.semibold,
   textAlign: 'center',
 },
-
 // Hint tag dropdown styles
 hintTagDropdown: {
   backgroundColor: Colors.surface,
@@ -2908,16 +3566,10 @@ notificationText: {
   textAlign: 'center',
   lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
 },
-
 hintTagName: {
   fontSize: Typography.fontSize.sm,
   color: Colors.text.primary,
   fontWeight: Typography.fontWeight.medium,
 },
-
 });
-
-
-
-
 export default ContactChatScreen;

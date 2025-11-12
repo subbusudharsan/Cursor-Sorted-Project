@@ -6,6 +6,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import * as SplashScreen from 'expo-splash-screen';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { NotificationProvider } from '@/contexts/NotificationContext';
+import { ChatBadgeProvider } from '@/contexts/ChatBadgeContext';
 import { useFrameworkReady } from '@/hooks/useFrameworkReady';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
@@ -129,14 +130,16 @@ function RootLayout() {
       <SafeAreaProvider>
         <AuthProvider>
           <NotificationProvider>
-            <WebFocusRefresher />
-            <Stack key={`stack-${stackKey}`} screenOptions={{ headerShown: false }}>
-              <Stack.Screen name="index" />
-              <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-              <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-              <Stack.Screen name="+not-found" />
-            </Stack>
-            <StatusBar style="auto" />
+            <ChatBadgeProvider>
+              <WebFocusRefresher />
+              <Stack key={`stack-${stackKey}`} screenOptions={{ headerShown: false }}>
+                <Stack.Screen name="index" />
+                <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+                <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+                <Stack.Screen name="+not-found" />
+              </Stack>
+              <StatusBar style="auto" />
+            </ChatBadgeProvider>
           </NotificationProvider>
         </AuthProvider>
       </SafeAreaProvider>

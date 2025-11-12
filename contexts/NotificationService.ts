@@ -156,6 +156,15 @@ export class NotificationService {
   }
 
   async showNotification(title: string, body: string, type: string, data?: any) {
+    const Notifications = getNotifications();
+    if (!Notifications) {
+      console.log("⚠️ Notifications module not available (Expo Go) — showing in-app alert instead.");
+      const { Alert } = require('react-native');
+      Alert.alert(title, body); // ✅ visible popup in Expo Go
+      return;
+    }
+    
+
     if (Platform.OS === 'web') {
       // For web, we can use browser notifications
       if ('Notification' in window) {
@@ -189,6 +198,17 @@ export class NotificationService {
     }
 
     try {
+      // 🧩 Detect Expo Go and show in-app popup instead of silent stub
+      const Constants = require('expo-constants').default;
+      const projectId = Constants?.expoConfig?.extra?.eas?.projectId;
+    
+      if (!projectId) {
+        const { Alert } = require('react-native');
+        Alert.alert(title, body); // ✅ shows even inside Expo Go
+        return;
+      }
+    
+      // ✅ Real push path (EAS / dev build)
       await Notifications.scheduleNotificationAsync({
         content: {
           title,
@@ -197,13 +217,12 @@ export class NotificationService {
           sound: this.shouldPlaySound(type) ? 'default' : false,
           badge: 1,
         },
-        trigger: null, // Show immediately
+        trigger: null,
       });
     } catch (error) {
       console.error('Error showing notification:', error);
     }
   }
-
   private shouldPlaySound(type: string): boolean {
     if (!this.notificationSettings) return true;
     
@@ -223,12 +242,16 @@ export class NotificationService {
   async scheduleDailyReflectionReminder(userId?: string) {
     if (!this.shouldShowNotification('soulroom_reminder')) return;
 
-    try {
-      // Cancel existing daily reminders
-      await this.cancelDailyReminders();
+    const Notifications = getNotifications();
+if (!Notifications) return;
 
-      // Schedule daily reminder at 8 PM
-      await Notifications.scheduleNotificationAsync({
+try {
+  // Cancel existing daily reminders
+  await this.cancelDailyReminders();
+
+  // Schedule daily reminder at 8 PM
+  await Notifications.scheduleNotificationAsync({
+
         content: {
           title: 'Daily Reflection 🌙',
           body: 'Take a moment to reflect on your day in your Soulroom',
@@ -248,6 +271,9 @@ export class NotificationService {
   }
 
   async cancelAllNotifications() {
+    const Notifications = getNotifications();
+if (!Notifications) return;
+
     try {
       await Notifications.cancelAllScheduledNotificationsAsync();
     } catch (error) {
@@ -267,8 +293,12 @@ export class NotificationService {
   }
 
   async cancelDailyReminders() {
-    try {
-      const scheduledNotifications = await Notifications.getAllScheduledNotificationsAsync();
+    const Notifications = getNotifications();
+if (!Notifications) return;
+
+try {
+  const scheduledNotifications = await Notifications.getAllScheduledNotificationsAsync();
+
       const dailyReminderIds = scheduledNotifications
         .filter((notification: any) => notification.content.data?.type === 'daily_reflection')
         .map((notification: any) => notification.identifier);

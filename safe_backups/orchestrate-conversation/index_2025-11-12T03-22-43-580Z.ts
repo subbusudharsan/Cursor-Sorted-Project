@@ -204,7 +204,7 @@ Respond ONLY with valid JSON:
         "anthropic-version": "2023-06-01"
       },
       body: JSON.stringify({
-        model: "claude-3-5-haiku-20241022",
+        model: "claude-sonnet-4-20250514",
         max_tokens: 200,
         temperature: 0.7,
         system: "You are an emotional intelligence expert. Analyze conversations and respond only with valid JSON.",

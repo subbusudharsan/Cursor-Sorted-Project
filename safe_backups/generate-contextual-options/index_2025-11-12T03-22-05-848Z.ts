@@ -1451,7 +1451,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO ‚ù
         "anthropic-version": "2023-06-01"
       },
       body: JSON.stringify({
-        model: "claude-3-5-haiku-20241022",
+        model: "claude-sonnet-4-20250514",
         max_tokens: 200,
         temperature: 0.7,
         system: `${systemPrompt}\n\n${compassionateSystemPrompt}`,
@@ -2278,8 +2278,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO ‚ù
       options: normalizedOptions,
       chatId,
       recipientId,
-      optionsCount: normalizedOptions.length,
-      optionId: insertData?.id ?? null
+      optionsCount: normalizedOptions.length
     }), {
       status: 200,
       headers: {

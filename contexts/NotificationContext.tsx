@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from './AuthContext';
+import { notificationService } from "./NotificationService";
+
 
 interface Notification {
   id: string;
@@ -61,29 +63,52 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   const setupRealtimeSubscription = () => {
     const subscription = supabase
       .channel(`notifications-${user?.id}`)
-      .on('postgres_changes', { 
-        event: 'INSERT', 
-        schema: 'public', 
-        table: 'notifications', 
-        filter: `user_id=eq.${user?.id}` 
-      }, (payload) => {
-        const newNotification = payload.new as Notification;
-        if (newNotification.type !== 'message') {
-          setNotifications(prev => [newNotification, ...prev]);
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'notifications',
+          filter: `user_id=eq.${user?.id}`,
+        },
+        (payload) => {
+          const newNotification = payload.new as Notification;
+  
+          if (newNotification.type !== 'message') {
+            setNotifications((prev) => [newNotification, ...prev]);
+  
+            // 🔔 Trigger local popup
+            notificationService.showNotification(
+              newNotification.title,
+              newNotification.message,
+              newNotification.type
+            );
+          }
         }
-      })
-      .on('postgres_changes', { 
-        event: 'UPDATE', 
-        schema: 'public', 
-        table: 'notifications', 
-        filter: `user_id=eq.${user?.id}` 
-      }, (payload) => {
-        const updatedNotification = payload.new as Notification;
-        setNotifications(prev => prev.map(n => n.id === updatedNotification.id ? updatedNotification : n));
-      })
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'notifications',
+          filter: `user_id=eq.${user?.id}`,
+        },
+        (payload) => {
+          const updatedNotification = payload.new as Notification;
+          setNotifications((prev) =>
+            prev.map((n) =>
+              n.id === updatedNotification.id ? updatedNotification : n
+            )
+          );
+        }
+      )
       .subscribe();
+  
+    // ✅ Cleanup
     return () => subscription.unsubscribe();
   };
+  
 
   const markAsRead = async (notificationId: string) => {
     try {

@@ -142,7 +142,7 @@ Guidelines:
 - Avoid asking what's already clear from the description`;
 
     const claudePayload = {
-      model: 'claude-3-haiku-20240307',
+      model: 'claude-3-5-haiku-20241022',
       max_tokens: 1500,
       system: systemPrompt,
       messages: [

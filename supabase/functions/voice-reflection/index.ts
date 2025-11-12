@@ -125,7 +125,7 @@ async function analyzeTranscript(transcript: string) {
 Transcript:"""${transcript}"""`;
 
   const claudePayload = {
-    model: "claude-3-haiku-20240307",
+    model: "claude-3-5-haiku-20241022",
     max_tokens: 200,
     temperature: 0.4,
     system: "You analyze emotional reflections and highlight useful keywords in a gentle tone.",
