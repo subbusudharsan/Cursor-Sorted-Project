@@ -165,8 +165,6 @@ function ContactChatScreen() {
   const isAutoScrollingRef = useRef(false);
 const hasAutoScrolledInitially = useRef(false);
 const pendingOptionsRecipientRef = useRef<string | null>(null);
-const pendingOptionsExpectedIdRef = useRef<string | null>(null);
-const pendingOptionsPrevSignatureRef = useRef<string | null>(null);
 const pendingOptionsSinceRef = useRef<number | null>(null);
 
   const optionShimmerLoopRef = useRef<Animated.CompositeAnimation | null>(null);
@@ -196,7 +194,6 @@ const pendingOptionsSinceRef = useRef<number | null>(null);
   const [lastOptionRefreshTime, setLastOptionRefreshTime] = useState<number>(0);
   const OPTION_REFRESH_COOLDOWN = 30000; // 30 seconds
   const lastOptionsSignatureRef = useRef<string | null>(null);
-  const optionsFallbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fadeOutCurrentOptions = useCallback(() => {
     optionAnimationsRef.current.forEach((state) => {
       if (!state) return;
@@ -218,7 +215,7 @@ const pendingOptionsSinceRef = useRef<number | null>(null);
     });
   }, []);
 const enterWaitingForOptions = useCallback(
-  (recipientId?: string, expectedOptionId?: string | null) => {
+  (recipientId?: string) => {
     fadeOutCurrentOptions();
     stopOptionShimmer();
     setActiveOptionIndex(null);
@@ -228,8 +225,6 @@ const enterWaitingForOptions = useCallback(
     setManualInputMode(false);
     pendingOptionsRecipientRef.current =
       recipientId ?? (user?.id ? String(user.id) : null);
-    pendingOptionsExpectedIdRef.current = expectedOptionId ?? null;
-    pendingOptionsPrevSignatureRef.current = lastOptionsSignatureRef.current;
     pendingOptionsSinceRef.current = Date.now();
     if (!waitingForOptions) {
       setWaitingForOptions(true);
@@ -246,8 +241,6 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     !pendingOptionsRecipientRef.current
   ) {
     pendingOptionsRecipientRef.current = null;
-    pendingOptionsExpectedIdRef.current = null;
-    pendingOptionsPrevSignatureRef.current = null;
     pendingOptionsSinceRef.current = null;
     setWaitingForOptions(false);
     return;
@@ -257,8 +250,6 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     String(pendingOptionsRecipientRef.current) === String(recipientId)
   ) {
     pendingOptionsRecipientRef.current = null;
-    pendingOptionsExpectedIdRef.current = null;
-    pendingOptionsPrevSignatureRef.current = null;
     pendingOptionsSinceRef.current = null;
     setWaitingForOptions(false);
   }
@@ -363,11 +354,6 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     }
     // ✅ FIX: Cleanup timeout on unmount
     return () => {
-      if (optionsFallbackTimeoutRef.current) {
-        clearTimeout(optionsFallbackTimeoutRef.current);
-        optionsFallbackTimeoutRef.current = null;
-      }
-      lastOptionsSignatureRef.current = null;
       if (typeof unsubscribeOptions === 'function') {
         unsubscribeOptions();
       }
@@ -718,27 +704,6 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       const createdAtMs = data[0].created_at ? Date.parse(data[0].created_at) : Date.now();
       if (
         awaitingForCurrentUser &&
-        pendingOptionsExpectedIdRef.current &&
-        fetchedOptionId &&
-        pendingOptionsExpectedIdRef.current !== fetchedOptionId
-      ) {
-        console.log("ℹ️ Ignoring options (unexpected id) while waiting for fresh batch (initial fetch)");
-        return;
-      }
-      if (
-        awaitingForCurrentUser &&
-        pendingOptionsExpectedIdRef.current &&
-        !fetchedOptionId
-      ) {
-        console.log("ℹ️ Ignoring options without id while waiting for specific batch (initial fetch)");
-        return;
-      }
-      const isPendingForCurrentUser =
-        waitingForOptions &&
-        pendingOptionsRecipientRef.current &&
-        String(pendingOptionsRecipientRef.current) === String(userId);
-      if (
-        isPendingForCurrentUser &&
         pendingOptionsSinceRef.current &&
         createdAtMs < pendingOptionsSinceRef.current
       ) {
@@ -754,16 +719,11 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         return;
       }
       lastOptionsSignatureRef.current = signature;
-      pendingOptionsPrevSignatureRef.current = null;
       const cleanedOptions = cleanOptionsForDisplay(data[0].options || [], contact?.full_name || null);
       console.log(" After client-side cleaning:", cleanedOptions);
-      if (optionsFallbackTimeoutRef.current) {
-        clearTimeout(optionsFallbackTimeoutRef.current);
-        optionsFallbackTimeoutRef.current = null;
-      }
       setSuggestedOptions(cleanedOptions);
       setShowSuggestedOptions(true);
-      pendingOptionsExpectedIdRef.current = null;
+      pendingOptionsSinceRef.current = null;
       resolveWaitingForOptions(userId);
       setLastOptionRefreshTime(Date.now());
       // 🌟 Capture extra fields if present
@@ -826,92 +786,42 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
   // ---- realtime: options ----
   const subscribeToOptions = (chatId: string, currentUserId: string) => {
     console.log("🔔 SETTING UP OPTIONS SUBSCRIPTION", { chatId, currentUserId });
-    const handleOptionsUpdate = async (payload: any) => {
-      console.log("📨 OPTIONS SUBSCRIPTION RECEIVED", payload);
-      const newOptions = payload.new.options || [];
-      if (payload.new.chat_id && payload.new.chat_id !== chatId) {
-        console.log("ℹ️ Ignoring options for different chat", payload.new.chat_id);
+    const handleOptionsUpdate = (payload: any) => {
+      const row = payload.new;
+      if (!row) return;
+      if (row.chat_id && row.chat_id !== chatId) {
         return;
       }
-      const recipientId = String(payload.new.recipient_id);
-      const isForCurrentUser = recipientId === String(currentUserId);
-      const createdAtMs = payload.new.created_at ? Date.parse(payload.new.created_at) : Date.now();
-      const isPendingForCurrentUser =
-        waitingForOptions &&
-        pendingOptionsRecipientRef.current &&
-        recipientId === String(pendingOptionsRecipientRef.current);
-      if (
-        isPendingForCurrentUser &&
-        pendingOptionsSinceRef.current &&
-        createdAtMs < pendingOptionsSinceRef.current
-      ) {
-        console.log("ℹ️ Received stale options snapshot; still waiting");
+
+      const recipientId = String(row.recipient_id || "");
+      if (recipientId !== String(currentUserId)) {
         return;
       }
-      const payloadOptionId = payload.new.id ? String(payload.new.id) : null;
-      const signature = `${payload.new.id || ""}|${JSON.stringify(newOptions || [])}`;
-      if (
-        isPendingForCurrentUser &&
-        signature &&
-        pendingOptionsPrevSignatureRef.current &&
-        signature === pendingOptionsPrevSignatureRef.current
-      ) {
-        console.log("ℹ️ Ignoring previous options while waiting for fresh batch (subscription signature match)");
+
+      const ctx = row.context_data || {};
+      const optionsArray = Array.isArray(row.options) ? row.options : [];
+      const isFinal =
+        optionsArray.length > 0 &&
+        ctx.turnCount > 0 &&
+        ctx.isVeryFirstMessage === false &&
+        ctx.fallback !== true;
+
+      if (!isFinal) {
+        enterWaitingForOptions(currentUserId);
         return;
       }
-      if (!isForCurrentUser) {
-        console.log("⚠️ Ignoring options not meant for this user:", payload.new.recipient_id);
-        return;
-      }
-      if (
-        isPendingForCurrentUser &&
-        pendingOptionsExpectedIdRef.current &&
-        payloadOptionId &&
-        pendingOptionsExpectedIdRef.current !== payloadOptionId
-      ) {
-        console.log("ℹ️ Received options for a different batch id; still waiting");
-        return;
-      }
-      if (
-        isPendingForCurrentUser &&
-        pendingOptionsExpectedIdRef.current &&
-        !payloadOptionId
-      ) {
-        console.log("ℹ️ Received options without id while waiting for specific batch; still waiting");
-        return;
-      }
-      if (!Array.isArray(newOptions) || newOptions.length === 0) {
-        console.warn("⚠️ Received empty options payload");
-        return;
-      }
-      if (signature && lastOptionsSignatureRef.current === signature) {
-        console.log("ℹ️ Options already rendered for this payload");
-        return;
-      }
-      lastOptionsSignatureRef.current = signature;
-      if (optionsFallbackTimeoutRef.current) {
-        clearTimeout(optionsFallbackTimeoutRef.current);
-        optionsFallbackTimeoutRef.current = null;
-      }
-      const cleanedOptions = cleanOptionsForDisplay(newOptions, contact?.full_name || null);
-      if (
-        !isPendingForCurrentUser ||
-        !pendingOptionsSinceRef.current ||
-        createdAtMs >= pendingOptionsSinceRef.current
-      ) {
-        console.log("✅ Applying options:", cleanedOptions);
-        pendingOptionsPrevSignatureRef.current = null;
-        pendingOptionsExpectedIdRef.current = null;
-        setSuggestedOptions(cleanedOptions);
-        setShowSuggestedOptions(true);
-        resolveWaitingForOptions(recipientId);
-        setLastOptionRefreshTime(Date.now());
-        if (payload.new.context_data) {
-          setAiPerspective(payload.new.context_data.newPerspective || "");
-          setAiClosure(payload.new.context_data.closure || "");
-        }
-      } else {
-        console.log("ℹ️ Ignoring options received before pending timestamp");
+
+      console.log("✅ Final validated options received for", recipientId);
+      lastOptionsSignatureRef.current = `${row.id || ""}|${JSON.stringify(row.options || [])}`;
+
+      setSuggestedOptions(optionsArray);
+      setShowSuggestedOptions(true);
+      resolveWaitingForOptions(recipientId);
+      setLastOptionRefreshTime(Date.now());
+
+      if (row.context_data) {
+        setAiPerspective(row.context_data.newPerspective || "");
+        setAiClosure(row.context_data.closure || "");
       }
     };
     const channel = supabase
@@ -1058,17 +968,9 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           }, 150);
           const messageFromOtherUser = String(newMsg.sender_id) !== String(currentUserId);
           if (messageFromOtherUser) {
-            console.log("🧹 New message from other user → hide old options, wait for fresh ones");
-            if (optionsFallbackTimeoutRef.current) {
-              clearTimeout(optionsFallbackTimeoutRef.current);
-              optionsFallbackTimeoutRef.current = null;
-            }
+            console.log("🧹 New message from other user → waiting for fresh options");
+            enterWaitingForOptions(currentUserId);
             lastOptionsSignatureRef.current = null;
-            optionsFallbackTimeoutRef.current = setTimeout(async () => {
-              console.log("⏱️ Options fallback refresh");
-              await fetchInitialOptions(chatId, currentUserId, 0, { force: true });
-              optionsFallbackTimeoutRef.current = null;
-            }, 4000);
           }
           // CONTACT replied → generate options for current user
           console.log(" Checking if should generate options...");
@@ -1153,7 +1055,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             // 🧠 STEP 2: Generate contextual options with Claude (orchestration guidance included)
             console.log("🧠 CLAUDE: Generating contextual options (with fallbacks)...");
             try {
-              const { data: optionsResponse, error } = await supabase.functions.invoke(
+              const { error } = await supabase.functions.invoke(
                 "generate-contextual-options",
                 {
                   body: {
@@ -1181,9 +1083,6 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                 resolveWaitingForOptions(currentUserId);
               } else {
                 console.log("✅ Options generation request sent with original issue context");
-                if (optionsResponse?.optionId) {
-                  pendingOptionsExpectedIdRef.current = String(optionsResponse.optionId);
-                }
               }
             } catch (generationError) {
               console.error("💥 ERROR generating options:", generationError);
@@ -1463,7 +1362,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         console.error("⚠️ Orchestration error (continuing anyway):", err);
       }
       // 🎯 STEP 2: Generate options WITH orchestration guidance
-      const { data: optionsResponse, error: funcError } = await supabase.functions.invoke(
+      const { error: funcError } = await supabase.functions.invoke(
         "generate-contextual-options",
         {
           body: {
@@ -1512,9 +1411,6 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         console.log(" Options will be validated and context-aware");
         console.log(" User B should see these options in their chat screen");
         console.log("=".repeat(60) + "\n");
-        if (recipientId && optionsResponse?.optionId) {
-          pendingOptionsExpectedIdRef.current = String(optionsResponse.optionId);
-        }
       }
     } catch (err) {
       console.error("❌ Error sending message:", err);
@@ -1571,7 +1467,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       const summaryToSend = isCurrentUserA ? summaryA : summaryB;
       const thoughtsToSend = isCurrentUserA ? thoughtsA : thoughtsB;
       console.log("🔄 Manually regenerating options");
-      const { data: optionsResponse, error } = await supabase.functions.invoke(
+      const { error } = await supabase.functions.invoke(
         "generate-contextual-options",
         {
           body: {
@@ -1603,9 +1499,6 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         throw error;
       }
       showNotification('success', 'Options Regenerated', 'New response options are being generated.');
-      if (optionsResponse?.optionId) {
-        pendingOptionsExpectedIdRef.current = String(optionsResponse.optionId);
-      }
     } catch (err) {
       console.error("❌ Failed to regenerate options:", err);
       setOptionsGenerationFailed(true);
@@ -2469,7 +2362,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                           console.error('User not available for regenerating options');
                           return;
                         }
-                        const { data: regenResponse, error: regenError } = await supabase.functions.invoke(
+                        const { error: regenError } = await supabase.functions.invoke(
                           "generate-contextual-options",
                           {
                             body: {
@@ -2504,14 +2397,26 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                         );
                         if (regenError) {
                           console.error("❌ Failed to regenerate options with hint:", regenError);
-                          showNotification('warning', 'Context Saved', 'Your perspective is saved but options could not be updated');
+                          showNotification(
+                            'warning',
+                            'Context Saved',
+                            'Your perspective is saved but options could not be updated'
+                          );
+                          // ✅ Make sure 💞 composing banner does not get stuck forever
+                          if (user?.id) {
+                            resolveWaitingForOptions(String(user.id));
+                          } else {
+                            resolveWaitingForOptions(null);
+                          }
                         } else {
                           console.log("✅ Options regenerated with hint context");
-                          showNotification('success', 'Options Updated', 'Your response choices now reflect your perspective');
-                          if (regenResponse?.optionId) {
-                            pendingOptionsExpectedIdRef.current = String(regenResponse.optionId);
-                          }
+                          showNotification(
+                            'success',
+                            'Options Updated',
+                            'Your response choices now reflect your perspective'
+                          );
                         }
+                        
                       } else {
                         showNotification('success', 'Context Saved', 'Your perspective will guide future responses');
                       }
@@ -2950,11 +2855,19 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
     ...Shadows.small,
   },
+  // userMessageBubble: {
+  //   backgroundColor: Colors.chat.userBubble,
+  //   borderColor: Colors.chat.userBubble,
+  //   borderBottomRightRadius: BorderRadius.md,
+  // },
+
   userMessageBubble: {
-    backgroundColor: Colors.chat.userBubble,
-    borderColor: Colors.chat.userBubble,
+    backgroundColor: "#007AFF", // iMessage-style blue
+    borderColor: "#007AFF",
     borderBottomRightRadius: BorderRadius.md,
   },
+  userMessageText: { color: "#FFFFFF" },
+  
   contactMessageBubble: {
     backgroundColor: Colors.chat.contactBubble,
     borderColor: Colors.warning[100],
@@ -2965,7 +2878,7 @@ const styles = StyleSheet.create({
     lineHeight: Typography.fontSize.xs * 1.6,
     fontWeight: Typography.fontWeight.medium,
   },
-  userMessageText: { color: Colors.text.inverse },
+  //userMessageText: { color: Colors.text.inverse },
   contactMessageText: { color: Colors.text.primary },
   messageTime: {
     fontSize: Typography.fontSize.xs,

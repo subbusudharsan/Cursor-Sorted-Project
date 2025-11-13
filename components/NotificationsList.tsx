@@ -23,11 +23,23 @@ export default function NotificationsList({ onClose }: { onClose: () => void }) 
     if (!notification.read) await markAsRead(notification.id);
     if (notification.type === 'contact_invite' || notification.type === 'contact_accepted') {
       router.push('/(tabs)/contacts');
-    } else if (notification.type === 'chat_request' && notification.data?.chat_id) {
-      // Navigate directly to the contact chat
-      const chatId = notification.data.chat_id;
-      const senderId = notification.data.sender_id;
-      router.push(`/contact-chat?chatId=${chatId}&contactId=${senderId}&isOngoing=true`);
+    } else if (notification.type === 'chat_request') {
+      const contactId =
+        notification.data?.contact_id ??
+        notification.data?.sender_id ??
+        notification.data?.partner_id ??
+        notification.data?.other_user_id;
+      if (contactId) {
+        router.push({
+          pathname: '/contact-chat-details',
+          params: { contactId: String(contactId) },
+        });
+      } else if (notification.data?.chat_id) {
+        router.push({
+          pathname: '/contact-chat',
+          params: { chatId: String(notification.data.chat_id) },
+        });
+      }
     }
     onClose();
   };

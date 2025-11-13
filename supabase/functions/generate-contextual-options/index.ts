@@ -1496,44 +1496,44 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
           ? [
               "hey you 😊 got a sec?",
               "hi fam, just wanted to say hey 🙂",
-              "yo! how’s your day been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
+              "yo! how's your day been?",
+              "hey hey, what's up?",
+              "hi, hope you're doing good 🙂",
             ]
           : contactCategory === "friend"
           ? [
               "hey you 😊 got a sec?",
               "hi there, just wanted to say hey 🙂",
-              "yo! how’s your day been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
+              "yo! how's your day been?",
+              "hey hey, what's up?",
+              "hi, hope you're doing good 🙂",
             ]
           : contactCategory === "romantic"
           ? [
               "hey you 😊 got a sec?",
               "hi love, just wanted to say hey 🙂",
-              "yo! how’s your evening been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
+              "yo! how's your evening been?",
+              "hey hey, what's up?",
+              "hi, hope you're doing good 🙂",
             ]
           : contactCategory === "work"
           ? [
               "hey you 😊 got a sec?",
               "hi there, just wanted to say hey 🙂",
-              "yo! how’s your day been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
+              "yo! how's your day been?",
+              "hey hey, what's up?",
+              "hi, hope you're doing good 🙂",
             ]
           : [
               "hey you 😊 got a sec?",
               "hi there, just wanted to say hey 🙂",
-              "yo! how’s your day been?",
-              "hey hey, what’s up?",
-              "hi, hope you’re doing good 🙂",
+              "yo! how's your day been?",
+              "hey hey, what's up?",
+              "hi, hope you're doing good 🙂",
             ];
 
       options = friendlyTemplates.slice(0, 5);
-      console.log("✅ Rewrote warm-up options (friendly only):", options);
+      console.log("✅ Rewritten warm-up options (friendly only):", options);
     }
 
     // ✅ STRICT: Enforce minimum option count (5 for first turn, 3 for all others)
@@ -2235,9 +2235,14 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       .from('message_options')
       .insert({
         chat_id: chatId,
-        recipient_id: recipientId, // ✅ Fixed: recipientId is who should receive the options
+        recipient_id: recipientId,
         options: normalizedOptions,
+      
+        // ⭐ CRITICAL FIX – FINAL BATCH MARKER ⭐
+        status: "final",
         context_data: {
+          validated: true,
+      
           conversationStage: conversationPhase || 'discussion',
           turnCount: safeConversationHistory.length,
           hintUsed: !!hintFromB,
@@ -2246,6 +2251,8 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
           conversationTimingContext
         }
       })
+      
+      
       .select()
       .single();
 
@@ -2278,8 +2285,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       options: normalizedOptions,
       chatId,
       recipientId,
-      optionsCount: normalizedOptions.length,
-      optionId: insertData?.id ?? null
+      optionsCount: normalizedOptions.length
     }), {
       status: 200,
       headers: {
