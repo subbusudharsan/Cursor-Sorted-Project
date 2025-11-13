@@ -27,6 +27,7 @@ import {
   Mail,
   Bot,
 } from 'lucide-react-native';
+import KeyboardSafeView from '@/components/KeyboardSafeView';
 
 interface Contact {
   id: string;
@@ -628,7 +629,12 @@ const performBulkDelete = async () => {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <KeyboardSafeView
+      style={styles.container}
+      contentStyle={styles.content}
+      offset={(insets.top || 0) + 8}
+      edges={['top', 'left', 'right']}
+    >
       <View style={[styles.content, { paddingTop: insets.top }] }>
         <View style={styles.centeredContainer}>
           <View style={styles.header}>
@@ -648,7 +654,7 @@ const performBulkDelete = async () => {
             </View>
           </View>
 
-          <ScrollView style={styles.scrollContent}>
+          <ScrollView style={styles.scrollContent} keyboardShouldPersistTaps="handled">
             {readyToTalk === 'true' && (
               <View style={styles.callToActionContainer}>
                 <MessageCircle size={32} color="#6366f1" />
@@ -884,7 +890,7 @@ const performBulkDelete = async () => {
           </View>
         </SafeAreaView>
       </Modal>
-    </SafeAreaView>
+    </KeyboardSafeView>
   );
 }
 

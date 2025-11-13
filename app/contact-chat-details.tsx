@@ -736,7 +736,7 @@ function ContactChatDetailsScreen() {
           contentContainerStyle={styles.scrollBody}
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.sectionContainer}>
+          <View style={[styles.sectionContainer, styles.myTalkHighlight]}>
             <View style={styles.sectionHeaderRow}>
               <Text style={styles.sectionTitle}>My Talks</Text>
               {userOngoingChats.length > 3 && (
@@ -759,7 +759,7 @@ function ContactChatDetailsScreen() {
             )}
           </View>
 
-          <View style={styles.sectionContainer}>
+          <View style={[styles.sectionContainer, styles.contactTalkHighlight]}>
             <View style={styles.sectionHeaderRow}>
               <Text style={styles.sectionTitle}>{contact?.full_name || 'Contact'}'s Talks</Text>
               {contactOngoingChats.length > 3 && (
@@ -1318,6 +1318,16 @@ const styles = StyleSheet.create({
     padding: Spacing.md,
     gap: Spacing.sm,
     ...Shadows.small,
+  },
+  myTalkHighlight: {
+    backgroundColor: '#F3E8FF', // light purple
+    borderWidth: 1,
+    borderColor: '#E0C3FF',
+  },
+  contactTalkHighlight: {
+    backgroundColor: Colors.secondary[50],
+    borderWidth: 1,
+    borderColor: Colors.secondary[200],
   },
   sectionHeaderRow: {
     flexDirection: 'row',

@@ -548,6 +548,20 @@ setContactChats(finalChats);
               >
               {filteredContacts.map((contactChat) => {
                 const isContactTalk = !!contactChat.isUserB;
+                const generatedFallback =
+                  (contactChat.issueSummary && contactChat.issueSummary.split(/[.!?]/)[0]) ||
+                  (contactChat.lastMsg || contactChat.last_message || '').split(/[.!?]/)[0] ||
+                  'Conversation';
+                const displayTitle = contactChat.chatTitle?.trim()
+                  ? contactChat.chatTitle.trim()
+                  : generatedFallback.trim();
+
+                const latestMessage = contactChat.lastMsg || contactChat.last_message || 'No messages yet';
+                const annotatedMessage =
+                  contactChat.context_data?.last_sender_id === user?.id
+                    ? { label: 'New', text: latestMessage }
+                    : null;
+
                 return (
                   <TouchableOpacity
                     key={contactChat.contact_id}
@@ -565,53 +579,64 @@ setContactChats(finalChats);
                     activeOpacity={0.7}
                   >
                     <View style={styles.chatContent}>
-                      <View style={styles.chatInfo}>
-                        {multiSelectMode && (
-                          <View style={styles.radioWrap}>
-                            <View style={[styles.radioOuter, selectedContactIds.includes(contactChat.contact_id) && styles.radioOuterSelected]}>
-                              {selectedContactIds.includes(contactChat.contact_id) && <View style={styles.radioInner} />}
-                            </View>
+                      {multiSelectMode && (
+                        <View style={styles.radioWrap}>
+                          <View style={[styles.radioOuter, selectedContactIds.includes(contactChat.contact_id) && styles.radioOuterSelected]}>
+                            {selectedContactIds.includes(contactChat.contact_id) && <View style={styles.radioInner} />}
                           </View>
-                        )}
-                        <View style={styles.chatAvatar}>
-                          <User size={20} color={Colors.success[500]} />
                         </View>
-                        <View style={styles.chatDetails}>
-                          <View style={styles.chatTitleRow}>
-                            <Text style={styles.chatTime}>{formatTime(contactChat.last_message_at || '')}</Text>
-                          </View>
+                      )}
+
+                      <View style={styles.chatAvatar}>
+                        <User size={20} color={Colors.success[500]} />
+                      </View>
+
+                      <View style={styles.chatBody}>
+                        <View style={styles.chatHeaderRow}>
                           <Text style={styles.chatName} numberOfLines={1}>
                             {contactChat.contact_name}
                           </Text>
-                          {contactChat.chatTitle ? (
-                            <Text style={styles.chatTitle} numberOfLines={1}>{contactChat.chatTitle}</Text>
-                          ) : null}
-                          {contactChat.issueSummary ? (
-                            <Text style={styles.issueText} numberOfLines={2}>{contactChat.issueSummary}</Text>
-                          ) : null}
-                          <Text style={styles.lastMsgText} numberOfLines={1}>
-                            {contactChat.lastMsg || contactChat.last_message || 'No messages yet'}
-                          </Text>
-                          {(contactChat.ongoing_count > 0 || (contactChat.total_ongoing_count || 0) > 0 || contactChat.context_data?.is_resolved || contactChat.is_resolved) && (
-                            <View style={styles.metaRow}>
-                              {contactChat.ongoing_count > 0 && (
-                                <View style={styles.metaBadge}>
-                                  <Text style={styles.metaBadgeText}>{contactChat.ongoing_count} ongoing</Text>
-                                </View>
-                              )}
-                              {(contactChat.total_ongoing_count || 0) > 0 && (
-                                <View style={[styles.metaBadge, styles.metaBadgeAlt]}>
-                                  <Text style={[styles.metaBadgeText, styles.metaBadgeTextAlt]}>{contactChat.total_ongoing_count} total</Text>
-                                </View>
-                              )}
-                              {contactChat.context_data?.is_resolved || contactChat.is_resolved ? (
-                                <View style={styles.resolvedPill}>
-                                  <Text style={styles.resolvedPillText}>✅ Closed peacefully</Text>
-                                </View>
-                              ) : null}
-                            </View>
-                          )}
+                          <Text style={styles.chatTime}>{formatTime(contactChat.last_message_at || '')}</Text>
                         </View>
+
+                        <Text style={styles.chatSubtitle} numberOfLines={1}>{displayTitle}</Text>
+
+                        <View style={styles.messageRow}>
+                          {annotatedMessage ? (
+                            <View style={styles.newBadge}>
+                              <Text style={styles.newBadgeText}>New</Text>
+                            </View>
+                          ) : null}
+                          <Text
+                            style={[
+                              styles.lastMsgText,
+                              annotatedMessage ? styles.lastMsgTextEmphasis : null,
+                            ]}
+                            numberOfLines={1}
+                          >
+                            {annotatedMessage ? annotatedMessage.text : latestMessage}
+                          </Text>
+                        </View>
+
+                        {(contactChat.ongoing_count > 0 || (contactChat.total_ongoing_count || 0) > 0 || contactChat.context_data?.is_resolved || contactChat.is_resolved) && (
+                          <View style={styles.metaRow}>
+                            {contactChat.ongoing_count > 0 && (
+                              <View style={styles.metaBadge}>
+                                <Text style={styles.metaBadgeText}>{contactChat.ongoing_count} ongoing</Text>
+                              </View>
+                            )}
+                            {(contactChat.total_ongoing_count || 0) > 0 && (
+                              <View style={[styles.metaBadge, styles.metaBadgeAlt]}>
+                                <Text style={[styles.metaBadgeText, styles.metaBadgeTextAlt]}>{contactChat.total_ongoing_count} total</Text>
+                              </View>
+                            )}
+                            {contactChat.context_data?.is_resolved || contactChat.is_resolved ? (
+                              <View style={styles.resolvedPill}>
+                                <Text style={styles.resolvedPillText}>✅ Closed peacefully</Text>
+                              </View>
+                            ) : null}
+                          </View>
+                        )}
                       </View>
                     </View>
                   </TouchableOpacity>
@@ -857,13 +882,8 @@ const styles = StyleSheet.create({
   },
   chatContent: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  chatInfo: {
-    flexDirection: 'row',
     alignItems: 'flex-start',
-    flex: 1,
+    gap: Spacing.md,
   },
   radioWrap: { justifyContent: 'center', alignItems: 'center', marginRight: Spacing.sm },
   radioOuter: { width: 18, height: 18, borderRadius: 9, borderWidth: 2, borderColor: Colors.primary[500], justifyContent: 'center', alignItems: 'center' },
@@ -878,14 +898,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginRight: Spacing.md,
   },
-  chatDetails: {
+  chatBody: {
     flex: 1,
+    gap: Spacing.xs,
   },
-  chatTitleRow: {
+  chatHeaderRow: {
     flexDirection: 'row',
-    justifyContent: 'flex-end',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: Spacing.xs,
   },
   chatName: {
     fontSize: Typography.fontSize.lg,
@@ -897,24 +917,41 @@ const styles = StyleSheet.create({
   },
   chatTime: {
     fontSize: Typography.fontSize.sm,
-    color: Colors.text.tertiary,
+    color: Colors.success[600],
+    fontWeight: Typography.fontWeight.medium,
   },
-  chatTitle: {
+  chatSubtitle: {
     fontSize: Typography.fontSize.sm,
-    fontWeight: Typography.fontWeight.semibold,
+    fontWeight: Typography.fontWeight.medium,
     color: Colors.secondary[700],
-    marginBottom: 4,
   },
-  issueText: {
-    color: Colors.text.secondary,
-    fontSize: Typography.fontSize.sm,
-    marginBottom: Spacing.xs,
+  messageRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
   },
-lastMsgText: {
+  newBadge: {
+    backgroundColor: Colors.success[100],
+    borderRadius: BorderRadius.lg,
+    paddingHorizontal: Spacing.xs,
+    paddingVertical: 2,
+    borderWidth: 1,
+    borderColor: Colors.success[200],
+  },
+  newBadgeText: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.success[700],
+    fontWeight: Typography.fontWeight.medium,
+  },
+  lastMsgText: {
     color: Colors.text.tertiary,
     fontSize: Typography.fontSize.sm,
     marginTop: 2,
-},
+  },
+  lastMsgTextEmphasis: {
+    color: Colors.text.primary,
+    fontWeight: Typography.fontWeight.medium,
+  },
 
 issueRow: {
   flexDirection: 'row',

@@ -5,8 +5,6 @@ import {
   TouchableOpacity,
   ScrollView,
   StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
   Alert,
   ActivityIndicator,
   TextInput,
@@ -29,6 +27,7 @@ import { useFocusEffect } from "@react-navigation/native";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 // ADD THIS LINE HERE
 import { useNavigation } from '@react-navigation/native';
+import KeyboardSafeView from '@/components/KeyboardSafeView';
 
 type MessageAnimationState = {
   bubbleOpacity: Animated.Value;
@@ -1740,6 +1739,21 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     outputRange: [-Spacing.sm, 0],
     extrapolate: 'clamp',
   });
+  const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
+  const isUserTurn =
+    !lastMessage || String(lastMessage.sender_id) !== String(user?.id || '');
+  const computeIsPendingForUser = useCallback((recipientId?: string) => {
+    if (!waitingForOptions) return false;
+    const target = recipientId ?? user?.id;
+    if (!target) return false;
+    const pendingId = pendingOptionsRecipientRef.current;
+    if (pendingId === null || pendingId === undefined) return false;
+    return String(pendingId) === String(target);
+  }, [waitingForOptions, user?.id]);
+  const isPendingForCurrentUser = computeIsPendingForUser();
+  const shouldShowComposing = waitingForOptions && isPendingForCurrentUser && isUserTurn;
+  const recentThreshold = Math.max(0, displayedMessages.length - 2);
+
   if (initialLoading) {
     return (
       <SafeAreaView style={styles.loadingContainer}>
@@ -1748,23 +1762,19 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       </SafeAreaView>
     );
   }
-  const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
-  const isUserTurn =
-    !lastMessage || String(lastMessage.sender_id) !== String(user?.id || '');
-  const isPendingForCurrentUser =
-    waitingForOptions &&
-    !!user?.id &&
-    pendingOptionsRecipientRef.current !== null &&
-    String(pendingOptionsRecipientRef.current) === String(user.id);
-  const shouldShowComposing = waitingForOptions && isPendingForCurrentUser && isUserTurn;
-  const recentThreshold = Math.max(0, displayedMessages.length - 2);
   return (
     <>
       <NotificationBanner
         {...notification}
         onDismiss={() => setNotification(prev => ({ ...prev, visible: false }))}
       />
-      <SafeAreaView style={styles.container}>
+      <KeyboardSafeView
+        style={styles.container}
+        contentStyle={styles.flexOne}
+        offset={(insets.top || 0) + 8}
+        edges={['top', 'left', 'right']}
+      >
+        <View style={styles.contentWrapper}>
       {/* 🌟 Animated Header with Fade + Slide */}
       <Animated.View
         style={[
@@ -1898,10 +1908,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           </ScrollView>
         </View>
       )}
-      <KeyboardAvoidingView
-        style={styles.chatContainer}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-      >
+      <View style={styles.chatContainer}>
         <ScrollView
              ref={scrollViewRef}
              style={styles.messagesContainer}
@@ -1972,9 +1979,14 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
              const transforms: any[] = [];
              const containerAnimatedStyle: any = {};
              if (animState) {
-               containerAnimatedStyle.opacity = animState.bubbleOpacity;
-               transforms.push({ translateY: animState.bubbleTranslate });
-             }
+              // 🔥 SIMPLE FIX: all user messages full opacity
+              containerAnimatedStyle.opacity =
+                m.sender_type === "user" ? 1 : animState.bubbleOpacity;
+            
+              transforms.push({ translateY: animState.bubbleTranslate });
+            }
+            
+
              const isRecent = index >= recentThreshold;
              if (isRecent) {
                transforms.push({ translateY: recentMessageLift });
@@ -2535,7 +2547,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             </View>
           </View>
         )}
-      </KeyboardAvoidingView>
+      </View>
       {/* ✅ NEW: Unified History Modal with Filter Toggles */}
       <Modal
         visible={showHistoryModal}
@@ -2651,7 +2663,8 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           </ScrollView>
         </SafeAreaView>
       </Modal>
-    </SafeAreaView>
+      </View>
+      </KeyboardSafeView>
   </>
 );
 }
@@ -2660,6 +2673,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: Colors.background
+  },
+  flexOne: {
+    flex: 1,
   },
   loadingContainer: {
     flex: 1,
@@ -2748,6 +2764,12 @@ const styles = StyleSheet.create({
   ...Shadows.small,
 },
  
+  keyboardWrapper: {
+    flex: 1,
+  },
+  contentWrapper: {
+    flex: 1,
+  },
   chatContainer: { flex: 1 },
   messagesContainer: { flex: 1 },
   messagesContent: {
@@ -2771,10 +2793,11 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.xs,
     borderRadius: BorderRadius.xl,
     borderWidth: 1,
-    borderColor: Colors.borderLight,
-    backgroundColor: Colors.surface,
+    borderColor: "transparent",   // prevent override
+    backgroundColor: "transparent", // do NOT set a color here
     ...Shadows.small,
-  },
+},
+
   // userMessageBubble: {
   //   backgroundColor: Colors.chat.userBubble,
   //   borderColor: Colors.chat.userBubble,
@@ -2782,11 +2805,20 @@ const styles = StyleSheet.create({
   // },
 
   userMessageBubble: {
-    backgroundColor: Colors.secondary[100],
-    borderColor: Colors.secondary[200],
+    backgroundColor: Colors.chat.userBubble,
+    borderColor: Colors.chat.userBubble,
     borderBottomRightRadius: BorderRadius.md,
+    overflow: "hidden",   // <-- IMPORTANT: stops white bleed & animation bleed
+},
+
+  userMessageText: {
+    color: Colors.text.inverse,
+    fontWeight: Typography.fontWeight.semibold,
+    letterSpacing: 0.15,
+    textShadowColor: 'rgba(0,0,0,0.18)',
+    textShadowOffset: { width: 0, height: 0.5 },
+    textShadowRadius: 1.2,
   },
-  userMessageText: { color: Colors.text.primary },
   
   contactMessageBubble: {
     backgroundColor: Colors.chat.contactBubble,
@@ -2806,9 +2838,10 @@ const styles = StyleSheet.create({
     fontWeight: Typography.fontWeight.normal,
   },
   userMessageTime: {
-    color: Colors.secondary[700],
+    color: 'rgba(255,255,255,0.9)',
     textAlign: "right",
-    opacity: 0.8,
+    fontWeight: Typography.fontWeight.medium,
+    letterSpacing: 0.1,
   },
   contactMessageTime: {
     color: Colors.text.secondary,

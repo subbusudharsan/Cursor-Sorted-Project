@@ -8,8 +8,6 @@ import {
   TouchableOpacity,
   ScrollView,
   StyleSheet,
-  KeyboardAvoidingView,
-  Platform,
   Alert,
   ActivityIndicator,
   Dimensions,
@@ -38,6 +36,7 @@ import {
   Typography,
 } from "@/constants/Colors";
 import { MY_TALKS_LIMIT, getCompletedMyTalksCount, buildMyTalksLimitMessage } from "@/lib/myTalksLimit";
+import KeyboardSafeView from '@/components/KeyboardSafeView';
 // Prevent undefined Colors or constants crash in Expo web
 if (!Colors?.primary) console.warn("⚠️ Colors not loaded properly");
 
@@ -56,6 +55,8 @@ interface Contact {
 }
 
 type FlowStage = "welcome" | "qa" | "summary" | "ready";
+type TagStage = 'description' | 'answer' | 'additionalInfo' | 'editAnswer';
+type TypingTagMatch = ReturnType<typeof getLastTypingTag>;
 
 function AIChatScreen() {
   const { user } = useAuth();
@@ -106,8 +107,7 @@ function AIChatScreen() {
   const [hashSuggestions, setHashSuggestions] = useState<string[]>([]);
   const [availableContacts, setAvailableContacts] = useState<any[]>([]);
   const [showReturnFromChatBanner, setShowReturnFromChatBanner] = useState(false);
-  const [entityRegistryCache, setEntityRegistryCache] = useState<Record<string, { preferred_pronouns: string; entity_name: string }>>({});
-
+  
   const [isSummaryUnclear, setIsSummaryUnclear] = useState(false);
   const [isReviewMode, setIsReviewMode] = useState(false);
   
@@ -194,13 +194,158 @@ function AIChatScreen() {
   // Pronoun selection state for all stages
   const [showPronounDropdown, setShowPronounDropdown] = useState<'@' | '#' | null>(null);
   const [pronounSelectionContext, setPronounSelectionContext] = useState<{
-    stage: 'description' | 'answer' | 'prevAnswer' | 'editAnswer' | 'additionalInfo';
+    stage: 'description' | 'answer' | 'additionalInfo' | 'editAnswer';
     index?: number;
     pendingContact?: any;
     pendingHashTag?: string;
-    cursorPos?: number;
-    textField?: string;
   } | null>(null);
+  const pendingHashPromptRef = useRef<string | null>(null);
+  const [entityRegistryCache, setEntityRegistryCache] = useState<Record<string, { preferred_pronouns: string; entity_name: string }>>({});
+
+  const suppressTagDropdownRef = useRef<Record<TagStage, '@' | '#' | null>>({
+    description: null,
+    answer: null,
+    additionalInfo: null,
+    editAnswer: null,
+  });
+
+  const applyTaggedEntitiesForStage = useCallback(
+    (
+      stage: TagStage,
+      entities: TaggedEntity[],
+      index?: number,
+    ) => {
+      switch (stage) {
+        case 'description':
+          setTaggedEntities(entities);
+          break;
+        case 'answer':
+          setCurrentAnswerTags(entities);
+          break;
+        case 'additionalInfo':
+          setAdditionalInfoTags(entities);
+          break;
+        case 'editAnswer':
+          setTaggedEntities(entities);
+          break;
+        default:
+          break;
+      }
+    },
+    [setTaggedEntities, setCurrentAnswerTags, setAdditionalInfoTags]
+  );
+
+  const markTagDropdownSuppressed = useCallback(
+    (stage: TagStage, type: '@' | '#') => {
+      suppressTagDropdownRef.current[stage] = type;
+    },
+    []
+  );
+
+  const shouldSuppressTagDropdown = useCallback(
+    (stage: TagStage, typingTag: TypingTagMatch) => {
+      const suppressType = suppressTagDropdownRef.current[stage];
+
+      if (!typingTag || !typingTag.type || typingTag.startPos === undefined || typingTag.startPos < 0) {
+        suppressTagDropdownRef.current[stage] = null;
+        return false;
+      }
+
+      if (!suppressType) {
+        return false;
+      }
+
+      if (typingTag.type !== suppressType) {
+        suppressTagDropdownRef.current[stage] = null;
+        return false;
+      }
+
+      if (!typingTag.search || typingTag.search.length === 0) {
+        suppressTagDropdownRef.current[stage] = null;
+        return false;
+      }
+
+      return true;
+    },
+    []
+  );
+
+  const triggerHashPronounPrompt = useCallback(
+    ({
+      stage,
+      text,
+      entities,
+      index,
+    }: {
+      stage: TagStage;
+      text: string;
+      entities: TaggedEntity[];
+      index?: number;
+    }) => {
+      if (!text || !text.includes('#')) {
+        pendingHashPromptRef.current = null;
+        return;
+      }
+
+      const hashPattern = /(^|\s)#([A-Za-z0-9_-]+)(?=[\s,.!?;:]|$)/g;
+      const seen = new Set<string>();
+      let match: RegExpExecArray | null;
+      let workingEntities = entities;
+
+      while ((match = hashPattern.exec(text)) !== null) {
+        const tagName = match[2];
+        if (!tagName) continue;
+
+        const normalized = tagName.toLowerCase().trim();
+        if (!normalized || seen.has(normalized)) continue;
+        seen.add(normalized);
+
+        const cachedPronoun = entityRegistryCache[normalized]?.preferred_pronouns ?? null;
+        const key = `#${tagName}`.toLowerCase();
+        const existingIndex = workingEntities.findIndex(
+          (entity) => entity.tag?.toLowerCase() === key,
+        );
+        const existingEntity = existingIndex >= 0 ? workingEntities[existingIndex] : undefined;
+
+        if (cachedPronoun) {
+          if (existingEntity && existingEntity.preferred_pronouns === cachedPronoun) {
+            continue;
+          }
+
+          const structured = createStructuredTaggedEntity(
+            `#${tagName}`,
+            tagName,
+            'unregistered',
+            undefined,
+            cachedPronoun,
+          );
+
+          const nextEntities = existingIndex >= 0 ? [...workingEntities] : [...workingEntities, structured];
+          const targetIndex = existingIndex >= 0 ? existingIndex : nextEntities.length - 1;
+          nextEntities[targetIndex] = {
+            ...nextEntities[targetIndex],
+            preferred_pronouns: cachedPronoun,
+          };
+
+          workingEntities = nextEntities;
+          applyTaggedEntitiesForStage(stage, workingEntities, index);
+          continue;
+        }
+
+        if (pendingHashPromptRef.current === normalized) {
+          return;
+        }
+
+        pendingHashPromptRef.current = normalized;
+        setShowPronounDropdown('#');
+        setPronounSelectionContext({ stage, pendingHashTag: tagName, index });
+        return;
+      }
+
+      pendingHashPromptRef.current = null;
+    },
+    [applyTaggedEntitiesForStage, entityRegistryCache, setPronounSelectionContext, setShowPronounDropdown]
+  );
 
   const resolvedContactId = contact?.id ?? contactIdValue ?? null;
 
@@ -586,358 +731,278 @@ const loadEntityRegistryCache = async (chatIdParam: string) => {
 
 
   const handleDescriptionChange = (text: string) => {
-  setInitialDescription(text);
+    setInitialDescription(text);
 
-  const cursorPosition = (descriptionCursorPos !== undefined && descriptionCursorPos <= text.length)
-    ? descriptionCursorPos
-    : text.length;
+    const cursorPosition = (descriptionCursorPos !== undefined && descriptionCursorPos <= text.length)
+      ? descriptionCursorPos
+      : text.length;
 
-  const textUpToCursor = text.substring(0, cursorPosition);
-  const typingTag = getLastTypingTag(textUpToCursor, cursorPosition);
+    const textUpToCursor = text.substring(0, cursorPosition);
+    const typingTag = getLastTypingTag(textUpToCursor, cursorPosition);
 
-  console.log('🔍 Description tag detection:', { typingTag, cursorPosition, textUpToCursor });
+    console.log('🔍 Description tag detection:', { typingTag, cursorPosition, textUpToCursor });
 
-  // ✅ Always close opposite dropdown types when switching
-  if (typingTag.type === '@') {
-    // Show ONLY User B immediately when @ is typed
-    // Keep visible until space or selection
-    console.log('📧 Showing @ dropdown for User B');
-    // Close # dropdown and pronoun dropdown first
-    setShowPronounDropdown(null);
-    setHashSuggestions([]);
-    setShowTagDropdown('@');
+    const dropdownSuppressed = shouldSuppressTagDropdown('description', typingTag);
 
-    const userBContact = availableContacts.filter(c => c.id === resolvedContactId);
-    setContactSuggestions(userBContact);
-  } else if (typingTag.type === '#') {
-    // Show pronoun list immediately when # is typed (no extra character needed)
-    // Keep visible until space or pronoun is selected
-    const hasPronounSelected = pronounSelectionContext?.pendingHashTag?.includes(':');
-
-    if (!hasPronounSelected) {
-      // Show pronoun dropdown immediately - keep visible until space or selection
-      console.log('🏷️ Showing pronoun dropdown for #');
-      // Close @ dropdown first
-      setShowTagDropdown(null);
-      setContactSuggestions([]);
-      setHashSuggestions([]);
-      setShowPronounDropdown('#');
-      setPronounSelectionContext({
-        stage: 'description',
-        cursorPos: typingTag.startPos,
-      });
-    } else if (hasPronounSelected) {
-      // Pronoun selected, user typing name - hide all dropdowns
-      console.log('✏️ Pronoun selected, allowing name typing');
+    if (dropdownSuppressed) {
       setShowTagDropdown(null);
       setShowPronounDropdown(null);
-      setHashSuggestions([]);
       setContactSuggestions([]);
+      setHashSuggestions([]);
+    } else if (typingTag.type === '@') {
+      console.log('📧 Showing @ dropdown for User B');
+      setShowPronounDropdown(null);
+      setHashSuggestions([]);
+      setShowTagDropdown('@');
+
+      const userBContact = availableContacts.filter(c => c.id === resolvedContactId);
+      setContactSuggestions(userBContact);
+    } else if (typingTag.type === '#') {
+      console.log('🏷️ Showing # suggestions (description)');
+      setShowTagDropdown('#');
+      setContactSuggestions([]);
+      setShowPronounDropdown(null);
+    } else {
+      console.log('🚪 Closing all dropdowns (no active tag or space detected)');
+      setShowTagDropdown(null);
+      setShowPronounDropdown(null);
+      setContactSuggestions([]);
+      setHashSuggestions([]);
+      suppressTagDropdownRef.current.description = null;
     }
-  } else {
-    // No active tag - close all dropdowns
-    console.log('🚪 Closing all dropdowns (no active tag or space detected)');
-    setShowTagDropdown(null);
-    setShowPronounDropdown(null);
-    setContactSuggestions([]);
-    setHashSuggestions([]);
-  }
 
-  const contacts = availableContacts.map(c => ({
-    id: c.id,
-    name: c.full_name || c.email,
-  }));
+    const contacts = availableContacts.map(c => ({
+      id: c.id,
+      name: c.full_name || c.email,
+    }));
 
-  const entities = parseTaggedEntities(text, contacts);
-
-  // Handle completed # tags with pronoun assignment
-  if (pronounSelectionContext?.pendingHashTag?.includes(':')) {
-    const hashTagPattern = /#(\w+)([\s.,!?;:]|$)/g;
-    let match;
-    const processedTags = new Set<string>();
-
-    while ((match = hashTagPattern.exec(text)) !== null) {
-      const tagName = match[1];
-
-      if (processedTags.has(tagName)) continue;
-      processedTags.add(tagName);
-
-      const existingEntity = entities.find(e =>
-        e.tag === `#${tagName}` && e.preferred_pronouns
-      );
-
-      if (!existingEntity) {
-        const pronoun = pronounSelectionContext.pendingHashTag.split(':')[1];
-        const entity = createStructuredTaggedEntity(
-          `#${tagName}`,
-          tagName,
-          'unregistered',
-          undefined,
-          pronoun
-        );
-
-        entities.push(entity);
-        saveTagToEntityRegistry(entity).then(() => {
-          setPronounSelectionContext(null);
-        });
-      }
-    }
-  }
-
-  setTaggedEntities(entities);
-};
+    const entities = parseTaggedEntities(text, contacts);
+    setTaggedEntities(entities);
+    triggerHashPronounPrompt({ stage: 'description', text, entities });
+  };
 
 
   const handleContactSelect = async (contact: any) => {
     const typingTag = getLastTypingTag(initialDescription, descriptionCursorPos);
-    if (typingTag.type === '@') {
-      // Check if selected contact is the current chat contact (User B)
-    const isCurrentChatContact = contact.id === resolvedContactId;
-      const contactName = contact.full_name || contact.email;
-      
-      if (isCurrentChatContact) {
-        // Skip pronoun selection, use "you/your/yours" for User B
-        const newText = replaceTypingTag(
-          initialDescription,
-          typingTag.startPos,
-          '@',
-          contactName
-        );
-        // Clear all dropdowns first to prevent re-opening
-        setContactSuggestions([]);
-        setShowTagDropdown(null);
-        setShowPronounDropdown(null);
-        // Then update text - this will trigger handleDescriptionChange but dropdowns are already closed
-        setInitialDescription(newText);
+    if (typingTag.type !== '@') return;
 
-        // Create structured entity for User B
-        const entity = createStructuredTaggedEntity(
-          `@${contactName}`,
-          contactName,
-          'registered',
-          contact,
-          'you/your/yours',
-          true // isUserB
-        );
-        
-        // Update tagged entities
-        const contacts = availableContacts.map(c => ({
-          id: c.id,
-          name: c.full_name || c.email,
-        }));
-        const entities = parseTaggedEntities(newText, contacts);
-        
-        // Add the structured entity if not already present
-        const existingIndex = entities.findIndex(e => e.tag === entity.tag);
-        if (existingIndex >= 0) {
-          entities[existingIndex] = entity;
-        } else {
-          entities.push(entity);
-        }
-        
-        setTaggedEntities(entities);
-        
-        // Save to entity_registry
-        await saveTagToEntityRegistry(entity);
-      } else {
-        // For other registered contacts: 
-        // 1. First, insert the contact name in the text box immediately
-        const newText = replaceTypingTag(
-          initialDescription,
-          typingTag.startPos,
-          '@',
-          contactName
-        );
-        setInitialDescription(newText);
-        setContactSuggestions([]);
-        setShowTagDropdown(null);
-        
-        // Check if we already have pronouns for this contact in cache
-        const cacheKey = contactName.toLowerCase().trim();
-        const existingEntity = entityRegistryCache[cacheKey];
-        
-        if (existingEntity && existingEntity.preferred_pronouns) {
-          // Use existing pronouns - no need to show dropdown
-          const entity = createStructuredTaggedEntity(
-            `@${contactName}`,
-            contactName,
-            'registered',
-            contact,
-            existingEntity.preferred_pronouns,
-            false // isUserB
-          );
-          
-          const contacts = availableContacts.map(c => ({
-            id: c.id,
-            name: c.full_name || c.email,
-          }));
-          const entities = parseTaggedEntities(newText, contacts);
-          
-          const existingIndex = entities.findIndex(e => e.tag === `@${contactName}`);
-          if (existingIndex >= 0) {
-            entities[existingIndex] = entity;
-          } else {
-            entities.push(entity);
-          }
-          
-          setTaggedEntities(entities);
-          await saveTagToEntityRegistry(entity);
-        } else {
-          // No existing pronouns - show pronoun dropdown
-          setShowPronounDropdown('@');
-          setPronounSelectionContext({
-            stage: 'description',
-            pendingContact: contact,
-            cursorPos: typingTag.startPos,
-          });
-        }
-      }
-    }
-  };
+    const contactName = contact.full_name || contact.email || '';
+    const cacheKey = contactName.toLowerCase().trim();
+    const cachedPronoun = entityRegistryCache[cacheKey]?.preferred_pronouns ?? null;
 
-  // ✅ Updated handleHashTagSelect - called when user selects a suggested #tag
-const handleHashTagSelect = async (tag: string) => {
-  const typingTag = getLastTypingTag(initialDescription, descriptionCursorPos);
-  if (typingTag.type === '#') {
-    // If we have a pronoun selected from context, use it; otherwise use default
-    const selectedPronoun = pronounSelectionContext?.pendingHashTag?.includes(':') 
-      ? pronounSelectionContext.pendingHashTag.split(':')[1]
-      : 'they/them';
-    
-    const newText = replaceTypingTag(initialDescription, typingTag.startPos, '#', tag);
+    const newText = replaceTypingTag(initialDescription, typingTag.startPos, '@', contactName);
     setInitialDescription(newText);
-    setHashSuggestions([]);
+    setContactSuggestions([]);
     setShowTagDropdown(null);
-    setShowPronounDropdown(null);
-    setPronounSelectionContext(null);
 
-    // Create structured entity
-    const entity = createStructuredTaggedEntity(
-      `#${tag}`,
-      tag,
-      'unregistered',
-      undefined,
-      selectedPronoun
-    );
-    
-    // Update tagged entities
     const contacts = availableContacts.map(c => ({
       id: c.id,
       name: c.full_name || c.email,
     }));
     const entities = parseTaggedEntities(newText, contacts);
-    
-    // Add the structured entity
-    const existingIndex = entities.findIndex(e => e.tag === entity.tag);
-    if (existingIndex >= 0) {
-      entities[existingIndex] = entity;
-    } else {
-      entities.push(entity);
-    }
-    
-    setTaggedEntities(entities);
-    
-    // Save to entity_registry
-    await saveTagToEntityRegistry(entity);
-    
-    // Also save to user_hashtags for future suggestions
-    await saveUserHashtag(tag);
-  }
-};
 
-// ✅ Handler for pronoun selection - works across all stages
-const handlePronounSelect = async (pronoun: string) => {
-  if (!pronounSelectionContext) return;
-  
-  const { stage, pendingContact, cursorPos } = pronounSelectionContext;
-  const tagType = showPronounDropdown; // '@' or '#'
-  
-  setShowPronounDropdown(null);
-  
-  if (tagType === '@' && pendingContact) {
-    // For @ tags: Contact name is already inserted, just save with pronoun
-    const contactName = pendingContact.full_name || pendingContact.email;
-    const isCurrentChatContact = pendingContact.id === resolvedContactId;
-    
-    // Get current text and setters based on stage
-    let currentText = '';
-    let setEntitiesFn: ((entities: TaggedEntity[]) => void) | null = null;
-    
-    if (stage === 'description') {
-      currentText = initialDescription;
-      setEntitiesFn = setTaggedEntities;
-    } else if (stage === 'answer') {
-      currentText = currentAnswer;
-      setEntitiesFn = (entities) => setCurrentAnswerTags(entities);
-    } else if (stage === 'additionalInfo') {
-      currentText = additionalInfo;
-      setEntitiesFn = (entities) => setAdditionalInfoTags(entities);
-    }
-    // Note: prevAnswer and editAnswer stages can be handled similarly if needed
-    
-    if (currentText && setEntitiesFn) {
-      // Create structured entity with selected pronoun
+    if (cachedPronoun) {
       const entity = createStructuredTaggedEntity(
         `@${contactName}`,
         contactName,
         'registered',
-        pendingContact,
-        isCurrentChatContact ? 'you/your/yours' : pronoun,
-        isCurrentChatContact
+        contact,
+        cachedPronoun,
+        false
       );
-      
-      // Update tagged entities based on stage
-      const contacts = availableContacts.map(c => ({
-        id: c.id,
-        name: c.full_name || c.email,
-      }));
-      const entities = parseTaggedEntities(currentText, contacts);
+
       const existingIndex = entities.findIndex(e => e.tag === entity.tag);
       if (existingIndex >= 0) {
         entities[existingIndex] = entity;
       } else {
         entities.push(entity);
       }
-      
-      setEntitiesFn(entities);
-      
-      // Save to entity_registry
-      await saveTagToEntityRegistry(entity);
-      
-      // Clear context and dropdowns
-      if (stage === 'description') {
-        setShowTagDropdown(null);
-        setContactSuggestions([]);
-      } else if (stage === 'answer') {
-        setShowAnswerTagDropdown(null);
-        setAnswerContactSuggestions([]);
-      } else if (stage === 'additionalInfo') {
-        setShowAdditionalInfoTagDropdown(null);
-        setAdditionalInfoContactSuggestions([]);
-      }
+
+      setTaggedEntities(entities);
+      setShowPronounDropdown(null);
       setPronounSelectionContext(null);
+      return;
     }
-  } else if (tagType === '#') {
-    // For # tags: After pronoun selection, store pronoun in context
-    // User will now type the name directly
-    setPronounSelectionContext({
-      ...pronounSelectionContext,
-      pendingHashTag: `pronoun:${pronoun}`,
-    });
-    
-    // Clear dropdowns - user will type the name now
-    if (stage === 'description') {
-      setShowTagDropdown(null);
-      setHashSuggestions([]);
-    } else if (stage === 'answer') {
-      setShowAnswerTagDropdown(null);
-      setAnswerHashSuggestions([]);
-    } else if (stage === 'additionalInfo') {
-      setShowAdditionalInfoTagDropdown(null);
-      setAdditionalInfoHashSuggestions([]);
+
+    setTaggedEntities(entities);
+    setShowPronounDropdown('@');
+    setPronounSelectionContext({ stage: 'description', pendingContact: contact });
+  };
+
+  // ✅ Updated handleHashTagSelect - called when user selects a suggested #tag
+const handleHashTagSelect = async (tag: string) => {
+  const typingTag = getLastTypingTag(initialDescription, descriptionCursorPos);
+  if (typingTag.type !== '#') return;
+
+  const newText = replaceTypingTag(initialDescription, typingTag.startPos, '#', tag);
+  setInitialDescription(newText);
+  setHashSuggestions([]);
+  setShowTagDropdown(null);
+
+  const normalizedTag = tag.toLowerCase().trim();
+  const cachedPronoun = entityRegistryCache[normalizedTag]?.preferred_pronouns ?? null;
+  const contacts = availableContacts.map(c => ({
+    id: c.id,
+    name: c.full_name || c.email,
+  }));
+  const entities = parseTaggedEntities(newText, contacts);
+
+  if (cachedPronoun) {
+    const entity = createStructuredTaggedEntity(
+      `#${tag}`,
+      tag,
+      'unregistered',
+      undefined,
+      cachedPronoun
+    );
+
+    const existingIndex = entities.findIndex(e => e.tag === entity.tag);
+    if (existingIndex >= 0) {
+      entities[existingIndex] = entity;
+    } else {
+      entities.push(entity);
     }
+
+    setTaggedEntities(entities);
     setShowPronounDropdown(null);
+    setPronounSelectionContext(null);
+    await saveUserHashtag(tag);
+    return;
   }
+
+  setTaggedEntities(entities);
+  pendingHashPromptRef.current = normalizedTag;
+  setShowPronounDropdown('#');
+  setPronounSelectionContext({ stage: 'description', pendingHashTag: tag });
+};
+
+// ✅ Handler for pronoun selection - works across all stages
+const handlePronounSelect = async (pronoun: string) => {
+  if (!pronounSelectionContext) return;
+
+  const { stage, pendingContact, pendingHashTag, index } = pronounSelectionContext;
+  const tagType = showPronounDropdown;
+
+  setShowPronounDropdown(null);
+
+  let fieldText = '';
+  let commitEntities: ((entities: TaggedEntity[]) => void) | null = null;
+
+  switch (stage) {
+    case 'description':
+      fieldText = initialDescription;
+      commitEntities = setTaggedEntities;
+      break;
+    case 'answer':
+      fieldText = currentAnswer;
+      commitEntities = setCurrentAnswerTags;
+      break;
+    case 'additionalInfo':
+      fieldText = additionalInfo;
+      commitEntities = setAdditionalInfoTags;
+      break;
+    case 'editAnswer':
+      if (typeof index === 'number') {
+        fieldText = showEditMode ? (editedQAPairs[index]?.answer ?? '') : (qaPairs[index]?.answer ?? '');
+        commitEntities = setTaggedEntities;
+      } else if (showEditMode && editModeAnswerIndex !== null) {
+        fieldText = editedQAPairs[editModeAnswerIndex]?.answer ?? '';
+        commitEntities = setTaggedEntities;
+      }
+      break;
+  }
+
+  if (!fieldText || !commitEntities) {
+    setPronounSelectionContext(null);
+    return;
+  }
+
+  const contacts = availableContacts.map(c => ({
+    id: c.id,
+    name: c.full_name || c.email,
+  }));
+  const entities = parseTaggedEntities(fieldText, contacts);
+
+  if (tagType === '@' && pendingContact) {
+    const contactName = pendingContact.full_name || pendingContact.email || '';
+    const cacheKey = contactName.toLowerCase().trim();
+
+    const entity = createStructuredTaggedEntity(
+      `@${contactName}`,
+      contactName,
+      'registered',
+      pendingContact,
+      pronoun,
+      false
+    );
+
+    const existingIndex = entities.findIndex(e => e.tag === entity.tag);
+    if (existingIndex >= 0) {
+      entities[existingIndex] = entity;
+    } else {
+      entities.push(entity);
+    }
+
+    commitEntities(entities);
+    await saveTagToEntityRegistry(entity);
+    setEntityRegistryCache(prev => ({
+      ...prev,
+      [cacheKey]: {
+        preferred_pronouns: pronoun,
+        entity_name: contactName,
+      },
+    }));
+
+    setPronounSelectionContext(null);
+    setShowTagDropdown(null);
+    setShowAnswerTagDropdown(null);
+    setShowAdditionalInfoTagDropdown(null);
+    return;
+  }
+
+  if (tagType === '#') {
+    const tagName = pendingHashTag;
+    if (!tagName) {
+      setPronounSelectionContext(null);
+      return;
+    }
+
+    const entity = createStructuredTaggedEntity(
+      `#${tagName}`,
+      tagName,
+      'unregistered',
+      undefined,
+      pronoun
+    );
+
+    const existingIndex = entities.findIndex(e => e.tag === entity.tag);
+    if (existingIndex >= 0) {
+      entities[existingIndex] = entity;
+    } else {
+      entities.push(entity);
+    }
+
+    commitEntities(entities);
+    await saveTagToEntityRegistry(entity);
+    await saveUserHashtag(tagName);
+    setEntityRegistryCache(prev => ({
+      ...prev,
+      [tagName.toLowerCase().trim()]: {
+        preferred_pronouns: pronoun,
+        entity_name: tagName,
+      },
+    }));
+
+    setPronounSelectionContext(null);
+    setShowTagDropdown(null);
+    setShowAnswerTagDropdown(null);
+    setShowAdditionalInfoTagDropdown(null);
+    pendingHashPromptRef.current = null;
+    return;
+  }
+
+  setPronounSelectionContext(null);
+  pendingHashPromptRef.current = null;
 };
 
 // ✅ Helper: Save structured tag to entity_registry
@@ -1090,29 +1155,11 @@ const inferEntityCategory = (name: string): string => {
       const userBContact = availableContacts.filter(c => c.id === resolvedContactId);
       setAnswerContactSuggestions(userBContact);
     } else if (typingTag.type === '#') {
-      // Show pronoun list immediately when # is typed
-      const hasPronounSelected = pronounSelectionContext?.pendingHashTag?.includes(':');
-
-      if (!hasPronounSelected) {
-        // Show pronoun dropdown immediately - keep visible until space or selection
-        console.log('🏷️ Showing pronoun dropdown for # (answer)');
-        // Close @ dropdown first
-        setShowAnswerTagDropdown(null);
-        setAnswerContactSuggestions([]);
-        setAnswerHashSuggestions([]);
-        setShowPronounDropdown('#');
-        setPronounSelectionContext({
-          stage: 'answer',
-          cursorPos: typingTag.startPos,
-        });
-      } else if (hasPronounSelected) {
-        // Pronoun selected, user typing name - hide all dropdowns
-        console.log('✏️ Pronoun selected, allowing name typing (answer)');
-        setShowAnswerTagDropdown(null);
-        setShowPronounDropdown(null);
-        setAnswerHashSuggestions([]);
-        setAnswerContactSuggestions([]);
-      }
+      console.log('🏷️ Showing # suggestions (answer)');
+      setShowAnswerTagDropdown(null);
+      setShowPronounDropdown(null);
+      setAnswerHashSuggestions([]);
+      setAnswerContactSuggestions([]);
     } else {
       // No active tag - close all dropdowns
       console.log('🚪 Closing all dropdowns (answer)');
@@ -1129,6 +1176,7 @@ const inferEntityCategory = (name: string): string => {
 
     const entities = parseTaggedEntities(text, contacts);
     setCurrentAnswerTags(entities);
+    triggerHashPronounPrompt({ stage: 'answer', text, entities });
   };
 
   // Handle additional info text change with tagging
@@ -1148,26 +1196,11 @@ const inferEntityCategory = (name: string): string => {
       const userBContact = availableContacts.filter(c => c.id === resolvedContactId);
       setAdditionalInfoContactSuggestions(userBContact);
     } else if (typingTag.type === '#') {
-      const hasPronounSelected = pronounSelectionContext?.pendingHashTag?.includes(':');
-
-      if (!hasPronounSelected) {
-        console.log('🏷️ Showing pronoun dropdown for # (additional info)');
-        // Close @ dropdown first
-        setShowAdditionalInfoTagDropdown(null);
-        setAdditionalInfoContactSuggestions([]);
-        setAdditionalInfoHashSuggestions([]);
-        setShowPronounDropdown('#');
-        setPronounSelectionContext({
-          stage: 'additionalInfo',
-          cursorPos: typingTag.startPos,
-        });
-      } else if (hasPronounSelected) {
-        console.log('✏️ Pronoun selected, allowing name typing (additional info)');
-        setShowAdditionalInfoTagDropdown(null);
-        setShowPronounDropdown(null);
-        setAdditionalInfoHashSuggestions([]);
-        setAdditionalInfoContactSuggestions([]);
-      }
+      console.log('🏷️ Showing # suggestions (additional info)');
+      setShowAdditionalInfoTagDropdown(null);
+      setShowPronounDropdown(null);
+      setAdditionalInfoHashSuggestions([]);
+      setAdditionalInfoContactSuggestions([]);
     } else {
       console.log('🚪 Closing all dropdowns (additional info)');
       setShowAdditionalInfoTagDropdown(null);
@@ -1183,140 +1216,102 @@ const inferEntityCategory = (name: string): string => {
 
     const entities = parseTaggedEntities(text, contacts);
     setAdditionalInfoTags(entities);
-  };
-
-  // Handle completed # tags with pronoun context (similar to Stage 1)
-  const finalizeHashTagWithPronoun = (text: string, stage: string) => {
-    if (!pronounSelectionContext?.pendingHashTag?.includes(':') || pronounSelectionContext?.stage !== stage) {
-      return;
-    }
-
-    const contacts = availableContacts.map(c => ({
-      id: c.id,
-      name: c.full_name || c.email,
-    }));
-    const entities = parseTaggedEntities(text, contacts);
-      const hashTagPattern = /#(\w+)([\s.,!?;:]|$)/g;
-      let match;
-      const processedTags = new Set<string>();
-      
-      while ((match = hashTagPattern.exec(text)) !== null) {
-        const tagName = match[1];
-        if (processedTags.has(tagName)) continue;
-        processedTags.add(tagName);
-        
-        const existingEntity = entities.find(e => 
-          e.tag === `#${tagName}` && e.preferred_pronouns
-        );
-        
-        if (!existingEntity) {
-          const pronoun = pronounSelectionContext.pendingHashTag.split(':')[1];
-          const entity = createStructuredTaggedEntity(
-            `#${tagName}`,
-            tagName,
-            'unregistered',
-            undefined,
-            pronoun
-          );
-          entities.push(entity);
-          saveTagToEntityRegistry(entity).then(() => {
-            setPronounSelectionContext(null);
-          });
-        }
-      }
-
-    setCurrentAnswerTags(entities);
+    triggerHashPronounPrompt({ stage: 'additionalInfo', text, entities });
   };
 
   // Stage 2: Handle contact selection for current answer
   const handleAnswerContactSelect = async (contact: any) => {
     const typingTag = getLastTypingTag(currentAnswer, currentAnswerCursorPos);
-    if (typingTag.type === '@') {
-      const isCurrentChatContact = contact.id === resolvedContactId;
-      const contactName = contact.full_name || contact.email;
-      
-      if (isCurrentChatContact) {
-        const newText = replaceTypingTag(currentAnswer, typingTag.startPos, '@', contactName);
-        setCurrentAnswer(newText);
-        setAnswerContactSuggestions([]);
-        setShowAnswerTagDropdown(null);
-        
-        const entity = createStructuredTaggedEntity(
-          `@${contactName}`,
-          contactName,
-          'registered',
-          contact,
-          'you/your/yours',
-          true
-        );
-        
-        const contacts = availableContacts.map(c => ({
-          id: c.id,
-          name: c.full_name || c.email,
-        }));
-        const entities = parseTaggedEntities(newText, contacts);
-        const existingIndex = entities.findIndex(e => e.tag === entity.tag);
-        if (existingIndex >= 0) {
-          entities[existingIndex] = entity;
-        } else {
-          entities.push(entity);
-        }
-        setCurrentAnswerTags(entities);
-        await saveTagToEntityRegistry(entity);
-      } else {
-        const newText = replaceTypingTag(currentAnswer, typingTag.startPos, '@', contactName);
-        setCurrentAnswer(newText);
-        setAnswerContactSuggestions([]);
-        setShowAnswerTagDropdown(null);
-        
-        setShowPronounDropdown('@');
-        setPronounSelectionContext({
-          stage: 'answer',
-          pendingContact: contact,
-          cursorPos: typingTag.startPos,
-        });
-      }
-    }
-  };
+    if (typingTag.type !== '@') return;
 
-  // Stage 2: Handle hashtag selection for current answer
-  const handleAnswerHashTagSelect = async (tag: string) => {
-    const typingTag = getLastTypingTag(currentAnswer, currentAnswerCursorPos);
-    if (typingTag.type === '#') {
-      const selectedPronoun = pronounSelectionContext?.pendingHashTag?.includes(':') 
-        ? pronounSelectionContext.pendingHashTag.split(':')[1]
-        : 'they/them';
-      
-      const newText = replaceTypingTag(currentAnswer, typingTag.startPos, '#', tag);
-      setCurrentAnswer(newText);
-      setAnswerHashSuggestions([]);
-      setShowAnswerTagDropdown(null);
-      setShowPronounDropdown(null);
-      setPronounSelectionContext(null);
+    const contactName = contact.full_name || contact.email || '';
+    const cacheKey = contactName.toLowerCase().trim();
+    const cachedPronoun = entityRegistryCache[cacheKey]?.preferred_pronouns ?? null;
 
+    const newText = replaceTypingTag(currentAnswer, typingTag.startPos, '@', contactName);
+    setCurrentAnswer(newText);
+    setAnswerContactSuggestions([]);
+    setShowAnswerTagDropdown(null);
+
+    const contacts = availableContacts.map(c => ({
+      id: c.id,
+      name: c.full_name || c.email,
+    }));
+    const entities = parseTaggedEntities(newText, contacts);
+
+    if (cachedPronoun) {
       const entity = createStructuredTaggedEntity(
-        `#${tag}`,
-        tag,
-        'unregistered',
-        undefined,
-        selectedPronoun
+        `@${contactName}`,
+        contactName,
+        'registered',
+        contact,
+        cachedPronoun,
+        false
       );
-      
-      const contacts = availableContacts.map(c => ({
-        id: c.id,
-        name: c.full_name || c.email,
-      }));
-      const entities = parseTaggedEntities(newText, contacts);
+
       const existingIndex = entities.findIndex(e => e.tag === entity.tag);
       if (existingIndex >= 0) {
         entities[existingIndex] = entity;
       } else {
         entities.push(entity);
       }
+
       setCurrentAnswerTags(entities);
-      await saveTagToEntityRegistry(entity);
-      await saveUserHashtag(tag);
+      setShowPronounDropdown(null);
+      setPronounSelectionContext(null);
+      return;
     }
+
+    setCurrentAnswerTags(entities);
+    setShowPronounDropdown('@');
+    setPronounSelectionContext({ stage: 'answer', pendingContact: contact });
+  };
+
+  // Stage 2: Handle hashtag selection for current answer
+  const handleAnswerHashTagSelect = async (tag: string) => {
+    const typingTag = getLastTypingTag(currentAnswer, currentAnswerCursorPos);
+    if (typingTag.type !== '#') return;
+
+    const newText = replaceTypingTag(currentAnswer, typingTag.startPos, '#', tag);
+    setCurrentAnswer(newText);
+    setAnswerHashSuggestions([]);
+    setShowAnswerTagDropdown(null);
+
+    const normalizedTag = tag.toLowerCase().trim();
+    const cachedPronoun = entityRegistryCache[normalizedTag]?.preferred_pronouns ?? null;
+
+    const contacts = availableContacts.map(c => ({
+      id: c.id,
+      name: c.full_name || c.email,
+    }));
+    const entities = parseTaggedEntities(newText, contacts);
+
+    if (cachedPronoun) {
+      const entity = createStructuredTaggedEntity(
+        `#${tag}`,
+        tag,
+        'unregistered',
+        undefined,
+        cachedPronoun
+      );
+
+      const existingIndex = entities.findIndex(e => e.tag === entity.tag);
+      if (existingIndex >= 0) {
+        entities[existingIndex] = entity;
+      } else {
+        entities.push(entity);
+      }
+
+      setCurrentAnswerTags(entities);
+      setShowPronounDropdown(null);
+      setPronounSelectionContext(null);
+      await saveUserHashtag(tag);
+      return;
+    }
+
+    setCurrentAnswerTags(entities);
+    setShowPronounDropdown('#');
+    setPronounSelectionContext({ stage: 'answer', pendingHashTag: tag });
   };
 
   // Stage 2: Handle previous answer text change with tagging
@@ -1425,92 +1420,97 @@ const inferEntityCategory = (name: string): string => {
   // Stage 3: Handle contact selection for additional info
   const handleAdditionalInfoContactSelect = async (contact: any) => {
     const typingTag = getLastTypingTag(additionalInfo, additionalInfoCursorPos);
-    if (typingTag.type === '@') {
-      const isCurrentChatContact = contact.id === resolvedContactId;
-      const contactName = contact.full_name || contact.email;
-      
-      if (isCurrentChatContact) {
-        const newText = replaceTypingTag(additionalInfo, typingTag.startPos, '@', contactName);
-        setAdditionalInfo(newText);
-        setAdditionalInfoContactSuggestions([]);
-        setShowAdditionalInfoTagDropdown(null);
-        
-        const entity = createStructuredTaggedEntity(
-          `@${contactName}`,
-          contactName,
-          'registered',
-          contact,
-          'you/your/yours',
-          true
-        );
-        
-        const contacts = availableContacts.map(c => ({
-          id: c.id,
-          name: c.full_name || c.email,
-        }));
-        const entities = parseTaggedEntities(newText, contacts);
-        const existingIndex = entities.findIndex(e => e.tag === entity.tag);
-        if (existingIndex >= 0) {
-          entities[existingIndex] = entity;
-        } else {
-          entities.push(entity);
-        }
-        setAdditionalInfoTags(entities);
-        await saveTagToEntityRegistry(entity);
-      } else {
-        const newText = replaceTypingTag(additionalInfo, typingTag.startPos, '@', contactName);
-        setAdditionalInfo(newText);
-        setAdditionalInfoContactSuggestions([]);
-        setShowAdditionalInfoTagDropdown(null);
-        
-        setShowPronounDropdown('@');
-        setPronounSelectionContext({
-          stage: 'additionalInfo',
-          pendingContact: contact,
-          cursorPos: typingTag.startPos,
-        });
-      }
-    }
-  };
+    if (typingTag.type !== '@') return;
 
-  // Stage 3: Handle hashtag selection for additional info
-  const handleAdditionalInfoHashTagSelect = async (tag: string) => {
-    const typingTag = getLastTypingTag(additionalInfo, additionalInfoCursorPos);
-    if (typingTag.type === '#') {
-      const selectedPronoun = pronounSelectionContext?.pendingHashTag?.includes(':') 
-        ? pronounSelectionContext.pendingHashTag.split(':')[1]
-        : 'they/them';
-      
-      const newText = replaceTypingTag(additionalInfo, typingTag.startPos, '#', tag);
-      setAdditionalInfo(newText);
-      setAdditionalInfoHashSuggestions([]);
-      setShowAdditionalInfoTagDropdown(null);
-      setShowPronounDropdown(null);
-      setPronounSelectionContext(null);
+    const contactName = contact.full_name || contact.email || '';
+    const cacheKey = contactName.toLowerCase().trim();
+    const cachedPronoun = entityRegistryCache[cacheKey]?.preferred_pronouns ?? null;
 
+    const newText = replaceTypingTag(additionalInfo, typingTag.startPos, '@', contactName);
+    setAdditionalInfo(newText);
+    setAdditionalInfoContactSuggestions([]);
+    setShowAdditionalInfoTagDropdown(null);
+
+    const contacts = availableContacts.map(c => ({
+      id: c.id,
+      name: c.full_name || c.email,
+    }));
+    const entities = parseTaggedEntities(newText, contacts);
+
+    if (cachedPronoun) {
       const entity = createStructuredTaggedEntity(
-        `#${tag}`,
-        tag,
-        'unregistered',
-        undefined,
-        selectedPronoun
+        `@${contactName}`,
+        contactName,
+        'registered',
+        contact,
+        cachedPronoun,
+        false
       );
-      
-      const contacts = availableContacts.map(c => ({
-        id: c.id,
-        name: c.full_name || c.email,
-      }));
-      const entities = parseTaggedEntities(newText, contacts);
+
       const existingIndex = entities.findIndex(e => e.tag === entity.tag);
       if (existingIndex >= 0) {
         entities[existingIndex] = entity;
       } else {
         entities.push(entity);
       }
+
       setAdditionalInfoTags(entities);
-      await saveTagToEntityRegistry(entity);
-      await saveUserHashtag(tag);
+      setShowPronounDropdown(null);
+      setPronounSelectionContext(null);
+      return;
     }
+
+    setAdditionalInfoTags(entities);
+    setShowPronounDropdown('@');
+    setPronounSelectionContext({ stage: 'additionalInfo', pendingContact: contact });
+  };
+
+  // Stage 3: Handle hashtag selection for additional info
+  const handleAdditionalInfoHashTagSelect = async (tag: string) => {
+    const typingTag = getLastTypingTag(additionalInfo, additionalInfoCursorPos);
+    if (typingTag.type !== '#') return;
+
+    const newText = replaceTypingTag(additionalInfo, typingTag.startPos, '#', tag);
+    setAdditionalInfo(newText);
+    setAdditionalInfoHashSuggestions([]);
+    setShowAdditionalInfoTagDropdown(null);
+
+    const normalizedTag = tag.toLowerCase().trim();
+    const cachedPronoun = entityRegistryCache[normalizedTag]?.preferred_pronouns ?? null;
+
+    const contacts = availableContacts.map(c => ({
+      id: c.id,
+      name: c.full_name || c.email,
+    }));
+    const entities = parseTaggedEntities(newText, contacts);
+
+    if (cachedPronoun) {
+      const entity = createStructuredTaggedEntity(
+        `#${tag}`,
+        tag,
+        'unregistered',
+        undefined,
+        cachedPronoun
+      );
+
+      const existingIndex = entities.findIndex(e => e.tag === entity.tag);
+      if (existingIndex >= 0) {
+        entities[existingIndex] = entity;
+      } else {
+        entities.push(entity);
+      }
+
+      setAdditionalInfoTags(entities);
+      setShowPronounDropdown(null);
+      setPronounSelectionContext(null);
+      await saveUserHashtag(tag);
+      return;
+    }
+
+    setAdditionalInfoTags(entities);
+    pendingHashPromptRef.current = normalizedTag;
+    setShowPronounDropdown('#');
+    setPronounSelectionContext({ stage: 'additionalInfo', pendingHashTag: tag });
   };
 
   const loadExistingChat = async () => {
@@ -1838,7 +1838,7 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
           Authorization: `Bearer ${process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY}`,
         },
         body: JSON.stringify({
-          model: "claude-3-haiku-20240307",
+          model: "claude-3-5-haiku-20241022",
           max_tokens: 100,
           system: systemPrompt,
           messages: [
@@ -1977,7 +1977,7 @@ Minimum 2 questions answered. Consider sufficient if we understand: what happene
           Authorization: `Bearer ${process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY}`,
         },
         body: JSON.stringify({
-          model: "claude-3-haiku-20240307",
+          model: "claude-3-5-haiku-20241022",
           max_tokens: 100,
           system: systemPrompt,
           messages: [
@@ -2009,6 +2009,40 @@ Minimum 2 questions answered. Consider sufficient if we understand: what happene
       setLoading(false);
     }
   };
+
+  const MAX_STAGE2_QUESTION_WORDS = 12;
+  const sanitizeQuestion = (text: string) => text.replace(/\s+/g, " ").trim();
+  const countWords = (text: string) =>
+    text
+      .split(/\s+/)
+      .map((w) => w.trim())
+      .filter((w) => w.length > 0).length;
+  const isSingleQuestion = (text: string) => {
+    const cleaned = text.trim();
+    if (!cleaned) return false;
+    const questionMarks = (cleaned.match(/\?/g) || []).length;
+    if (questionMarks > 1) return false;
+    const sentenceTerminators = cleaned.match(/[.!]/g) || [];
+    if (sentenceTerminators.length > 0) return false;
+    return true;
+  };
+  const calculateSimilarity = (a: string, b: string) => {
+    const words1 = a.toLowerCase().split(/\s+/).filter(Boolean);
+    const words2 = b.toLowerCase().split(/\s+/).filter(Boolean);
+    if (words1.length === 0 || words2.length === 0) return 0;
+    const common = words1.filter((w) => words2.includes(w)).length;
+    return common / Math.max(words1.length, words2.length);
+  };
+  const isDistinctQuestion = (candidate: string, history: QAPair[]) => {
+    return !history.some((pair) => calculateSimilarity(candidate, pair.question) > 0.6);
+  };
+  const fallbackQuestions = [
+    "What felt hardest about this?",
+    "How do you want this to end?",
+    "What do you need them to know?",
+    "What would help right now?",
+    "What made this matter to you?"
+  ];
 
   const generateNextQuestion = async (pairs: QAPair[]) => {
     // Hard cap: stop generating new questions beyond 5
@@ -2057,46 +2091,71 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
 - Keep it caring and human — not robotic.`;
 
 
-      const response = await fetch(CLAUDE_EDGE_FUNCTION_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY}`,
-        },
-        body: JSON.stringify({
-          model: "claude-3-haiku-20240307",
-          max_tokens: 100,
-          system: systemPrompt,
-          messages: [
-            { role: "user", content: "Ask me the next question." },
-          ],
-        }),
-      });
+      let generatedQuestion: string | null = null;
+      let attempts = 0;
 
-      const result = await response.json();
+      while (attempts < 3 && !generatedQuestion) {
+        attempts += 1;
+        const response = await fetch(CLAUDE_EDGE_FUNCTION_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY}`,
+          },
+          body: JSON.stringify({
+            model: "claude-3-haiku-20240307",
+            max_tokens: 80,
+            system: systemPrompt,
+            messages: [
+              { role: "user", content: "Ask me the next question." },
+            ],
+          }),
+        });
 
-      if (result?.content) {
-        setCurrentQuestion(result.content);
-        setCurrentQuestionType("text");
-        setQuestionCount(questionCount + 1);
+        const result = await response.json();
+        if (!result?.content) continue;
 
-        const normalizedTitle = chatTitle.trim() || contextDataRef.current.chat_title || '';
-        await updateChatRecord(
-          {},
-          {
-            qa_pairs: pairs,
-            initial_description: initialDescription,
-            currentQuestion: result.content,
-            currentQuestionType: 'text',
-            currentAnswer: '',
-            selectedOption: null,
-            flowStage: 'qa',
-            questionCount: questionCount + 1,
-            taggedEntities,
-            chat_title: normalizedTitle,
-          }
-        );
+        let candidate = sanitizeQuestion(result.content);
+        if (!candidate.endsWith("?")) candidate = `${candidate}?`;
+
+        if (
+          countWords(candidate) <= MAX_STAGE2_QUESTION_WORDS &&
+          isSingleQuestion(candidate) &&
+          isDistinctQuestion(candidate, pairs)
+        ) {
+          generatedQuestion = candidate;
+        }
       }
+
+      if (!generatedQuestion) {
+        const fallback = fallbackQuestions.find(
+          (q) =>
+            countWords(q) <= MAX_STAGE2_QUESTION_WORDS &&
+            isDistinctQuestion(q, pairs)
+        );
+        generatedQuestion = fallback || "What matters most to you here?";
+      }
+
+      setCurrentQuestion(generatedQuestion);
+      setCurrentQuestionType("text");
+      setQuestionCount((prev) => prev + 1);
+
+      const normalizedTitle = chatTitle.trim() || contextDataRef.current.chat_title || '';
+      await updateChatRecord(
+        {},
+        {
+          qa_pairs: pairs,
+          initial_description: initialDescription,
+          currentQuestion: generatedQuestion,
+          currentQuestionType: 'text',
+          currentAnswer: '',
+          selectedOption: null,
+          flowStage: 'qa',
+          questionCount: questionCount + 1,
+          taggedEntities,
+          chat_title: normalizedTitle,
+        }
+      );
     } catch (err) {
       console.error("Failed to generate next question:", err);
       Alert.alert("Error", "Failed to generate next question.");
@@ -2168,6 +2227,33 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
   const words = text.trim().split(/\s+/);
   return words.length <= maxWords;
 };
+
+  const normalizeWhitespace = (text: string) => text.replace(/\s+/g, " ").trim();
+  const clampSentences = (text: string, maxSentences: number) => {
+    const normalized = normalizeWhitespace(text);
+    if (!normalized) return "";
+    const sentences = normalized.split(/(?<=[.!?])\s+/);
+    return sentences.slice(0, maxSentences).join(" ");
+  };
+  const clampWordCount = (text: string, maxWords: number) => {
+    const normalized = normalizeWhitespace(text);
+    if (!normalized) return "";
+    const words = normalized.split(" ");
+    return words.length <= maxWords ? normalized : words.slice(0, maxWords).join(" ");
+  };
+  const enforceSummaryConstraints = (text: string) => {
+    const constrained = clampWordCount(clampSentences(text, 2), 45);
+    return constrained || normalizeWhitespace(text);
+  };
+  const enforceThoughtsConstraints = (text: string) => {
+    let constrained = clampWordCount(clampSentences(text, 2), 35);
+    if (!constrained) constrained = normalizeWhitespace(text);
+    if (!constrained) return constrained;
+    if (!/^I\b|^I'm\b|^I'(m|ll|ve|d)\b|^I'll\b|^I've\b/i.test(constrained)) {
+      constrained = `I ${constrained.charAt(0).toLowerCase()}${constrained.slice(1)}`;
+    }
+    return constrained;
+  };
 
   const generateSummary = async (pairs: QAPair[]) => {
     setLoading(true);
@@ -2305,52 +2391,23 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
       // Accumulate ALL information: Stage 1 description + Stage 2 answers + structured context + tags
       const allContextText = `Initial Description (Stage 1):\n${initialDescription}\n\nQuestion & Answer History (Stage 2):\n${conversationHistory}${structuredAnswersText ? `\n\nStructured Context Data:\n${structuredAnswersText}` : ''}${entityContextText}`;
 
-      const systemPrompt = `You are helping someone refine and improve their personal summary. Take ALL the information provided below and create a single, polished paragraph written from their first-person perspective (as if they wrote it themselves).
+      const systemPrompt = `You are helping User A craft a crisp recap for their AI assistant. Read ALL of the context below and produce two short, polished sections that sound like User A speaking directly to the assistant.
 
-CRITICAL RULES FOR PRONOUNS AND TAGS:
+CRITICAL RULES
+1. Perspective • Always write from User A's first-person voice ("I…", "my…"). They are talking to the AI assistant about the situation.
+2. Pronouns • Refer to User B with their @tag (e.g., "@aradhya") or third-person pronouns—never "you/your". Do not invent titles. Keep User A in first person only.
+3. Tags • Reuse any @ or # tags exactly as given. Only mention third parties with a #tag if the tag already appears in the inputs. If no # tags were shared, do not create any.
+4. Brevity • Keep each section very short. Summaries must be ≤2 sentences and roughly ≤45 words. Thoughts must be 1–2 sentences and ≤35 words.
+5. Content • Capture the key points User A shared with the assistant. Make the "Thoughts" section a concise next-step reflection from User A's point of view.
 
-1. PERSPECTIVE: Write from User A's first-person perspective ("I felt...", "I want to tell you...", "My situation is...")
-
-2. PRONOUNS AND TAGS:
-   - User A (the person writing) → Use "I / me / my" ONLY (keep first-person perspective)
-   - User B (the contact) → Refer to them using their @tag (e.g., "@aradhya") or third-person pronouns based on the context. Do NOT address them as "you/your".
-   - Third-party people → Use their @/# tag ONLY if that tag already appears in the provided content. NEVER invent new names or tags. If no tag exists, refer to them generically (e.g., "a coworker") without guessing a name.
-   - CRITICAL: Replace ALL pronouns (he, she, they, them, their) with explicit tags when a tag exists in the input
-   - Example: "you were upset" → "@aradhya was upset", "she felt ignored" → "#Mom felt ignored", "they thought it was rude" → "#Vikram and #Raja thought it was rude"
-
-3. TAGS: 
-   - ALWAYS keep @ and # tags in place (e.g., "@aradhya", "#Philip", "#Team")
-   - Tags are REQUIRED for all participants except User A (who uses "I/me/my")
-   - Tags help link entities correctly for follow-up AI generation
-   - Maintain tags mid-sentence - do not simplify or drop them
-
-4. TONE:
-   - Sound natural and emotionally clear, like User A is summarizing their own situation
-   - Make it grammatically smooth and concise
-   - Not robotic or AI-like
-   - Example: "I felt hurt when @aradhya said I was jealous. #Philip and #Vikram asked why we were arguing."
-
-5. CONTENT:
-   - Accumulate ALL information from:
-     * Initial description (Stage 1)
-     * All question answers (Stage 2)
-     * Any additional/edited inputs
-     * All tagged entities and their relationships
-   - Create ONE refined, cohesive paragraph
-   - Keep it concise but emotionally clear
-
-Complete Context Information:
+Complete Context:
 ${allContextText}
 
-Generate:
-1. A refined summary paragraph under "📌 Discussion Summary" (written from User A's "I/me/my" perspective)
-2. One empathetic insight under "💡 My Thoughts"
+Generate exactly two sections in this order:
+📌 Discussion Summary — 1–2 sentences (≤45 words) summarizing what User A discussed with the AI assistant.
+💡 My Thoughts — 1–2 first-person sentences (≤35 words) describing how User A plans to handle things next.
 
-Keep total under 100 words. Write naturally. User A must speak about themselves using only "I / me / my / myself". Refer to User B in third-person (name/tag) rather than "you". For any other participants that were explicitly mentioned with # tags in the context, reuse those same # tags. Do not invent new people, names, or events.
-
-Your response MUST include both "📌 Discussion Summary" and "💡 My Thoughts" in this exact order.
-Return only two labeled sections exactly in this order:
-"📌 Discussion Summary" followed by "💡 My Thoughts" — no numbering, no bullets.`;
+Return nothing else—no extra commentary, numbering, or bullet points.`;
 
 
 
@@ -2535,11 +2592,13 @@ Return only two labeled sections exactly in this order:
   !rawContent.includes("💡 My Thoughts");
 
 
-  const summaryText = rawContent
+  const summaryTextRaw = rawContent
     .split("💡 My Thoughts")[0]
     .replace("📌 Discussion Summary", "")
     .trim();
-  const thoughtsText = rawContent.split("💡 My Thoughts")[1]?.trim() || "";
+  const thoughtsTextRaw = rawContent.split("💡 My Thoughts")[1]?.trim() || "";
+  const summaryText = enforceSummaryConstraints(summaryTextRaw);
+  const thoughtsText = enforceThoughtsConstraints(thoughtsTextRaw);
 
   if (isUnclear && !hasAggregateClarity()) {
     setSummary(summaryText || "The summary is unclear.");
@@ -2763,52 +2822,23 @@ for (const [idx, pair] of editedQAPairs.entries()) {
       // Accumulate ALL information: Stage 1 + Stage 2 (edited) + additional info + structured context + tags
       const allContextText = `Initial Description (Stage 1):\n${initialDescription}\n\nQuestion & Answer History - EDITED (Stage 2):\n${conversationHistory}${additionalContext ? `\n\nAdditional/Edited Information:\n${additionalContext}` : ''}${structuredAnswersText ? `\n\nStructured Context Data:\n${structuredAnswersText}` : ''}${entityContextText}`;
 
-      const systemPrompt = `You are helping someone refine and improve their personal summary. Take ALL the information provided below and create a single, polished paragraph written from their first-person perspective (as if they wrote it themselves).
+      const systemPrompt = `You are helping User A rewrite a concise recap for their AI assistant. Use EVERYTHING below—including edits—and respond as if User A is speaking to the assistant.
 
-CRITICAL RULES FOR PRONOUNS AND TAGS:
+CRITICAL RULES
+1. Perspective • Keep User A in first-person ("I…", "my…"). They are talking to the AI assistant about the contact.
+2. Pronouns • Refer to User B with their @tag or third-person pronouns. Never use "you/your" for User B. Do not invent titles or relationships.
+3. Tags • Reuse every @ or # tag exactly as supplied. Only reference third parties with a #tag if that tag is present in the inputs. If no # tags appear, do not invent any.
+4. Brevity • Summaries must be ≤2 sentences (≈45 words). Thoughts must be 1–2 sentences (≤35 words) giving User A's short plan or mindset.
+5. Content • Capture what User A told the assistant. Make "Thoughts" a forward-looking first-person reflection.
 
-1. PERSPECTIVE: Write from User A's first-person perspective ("I felt...", "I want to tell you...", "My situation is...")
-
-2. PRONOUNS AND TAGS:
-   - User A (the person writing) → Use "I / me / my" ONLY (keep first-person perspective)
-   - User B (the contact) → Refer to them using their @tag (e.g., "@aradhya") or third-person pronouns, not as "you/your".
-   - Third-party people → Use their @/# tag ONLY if that tag already appears in the provided content. NEVER invent new names or tags. If no tag exists, refer to them generically (e.g., "a coworker") without guessing a name.
-   - CRITICAL: Replace ALL pronouns (he, she, they, them, their) with explicit tags when a tag exists in the input
-   - Example: "you were upset" → "@aradhya was upset", "she felt ignored" → "#Mom felt ignored", "they thought it was rude" → "#Vikram and #Raja thought it was rude"
-
-3. TAGS: 
-   - ALWAYS keep @ and # tags in place (e.g., "@aradhya", "#Philip", "#Team")
-   - Tags are REQUIRED for all participants except User A (who uses "I/me/my")
-   - Tags help link entities correctly for follow-up AI generation
-   - Maintain tags mid-sentence - do not simplify or drop them
-
-4. TONE:
-   - Sound natural and emotionally clear, like User A is summarizing their own situation
-   - Make it grammatically smooth and concise
-   - Not robotic or AI-like
-   - Example: "I felt hurt when @aradhya said I was jealous. #Philip and #Vikram asked why we were arguing."
-
-5. CONTENT:
-   - Accumulate ALL information from:
-     * Initial description (Stage 1)
-     * All edited question answers (Stage 2)
-     * Any additional/edited inputs
-     * All tagged entities and their relationships
-   - Create ONE refined, cohesive paragraph
-   - Keep it concise but emotionally clear
-
-Complete Context Information (including edits):
+Complete Context (including edits):
 ${allContextText}
 
-Generate:
-1. A refined summary paragraph under "📌 Discussion Summary" (written from User A's "I/me/my" perspective)
-2. One empathetic insight under "💡 My Thoughts"
+Return exactly two sections in the order below:
+📌 Discussion Summary — 1–2 sentences (≤45 words) summarizing User A's discussion with the assistant.
+💡 My Thoughts — 1–2 first-person sentences (≤35 words) describing how User A intends to handle things.
 
-Keep total under 100 words. Write naturally. User A must speak about themselves using only "I / me / my / myself". Refer to User B using their name/tag or third-person pronouns, not as "you". For any other participants that were explicitly mentioned with # tags in the context, reuse those same # tags. Do not invent new people, names, or events.
-
-Your response MUST include both "📌 Discussion Summary" and "💡 My Thoughts" in this exact order.
-Return only two labeled sections exactly in this order:
-"📌 Discussion Summary" followed by "💡 My Thoughts" — no numbering, no bullets.`;
+No extra text, numbering, or bullet points.`;
 
       const response = await fetch(CLAUDE_EDGE_FUNCTION_URL, {
         method: "POST",
@@ -2990,11 +3020,13 @@ Return only two labeled sections exactly in this order:
   !rawContent.includes("💡 My Thoughts");
 
 
-  const summaryText = rawContent
+  const summaryTextRaw = rawContent
     .split("💡 My Thoughts")[0]
     .replace("📌 Discussion Summary", "")
     .trim();
-  const thoughtsText = rawContent.split("💡 My Thoughts")[1]?.trim() || "";
+  const thoughtsTextRaw = rawContent.split("💡 My Thoughts")[1]?.trim() || "";
+  const summaryText = enforceSummaryConstraints(summaryTextRaw);
+  const thoughtsText = enforceThoughtsConstraints(thoughtsTextRaw);
 
   if (isUnclear && !hasAggregateClarity()) {
     setSummary(summaryText || "The summary is unclear.");
@@ -3364,219 +3396,209 @@ Respond ONLY with valid JSON:
   };
 
   const renderWelcomeStage = () => (
-  <View style={styles.stageContainer}>
-    <View style={styles.headerSection}>
-      <Sparkles size={36} color={Colors.primary[500]} />
-      <Text style={styles.stageTitle}>Stage 1 – Set the Scene</Text>
-      <Text style={styles.stageSubtitle}>
-        Give this chat a short title and share what's happening with{" "}
-        <Text style={styles.contactName}>
-          {contact?.full_name || contact?.email}
-        </Text>
-        .
-      </Text>
-      <Text style={styles.stageDescription}>
-        Tell me what happened so I can help shape the opener.
-      </Text>
-    </View>
-
-    {/* Text Input + Dropdown Wrapper */}
-    <View style={styles.inputGroup}>
-      <Text style={styles.inputLabel}>Chat title</Text>
-      <TextInput
-        style={styles.titleInput}
-        value={chatTitle}
-        onChangeText={setChatTitle}
-        placeholder="Give this chat a short title (e.g. Weekend mix-up reset)"
-        placeholderTextColor={Colors.text.tertiary}
-        maxLength={80}
-        autoCapitalize="sentences"
-        returnKeyType="done"
-      />
-      <Text style={styles.inputHelper}>Helps you spot it later in AI prep and shared chat lists.</Text>
-    </View>
-
-    <View style={{ position: "relative", width: "100%" }}>
-      <TextInput
-      style={styles.descriptionInput}
-      value={initialDescription}
-      onChangeText={(text) => {
-        const tokensUsed = Math.round(text.trim().split(/\s+/).length * 1.5);
-        if (tokensUsed <= 150) {
-          handleDescriptionChange(text);
-        } else {
-          // Block further typing when limit reached (no alert spam)
-        }
-      }}
-      onSelectionChange={(event) => {
-        setDescriptionCursorPos(event.nativeEvent.selection.start);
-      }}
-      placeholder="Tell me what happened… (use @ or # tags if helpful)"
-      placeholderTextColor={Colors.text.tertiary}
-      multiline
-      maxLength={800}
-    />
-
-
-    {/* Pronoun Dropdown */}
-    {showPronounDropdown && (
-      <View style={styles.tagDropdownContainer}>
-        <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled={true}>
-          <Text style={styles.tagDropdownHeader}>
-            Select Pronouns
-          </Text>
-          {(showPronounDropdown === '#' 
-            ? ['he/him', 'she/her', 'they/them', 'it/its']
-            : ['he/him', 'she/her', 'they/them']
-          ).map((pronoun) => (
-            <TouchableOpacity
-              key={pronoun}
-              style={styles.tagItem}
-              onPress={() => handlePronounSelect(pronoun)}
-            >
-              <View style={[styles.tagIndicator, { backgroundColor: Colors.primary[100] }]}>
-                <Text style={{ fontSize: 12, color: Colors.primary[600] }}>⚧</Text>
-              </View>
-              <Text style={styles.tagName}>{pronoun}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
-    )}
-
-    {/* @ Dropdown */}
-    {showTagDropdown === '@' && contactSuggestions.length > 0 && (
-      <View style={styles.tagDropdownContainer}>
-        <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled={true}>
-          <Text style={styles.tagDropdownHeader}>
-            <AtSign size={12} color={Colors.primary[600]} /> Registered Contacts
-          </Text>
-          {contactSuggestions.map((c) => (
-            <TouchableOpacity
-              key={c.id}
-              style={styles.tagItem}
-              onPress={() => handleContactSelect(c)}
-            >
-              <View style={[styles.tagIndicator, { backgroundColor: Colors.primary[100] }]}>
-                <AtSign size={12} color={Colors.primary[600]} />
-              </View>
-              <Text style={styles.tagName}>{c.full_name || c.email}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
-    )}
-
-    {/* # Dropdown */}
-    {showTagDropdown === '#' && hashSuggestions.length > 0 && (
-      <View style={styles.tagDropdownContainer}>
-        <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled={true}>
-          <Text style={styles.tagDropdownHeader}>
-            <Hash size={12} color={Colors.warning[600]} /> People/Groups (not in app)
-          </Text>
-          {hashSuggestions.map((tag, idx) => (
-            <TouchableOpacity
-              key={idx}
-              style={styles.tagItem}
-              onPress={() => handleHashTagSelect(tag)}
-            >
-              <View style={[styles.tagIndicator, { backgroundColor: Colors.warning[100] }]}>
-                <Hash size={12} color={Colors.warning[600]} />
-              </View>
-              <Text style={styles.tagName}>#{tag}</Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
-    )}
-  </View>
-
-  <View style={{ marginTop: 4, alignItems: "flex-end" }}>
-    <Text
-    style={[
-      styles.tokenCounter,
-      Math.max(0, 150 - Math.round(initialDescription.trim().split(/\s+/).length * 1.5)) === 0
-        ? { color: Colors.error[600] }
-        : { color: Colors.success[600] },
-    ]}
-  >
-  {Math.max(0, 150 - Math.round(initialDescription.trim().split(/\s+/).length * 1.5))} tokens to play with ✨
-</Text>
-
-
-    {initialDescription.trim().split(/\s+/).length > 100 && (
-      <Text
-        style={{
-          fontSize: Typography.fontSize.xs,
-          color:
-            initialDescription.trim().split(/\s+/).length > 100
-              ? Colors.error[600]
-              : Colors.warning[600],
-          fontStyle: "italic",
-        }}
+    <View style={styles.stageContainer}>
+      <ScrollView
+        style={styles.stageScroll}
+        contentContainerStyle={styles.stageContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
       >
-        {initialDescription.trim().split(/\s+/).length > 100
-          ? "Let's keep it breezy ❤️"
-          : "Short & sweet keeps the vibe 💛"}
-      </Text>
-    )}
-  </View>
+        <View style={styles.headerSection}>
+          <Sparkles size={36} color={Colors.primary[500]} />
+          <Text style={styles.stageTitle}>Stage 1 – Set the Scene</Text>
+          <Text style={styles.stageSubtitle}>
+            Give this chat a short title and share what's happening with{" "}
+            <Text style={styles.contactName}>
+              {contact?.full_name || contact?.email}
+            </Text>
+            .
+          </Text>
+          <Text style={styles.stageDescription}>
+            Tell me what happened so I can help shape the opener.
+          </Text>
+        </View>
 
+        <View style={styles.inputGroup}>
+          <Text style={styles.inputLabel}>Chat title</Text>
+          <TextInput
+            style={styles.titleInput}
+            value={chatTitle}
+            onChangeText={setChatTitle}
+            placeholder="Give this chat a short title (e.g. Weekend mix-up reset)"
+            placeholderTextColor={Colors.text.tertiary}
+            maxLength={80}
+            autoCapitalize="sentences"
+            returnKeyType="done"
+          />
+          <Text style={styles.inputHelper}>
+            Helps you spot it later in AI prep and shared chat lists.
+          </Text>
+        </View>
 
+        <View style={styles.descriptionWrapper}>
+          <TextInput
+            style={styles.descriptionInput}
+            value={initialDescription}
+            onChangeText={(text) => {
+              const tokensUsed = Math.round(text.trim().split(/\s+/).length * 1.5);
+              if (tokensUsed <= 150) {
+                handleDescriptionChange(text);
+              }
+            }}
+            onSelectionChange={(event) => {
+              setDescriptionCursorPos(event.nativeEvent.selection.start);
+            }}
+            placeholder="Tell me what happened… (use @ or # tags if helpful)"
+            placeholderTextColor={Colors.text.tertiary}
+            multiline
+            maxLength={800}
+          />
 
+          {showPronounDropdown && (
+            <View style={styles.tagDropdownContainer}>
+              <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled>
+                <Text style={styles.tagDropdownHeader}>Select Pronouns</Text>
+                {(showPronounDropdown === '#'
+                  ? ['he/him', 'she/her', 'they/them', 'it/its']
+                  : ['he/him', 'she/her', 'they/them']
+                ).map((pronoun) => (
+                  <TouchableOpacity
+                    key={pronoun}
+                    style={styles.tagItem}
+                    onPress={() => handlePronounSelect(pronoun)}
+                  >
+                    <View style={[styles.tagIndicator, { backgroundColor: Colors.primary[100] }]}>
+                      <Text style={{ fontSize: 12, color: Colors.primary[600] }}>⚧</Text>
+                    </View>
+                    <Text style={styles.tagName}>{pronoun}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
 
+          {showTagDropdown === '@' && contactSuggestions.length > 0 && (
+            <View style={styles.tagDropdownContainer}>
+              <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled>
+                <Text style={styles.tagDropdownHeader}>
+                  <AtSign size={12} color={Colors.primary[600]} /> Registered Contacts
+                </Text>
+                {contactSuggestions.map((c) => (
+                  <TouchableOpacity
+                    key={c.id}
+                    style={styles.tagItem}
+                    onPress={() => handleContactSelect(c)}
+                  >
+                    <View style={[styles.tagIndicator, { backgroundColor: Colors.primary[100] }]}>
+                      <AtSign size={12} color={Colors.primary[600]} />
+                    </View>
+                    <Text style={styles.tagName}>{c.full_name || c.email}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
 
-    
-   {/* bottom buttons */}
-  <View style={styles.buttonColumn}>
-    <TouchableOpacity
-      style={[styles.fullWidthButton, styles.secondaryButton]}
-      onPress={() => router.push('/(tabs)/chats')}
-    >
-      <Text style={styles.secondaryButtonText}>Go to Chats Home</Text>
-    </TouchableOpacity>
+          {showTagDropdown === '#' && hashSuggestions.length > 0 && (
+            <View style={styles.tagDropdownContainer}>
+              <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled>
+                <Text style={styles.tagDropdownHeader}>
+                  <Hash size={12} color={Colors.warning[600]} /> People/Groups (not in app)
+                </Text>
+                {hashSuggestions.map((tag, idx) => (
+                  <TouchableOpacity
+                    key={idx}
+                    style={styles.tagItem}
+                    onPress={() => handleHashTagSelect(tag)}
+                  >
+                    <View style={[styles.tagIndicator, { backgroundColor: Colors.warning[100] }]}>
+                      <Hash size={12} color={Colors.warning[600]} />
+                    </View>
+                    <Text style={styles.tagName}>#{tag}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+        </View>
 
-    <TouchableOpacity
-      style={[styles.fullWidthButton, styles.secondaryButton]}
-      onPress={() => router.push('/(tabs)/soulroom')}
-    >
-      <Text style={styles.secondaryButtonText}>Open Soulroom</Text>
-    </TouchableOpacity>
+        <View style={styles.helperSummary}>
+          <Text
+            style={[
+              styles.tokenCounter,
+              Math.max(0, 150 - Math.round(initialDescription.trim().split(/\s+/).length * 1.5)) === 0
+                ? { color: Colors.error[600] }
+                : { color: Colors.success[600] },
+            ]}
+          >
+            {Math.max(0, 150 - Math.round(initialDescription.trim().split(/\s+/).length * 1.5))} tokens to play with ✨
+          </Text>
 
-    <TouchableOpacity
-      style={[styles.fullWidthButton, styles.secondaryButton]}
-      onPress={() => router.push("/(tabs)/contacts?mode=ai_chat")}
-    >
-      <Text style={styles.secondaryButtonText}>Choose Different Contact</Text>
-    </TouchableOpacity>
+          {initialDescription.trim().split(/\s+/).length > 100 && (
+            <Text style={styles.helperHint}>
+              {initialDescription.trim().split(/\s+/).length > 100
+                ? "Let's keep it breezy ❤️"
+                : "Short & sweet keeps the vibe 💛"}
+            </Text>
+          )}
+        </View>
+      </ScrollView>
 
-    <TouchableOpacity
-      style={[styles.fullWidthButton, styles.primaryButton, loading && styles.primaryButtonDisabled]}
-      onPress={handleWelcomeSubmit}
-      disabled={loading || !initialDescription.trim()}
-    >
-      {loading ? (
-        <ActivityIndicator color="#fff" />
-      ) : (
-        <Text style={styles.primaryButtonText}>Continue</Text>
-      )}
-    </TouchableOpacity>
-  </View>
+      <View style={styles.stageFooter}>
+        <View style={styles.buttonColumn}>
+          <TouchableOpacity
+            style={[styles.fullWidthButton, styles.secondaryButton]}
+            onPress={() => router.push('/(tabs)/chats')}
+          >
+            <Text style={styles.secondaryButtonText}>Go to Chats Home</Text>
+          </TouchableOpacity>
 
-  </View>
-);
+          <TouchableOpacity
+            style={[styles.fullWidthButton, styles.secondaryButton]}
+            onPress={() => router.push('/(tabs)/soulroom')}
+          >
+            <Text style={styles.secondaryButtonText}>Open Soulroom</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.fullWidthButton, styles.secondaryButton]}
+            onPress={() => router.push("/(tabs)/contacts?mode=ai_chat")}
+          >
+            <Text style={styles.secondaryButtonText}>Choose Different Contact</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.fullWidthButton, styles.primaryButton, loading && styles.primaryButtonDisabled]}
+            onPress={handleWelcomeSubmit}
+            disabled={loading || !initialDescription.trim()}
+          >
+            {loading ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={styles.primaryButtonText}>Continue</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  );
 
 
   const renderQAStage = () => (
     <View style={styles.stageContainer}>
-      <View style={styles.headerSection}>
+      <View style={[styles.headerSection, styles.stageHeaderInset]}>
         <Text style={styles.stageTitle}>Stage 2 – Fill in the Gaps ({questionCount}/5)</Text>
         <Text style={styles.stageSubtitle}>
           I'll toss a few easy prompts to round out the story.
         </Text>
       </View>
 
-      <ScrollView style={styles.qaPairsContainer}>
+      <ScrollView
+        style={styles.qaPairsContainer}
+        contentContainerStyle={styles.qaPairsContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
         {qaPairs.map((pair, index) => (
           <View key={index} style={styles.qaCardVertical}>
             <View style={styles.questionSection}>
@@ -3646,6 +3668,41 @@ Respond ONLY with valid JSON:
                           updated[index].answer = newText;
                           setQAPairs(updated);
                           setPrevAnswerHashSuggestions([]);
+                          const normalizedTag = tag.toLowerCase().trim();
+                          const cachedPronoun = entityRegistryCache[normalizedTag]?.preferred_pronouns ?? null;
+
+                          const contacts = availableContacts.map(c => ({
+                            id: c.id,
+                            name: c.full_name || c.email,
+                          }));
+                          const entities = parseTaggedEntities(newText, contacts);
+
+                          if (cachedPronoun) {
+                            const entity = createStructuredTaggedEntity(
+                              `#${tag}`,
+                              tag,
+                              'unregistered',
+                              undefined,
+                              cachedPronoun
+                            );
+
+                            const existingIndex = entities.findIndex(e => e.tag === entity.tag);
+                            if (existingIndex >= 0) {
+                              entities[existingIndex] = entity;
+                            } else {
+                              entities.push(entity);
+                            }
+
+                            setTaggedEntities(entities);
+                            setShowPronounDropdown(null);
+                            setPronounSelectionContext(null);
+                            void saveUserHashtag(tag);
+                          } else {
+                            setTaggedEntities(entities);
+                            setShowPronounDropdown('#');
+                            setPronounSelectionContext({ stage: 'editAnswer', pendingHashTag: tag, index });
+                          }
+
                           setEditingAnswerIndex(null);
                         }
                       }}
@@ -3847,7 +3904,7 @@ Respond ONLY with valid JSON:
       </ScrollView>
 
     {/* bottom buttons */}
-<View style={styles.qaButtonSection}>
+<View style={[styles.stageFooter, styles.qaButtonSection]}>
   <View style={styles.buttonRow}>
     <TouchableOpacity
       style={[styles.secondaryButton, styles.halfButton]}
@@ -3937,375 +3994,384 @@ Respond ONLY with valid JSON:
     </View>
   );
 
-  const renderSummaryStage = () => (
-    <View style={styles.stageContainer}>
-      <View style={styles.headerSection}>
-        <Text style={styles.stageTitle}>Stage 3 – Your Recap</Text>
-        <Text style={styles.stageSubtitle}>
-          Here's a gentle snapshot of what you've shared.
+  const renderSummaryStage = () => {
+    const quickTipContent = isSummaryUnclear ? (
+      <View style={styles.quickTipBox}>
+        <Text style={styles.quickTipTitle}>Let's tighten a couple things</Text>
+        <Text style={styles.quickTipText}>
+          A few bits still feel fuzzy—tweak these spots:
         </Text>
-        {/* Small quick-link back to Stage 1 */}
-        <TouchableOpacity onPress={restartFlowToInitial} style={styles.smallLinkButton}>
-          <Text style={styles.smallLinkButtonText}>Revisit Stage 1</Text>
-        </TouchableOpacity>
+        {qaPairs.map((p, i) => {
+          const t = (p.answer || '').trim();
+          const looksWeak = t.length < 3 || !/[a-zA-Z]/.test(t) || /^[-_.!@#$%^&*()+=\d\s]+$/.test(t);
+          return looksWeak ? (
+            <Text key={i} style={styles.quickTipItem}>• Answer #{i + 1}</Text>
+          ) : null;
+        })}
+        {additionalInfo.trim().length > 0 && (additionalInfo.trim().split(/\s+/).length < 3) && (
+          <Text style={styles.quickTipItem}>• Additional Information</Text>
+        )}
+        <Text style={styles.quickTipHint}>Polish the pieces above, then tap Regenerate Summary.</Text>
       </View>
-
-      {isSummaryUnclear && (
-        <View style={styles.quickTipBox}>
-          <Text style={styles.quickTipTitle}>Let's tighten a couple things</Text>
-          <Text style={styles.quickTipText}>
-            A few bits still feel fuzzy—tweak these spots:
-          </Text>
-          {qaPairs.map((p, i) => {
-            const t = (p.answer || '').trim();
-            const looksWeak = t.length < 3 || !/[a-zA-Z]/.test(t) || /^[-_.!@#$%^&*()+=\d\s]+$/.test(t);
-            return looksWeak ? (
-              <Text key={i} style={styles.quickTipItem}>• Answer #{i + 1}</Text>
-            ) : null;
-          })}
-          {additionalInfo.trim().length > 0 && (additionalInfo.trim().split(/\s+/).length < 3) && (
-            <Text style={styles.quickTipItem}>• Additional Information</Text>
-          )}
-          <Text style={styles.quickTipHint}>Polish the pieces above, then tap Regenerate Summary.</Text>
-        </View>
-      )}
-
+    ) : null;
+  
+    const summaryCardContent = (
       <View style={styles.summaryCard}>
         <Text style={styles.summaryLabel}>📌 Discussion Summary</Text>
         <Text style={styles.summaryText}>{summary}</Text>
-
+  
         <Text style={styles.summaryLabel}>💡 My Thoughts</Text>
         <Text style={styles.summaryText}>{thoughts}</Text>
       </View>
-
-      {isSummaryUnclear ? (
-  <>
-    <Text style={styles.warningText}>
-      ⚠️ I need a clearer purpose before we jump to Launch Time.
-    </Text>
-    <View style={styles.buttonRow}>
-      {(() => {
-        const meaningfulCount = qaPairs.filter(p => {
-          const t = (p.answer || '').trim();
-          return t.length >= 3 && /[a-zA-Z]/.test(t) && !/^[-_.!@#$%^&*()+=\d\s]+$/.test(t);
-        }).length;
-        const shouldShowRefine = isSummaryUnclear && !hasAggregateClarity() && meaningfulCount < 2;
-        return shouldShowRefine ? (
+    );
+  
+    const unclearActions = (
+      <>
+        <Text style={styles.warningText}>
+          ⚠️ I need a clearer purpose before we jump to Launch Time.
+        </Text>
+        <View style={styles.buttonRow}>
+          {(() => {
+            const meaningfulCount = qaPairs.filter(p => {
+              const t = (p.answer || '').trim();
+              return t.length >= 3 && /[a-zA-Z]/.test(t) && !/^[-_.!@#$%^&*()+=\d\s]+$/.test(t);
+            }).length;
+            const shouldShowRefine = isSummaryUnclear && !hasAggregateClarity() && meaningfulCount < 2;
+            return shouldShowRefine ? (
+              <TouchableOpacity
+                style={styles.secondaryButton}
+                onPress={() => setFlowStage("qa")}
+              >
+                <Text style={styles.secondaryButtonText}>Revisit answers</Text>
+              </TouchableOpacity>
+            ) : null;
+          })()}
           <TouchableOpacity
             style={styles.secondaryButton}
-            onPress={() => setFlowStage("qa")}
+            onPress={() => router.push('/ai-assistant')}
           >
-            <Text style={styles.secondaryButtonText}>Revisit answers</Text>
+            <Text style={styles.secondaryButtonText}>Save for later</Text>
           </TouchableOpacity>
-        ) : null;
-      })()}
-      <TouchableOpacity
-        style={styles.secondaryButton}
-        onPress={() => router.push('/ai-assistant')}
-      >
-        <Text style={styles.secondaryButtonText}>Save for later</Text>
-      </TouchableOpacity>
-    </View>
-  </>
-) : showEditMode ? (
-  <View style={styles.editModeContainer}>
-    <Text style={styles.editModeTitle}>Edit Your Answers</Text>
-
-    <ScrollView
-      ref={editScrollViewRef}
-      style={styles.editScrollView}
-      contentContainerStyle={styles.editScrollViewContent}
-    >
-      {editedQAPairs.map((pair, index) => (
-        <View key={index} style={styles.editQACard}>
-          <Text style={styles.editQuestionText}>{pair.question}</Text>
-
-          {/* Tag Dropdown for Edit Mode Answers - @ */}
-          {editModeAnswerIndex === index && editModeContactSuggestions.length > 0 && (
-            <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled={true}>
-              <Text style={styles.tagDropdownHeader}>
-                <AtSign size={12} color={Colors.primary[600]} /> Registered Contacts
-              </Text>
-              {editModeContactSuggestions.map((contact) => (
-                <TouchableOpacity
-                  key={contact.id}
-                  style={styles.tagItem}
-                  onPress={() => {
-                    const cursorPos = editModeCursorPos[index] || 0;
-                    const typingTag = getLastTypingTag(pair.answer, cursorPos);
-                    if (typingTag.type === '@') {
-                      const newText = replaceTypingTag(
-                        pair.answer,
-                        typingTag.startPos,
-                        '@',
-                        contact.full_name || contact.email
-                      );
-                      const updated = [...editedQAPairs];
-                      updated[index].answer = newText;
-                      setEditedQAPairs(updated);
-                      setEditModeContactSuggestions([]);
-                      setEditModeAnswerIndex(null);
-                    }
-                  }}
-                >
-                  <View style={[styles.tagIndicator, { backgroundColor: Colors.primary[100] }]}>
-                    <AtSign size={12} color={Colors.primary[600]} />
-                  </View>
-                  <Text style={styles.tagName}>{contact.full_name || contact.email}</Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          )}
-
-          {/* Tag Dropdown for Edit Mode Answers - # */}
-          {editModeAnswerIndex === index && editModeHashSuggestions.length > 0 && (
-            <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled={true}>
-              <Text style={styles.tagDropdownHeader}>
-                <Hash size={12} color={Colors.warning[600]} /> People/Groups (not in app)
-              </Text>
-              {editModeHashSuggestions.map((tag, tagIdx) => (
-                <TouchableOpacity
-                  key={tagIdx}
-                  style={styles.tagItem}
-                  onPress={() => {
-                    const cursorPos = editModeCursorPos[index] || 0;
-                    const typingTag = getLastTypingTag(pair.answer, cursorPos);
-                    if (typingTag.type === '#') {
-                      const newText = replaceTypingTag(
-                        pair.answer,
-                        typingTag.startPos,
-                        '#',
-                        tag
-                      );
-                      const updated = [...editedQAPairs];
-                      updated[index].answer = newText;
-                      setEditedQAPairs(updated);
-                      setEditModeHashSuggestions([]);
-                      setEditModeAnswerIndex(null);
-                    }
-                  }}
-                >
-                  <View style={[styles.tagIndicator, { backgroundColor: Colors.warning[100] }]}>
-                    <Hash size={12} color={Colors.warning[600]} />
-                  </View>
-                  <Text style={styles.tagName}>#{tag}</Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          )}
-
-          <TextInput
-            style={styles.editAnswerInput}
-            value={pair.answer}
-            onChangeText={(text) => handleEditAnswerWithTags(index, text)}
-            onSelectionChange={(event) => {
-              setEditModeCursorPos({...editModeCursorPos, [index]: event.nativeEvent.selection.start});
-            }}
-            multiline
-            placeholder="Edit your answer (use @ or #)..."
-          />
-
-          <View style={{ marginTop: 4, alignItems: "flex-end" }}>
-            <Text
-              style={[
-                styles.tokenCounter,
-                Math.max(0, 20 - Math.round((pair.answer?.trim() ? pair.answer.trim().split(/\s+/).length : 0) * (20/15))) === 0
-                  ? { color: Colors.error[600] }
-                  : { color: Colors.success[600] },
-              ]}
-            >
-              {Math.max(0, 20 - Math.round((pair.answer?.trim() ? pair.answer.trim().split(/\s+/).length : 0) * (20/15)))}
-            </Text>
-          </View>
         </View>
-      ))}
-
-      <View style={styles.additionalInfoSection}>
-        <Text style={styles.additionalInfoLabel}>
-          Additional Information (Optional - use @ or # tags)
-        </Text>
-
-        {/* Pronoun Dropdown for Additional Info */}
-        {showPronounDropdown && pronounSelectionContext?.stage === 'additionalInfo' && (
-          <View style={styles.tagDropdownContainer}>
-            <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled={true}>
-              <Text style={styles.tagDropdownHeader}>
-                Select Pronouns
-              </Text>
-              {(showPronounDropdown === '#' 
-                ? ['he/him', 'she/her', 'they/them', 'it/its']
-                : ['he/him', 'she/her', 'they/them']
-              ).map((pronoun) => (
-                <TouchableOpacity
-                  key={pronoun}
-                  style={styles.tagItem}
-                  onPress={() => handlePronounSelect(pronoun)}
-                >
-                  <View style={[styles.tagIndicator, { backgroundColor: Colors.primary[100] }]}>
-                    <Text style={{ fontSize: 12, color: Colors.primary[600] }}>⚧</Text>
-                  </View>
-                  <Text style={styles.tagName}>{pronoun}</Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
-        )}
-
-        {/* Tag Dropdown for Additional Info - @ */}
-        {showAdditionalInfoTagDropdown === '@' && additionalInfoContactSuggestions.length > 0 && (
-          <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled={true}>
-            <Text style={styles.tagDropdownHeader}>
-              <AtSign size={12} color={Colors.primary[600]} /> Registered Contacts
-            </Text>
-            {additionalInfoContactSuggestions.map((contact) => (
-              <TouchableOpacity
-                key={contact.id}
-                style={styles.tagItem}
-                onPress={() => handleAdditionalInfoContactSelect(contact)}
-              >
-                <View style={[styles.tagIndicator, { backgroundColor: Colors.primary[100] }]}>
-                  <AtSign size={12} color={Colors.primary[600]} />
-                </View>
-                <Text style={styles.tagName}>{contact.full_name || contact.email}</Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        )}
-
-        {/* Tag Dropdown for Additional Info - # */}
-        {showAdditionalInfoTagDropdown === '#' && additionalInfoHashSuggestions.length > 0 && (
-          <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled={true}>
-            <Text style={styles.tagDropdownHeader}>
-              <Hash size={12} color={Colors.warning[600]} /> People/Groups (not in app)
-            </Text>
-            {additionalInfoHashSuggestions.map((tag, idx) => (
-              <TouchableOpacity
-                key={idx}
-                style={styles.tagItem}
-                onPress={() => handleAdditionalInfoHashTagSelect(tag)}
-              >
-                <View style={[styles.tagIndicator, { backgroundColor: Colors.warning[100] }]}>
-                  <Hash size={12} color={Colors.warning[600]} />
-                </View>
-                <Text style={styles.tagName}>#{tag}</Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        )}
-
-        <TextInput
-  style={styles.additionalInfoInput}
-  value={additionalInfo}
-  onChangeText={(text) => {
-    // Enforce ~20 token budget for additional info
-    const words = text.trim().split(/\s+/);
-    const tokensUsed = Math.round(words.length * (20/15));
-    if (tokensUsed > 20) {
-      const maxWords = Math.floor(20 / (20/15)); // ~15 words
-      handleAdditionalInfoChange(words.slice(0, maxWords).join(' '));
-    } else {
-      handleAdditionalInfoChange(text);
-    }
-  }}
-  onSelectionChange={(event) => {
-    setAdditionalInfoCursorPos(event.nativeEvent.selection.start);
-  }}
-  placeholder="Add short note (up to ~20 tokens)…"
-  placeholderTextColor={Colors.text.tertiary}
-  multiline
-  numberOfLines={1}
-  maxLength={200}
-/>
-
-        <View style={{ marginTop: 4, alignItems: "flex-end" }}>
-          <Text
-            style={[
-              styles.tokenCounter,
-              Math.max(0, 20 - Math.round((additionalInfo.trim() ? additionalInfo.trim().split(/\s+/).length : 0) * (20/15))) === 0
-                ? { color: Colors.error[600] }
-                : { color: Colors.success[600] },
-            ]}
-          >
-            {Math.max(0, 20 - Math.round((additionalInfo.trim() ? additionalInfo.trim().split(/\s+/).length : 0) * (20/15)))}
-          </Text>
-        </View>
-
-
-      </View>
-    </ScrollView>
-
-    <View style={styles.buttonColumn}>
-  <TouchableOpacity
-    style={[styles.fullWidthButton, styles.secondaryButton]}
-    onPress={() => router.push('/(tabs)/chats')}
-    disabled={loading}
-  >
-    <Text style={styles.secondaryButtonText}>Go to Chats Home</Text>
-  </TouchableOpacity>
-
-  <TouchableOpacity
-    style={[styles.fullWidthButton, styles.secondaryButton]}
-    onPress={() => setShowEditMode(false)}
-    disabled={loading}
-  >
-    <Text style={styles.secondaryButtonText}>Cancel</Text>
-  </TouchableOpacity>
-
-  <TouchableOpacity
-    style={[styles.fullWidthButton, styles.primaryButton]}
-    onPress={handleRegenerateSummary}
-    disabled={loading}
-  >
-    {loading ? (
-      <ActivityIndicator color="#fff" size="small" />
-    ) : (
-      <>
-        <Check size={16} color="#fff" />
-        <Text style={styles.primaryButtonText}>Regenerate Summary</Text>
       </>
-    )}
-  </TouchableOpacity>
-</View>
-
-  </View>
-) : (
-  <View style={styles.buttonColumn}>
-  <TouchableOpacity
-    style={[styles.fullWidthButton, styles.secondaryButton]}
-    onPress={() => router.push('/(tabs)/chats')}
-    disabled={loading}
-  >
-    <Text style={styles.secondaryButtonText}>Go to Chats Home</Text>
-  </TouchableOpacity>
-
-  <TouchableOpacity
-    style={[styles.fullWidthButton, styles.secondaryButton]}
-    onPress={handleAddExtraInfo}
-    disabled={loading}
-  >
-    <Plus size={16} color={Colors.primary[600]} />
-    <Text style={styles.secondaryButtonText}>Add more context</Text>
-  </TouchableOpacity>
-
-  <TouchableOpacity
-    style={[
-      styles.fullWidthButton,
-      styles.primaryButton,
-      summaryJustRegenerated && styles.primaryButtonDisabled,
-    ]}
-    onPress={handleSummaryApprove}
-    disabled={loading || summaryJustRegenerated}
-  >
-    <Check size={20} color="#fff" />
-    <Text style={styles.primaryButtonText}>
-      {summaryJustRegenerated ? 'Recap refreshed…' : 'Looks solid'}
-    </Text>
-  </TouchableOpacity>
-</View>
-
-)}
-  </View>
-);
+    );
+  
+    const editModeActions = (
+      <View style={styles.buttonColumn}>
+        <TouchableOpacity
+          style={[styles.fullWidthButton, styles.secondaryButton]}
+          onPress={() => router.push('/(tabs)/chats')}
+          disabled={loading}
+        >
+          <Text style={styles.secondaryButtonText}>Go to Chats Home</Text>
+        </TouchableOpacity>
+  
+        <TouchableOpacity
+          style={[styles.fullWidthButton, styles.secondaryButton]}
+          onPress={() => setShowEditMode(false)}
+          disabled={loading}
+        >
+          <Text style={styles.secondaryButtonText}>Cancel</Text>
+        </TouchableOpacity>
+  
+        <TouchableOpacity
+          style={[styles.fullWidthButton, styles.primaryButton]}
+          onPress={handleRegenerateSummary}
+          disabled={loading}
+        >
+          {loading ? (
+            <ActivityIndicator color="#fff" size="small" />
+          ) : (
+            <>
+              <Check size={16} color="#fff" />
+              <Text style={styles.primaryButtonText}>Regenerate Summary</Text>
+            </>
+          )}
+        </TouchableOpacity>
+      </View>
+    );
+  
+    const editModeContent = (
+      <View style={styles.editModeContainer}>
+        <ScrollView
+          ref={editScrollViewRef}
+          style={styles.editScrollView}
+          contentContainerStyle={styles.editScrollViewContent}
+        >
+          {editedQAPairs.map((pair, index) => (
+            <View key={index} style={styles.editQACard}>
+              <Text style={styles.editQuestionText}>{pair.question}</Text>
+  
+              {editModeAnswerIndex === index && editModeContactSuggestions.length > 0 && (
+                <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled>
+                  <Text style={styles.tagDropdownHeader}>
+                    <AtSign size={12} color={Colors.primary[600]} /> Registered Contacts
+                  </Text>
+                  {editModeContactSuggestions.map((contact) => (
+                    <TouchableOpacity
+                      key={contact.id}
+                      style={styles.tagItem}
+                      onPress={() => {
+                        const cursorPos = editModeCursorPos[index] || 0;
+                        const typingTag = getLastTypingTag(pair.answer, cursorPos);
+                        if (typingTag.type === '@') {
+                          const newText = replaceTypingTag(
+                            pair.answer,
+                            typingTag.startPos,
+                            '@',
+                            contact.full_name || contact.email
+                          );
+                          const updated = [...editedQAPairs];
+                          updated[index].answer = newText;
+                          setEditedQAPairs(updated);
+                          setEditModeContactSuggestions([]);
+                          setShowPronounDropdown('@');
+                          setPronounSelectionContext({ stage: 'editAnswer', pendingContact: contact, index });
+                          setEditModeAnswerIndex(null);
+                        }
+                      }}
+                    >
+                      <View style={[styles.tagIndicator, { backgroundColor: Colors.primary[100] }] }>
+                        <AtSign size={12} color={Colors.primary[600]} />
+                      </View>
+                      <Text style={styles.tagName}>{contact.full_name || contact.email}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              )}
+  
+              {editModeAnswerIndex === index && editModeHashSuggestions.length > 0 && (
+                <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled>
+                  <Text style={styles.tagDropdownHeader}>
+                    <Hash size={12} color={Colors.warning[600]} /> People/Groups (not in app)
+                  </Text>
+                  {editModeHashSuggestions.map((tag, tagIdx) => (
+                    <TouchableOpacity
+                      key={tagIdx}
+                      style={styles.tagItem}
+                      onPress={() => {
+                        const cursorPos = editModeCursorPos[index] || 0;
+                        const typingTag = getLastTypingTag(pair.answer, cursorPos);
+                        if (typingTag.type === '#') {
+                          const newText = replaceTypingTag(
+                            pair.answer,
+                            typingTag.startPos,
+                            '#',
+                            tag
+                          );
+                          const updated = [...editedQAPairs];
+                          updated[index].answer = newText;
+                          setEditedQAPairs(updated);
+                          setEditModeHashSuggestions([]);
+                          setEditModeAnswerIndex(null);
+                        }
+                      }}
+                    >
+                      <View style={[styles.tagIndicator, { backgroundColor: Colors.warning[100] }]}>
+                        <Hash size={12} color={Colors.warning[600]} />
+                      </View>
+                      <Text style={styles.tagName}>#{tag}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              )}
+  
+              <TextInput
+                style={styles.editAnswerInput}
+                value={pair.answer}
+                onChangeText={(text) => handleEditAnswerWithTags(index, text)}
+                onSelectionChange={(event) => {
+                  setEditModeCursorPos({...editModeCursorPos, [index]: event.nativeEvent.selection.start });
+                }}
+                multiline
+                placeholder="Edit your answer (use @ or #)..."
+              />
+  
+              <View style={{ marginTop: 4, alignItems: "flex-end" }}>
+                <Text
+                  style={[
+                    styles.tokenCounter,
+                    Math.max(0, 20 - Math.round((pair.answer?.trim() ? pair.answer.trim().split(/\s+/).length : 0) * (20/15))) === 0
+                      ? { color: Colors.error[600] }
+                      : { color: Colors.success[600] },
+                  ]}
+                >
+                  {Math.max(0, 20 - Math.round((pair.answer?.trim() ? pair.answer.trim().split(/\s+/).length : 0) * (20/15)))}
+                </Text>
+              </View>
+            </View>
+          ))}
+  
+          <View style={styles.additionalInfoSection}>
+            <Text style={styles.additionalInfoLabel}>
+              Additional Information (Optional - use @ or # tags)
+            </Text>
+  
+            {showPronounDropdown && pronounSelectionContext?.stage === 'additionalInfo' && (
+              <View style={styles.tagDropdownContainer}>
+                <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled>
+                  <Text style={styles.tagDropdownHeader}>Select Pronouns</Text>
+                  {(showPronounDropdown === '#'
+                    ? ['he/him', 'she/her', 'they/them', 'it/its']
+                    : ['he/him', 'she/her', 'they/them']
+                  ).map((pronoun) => (
+                    <TouchableOpacity
+                      key={pronoun}
+                      style={styles.tagItem}
+                      onPress={() => handlePronounSelect(pronoun)}
+                    >
+                      <View style={[styles.tagIndicator, { backgroundColor: Colors.primary[100] }]}>
+                        <Text style={{ fontSize: 12, color: Colors.primary[600] }}>⚧</Text>
+                      </View>
+                      <Text style={styles.tagName}>{pronoun}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
+            )}
+  
+            {showAdditionalInfoTagDropdown === '@' && additionalInfoContactSuggestions.length > 0 && (
+              <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled>
+                <Text style={styles.tagDropdownHeader}>
+                  <AtSign size={12} color={Colors.primary[600]} /> Registered Contacts
+                </Text>
+                {additionalInfoContactSuggestions.map((contact) => (
+                  <TouchableOpacity
+                    key={contact.id}
+                    style={styles.tagItem}
+                    onPress={() => handleAdditionalInfoContactSelect(contact)}
+                  >
+                    <View style={[styles.tagIndicator, { backgroundColor: Colors.primary[100] }]}>
+                      <AtSign size={12} color={Colors.primary[600]} />
+                    </View>
+                    <Text style={styles.tagName}>{contact.full_name || contact.email}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            )}
+  
+            {showAdditionalInfoTagDropdown === '#' && additionalInfoHashSuggestions.length > 0 && (
+              <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled>
+                <Text style={styles.tagDropdownHeader}>
+                  <Hash size={12} color={Colors.warning[600]} /> People/Groups (not in app)
+                </Text>
+                {additionalInfoHashSuggestions.map((tag, idx) => (
+                  <TouchableOpacity
+                    key={idx}
+                    style={styles.tagItem}
+                    onPress={() => handleAdditionalInfoHashTagSelect(tag)}
+                  >
+                    <View style={[styles.tagIndicator, { backgroundColor: Colors.warning[100] }] }>
+                      <Hash size={12} color={Colors.warning[600]} />
+                    </View>
+                    <Text style={styles.tagName}>#{tag}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            )}
+  
+            <TextInput
+              style={styles.additionalInfoInput}
+              value={additionalInfo}
+              onChangeText={(text) => {
+                const words = text.trim().split(/\s+/);
+                const tokensUsed = Math.round(words.length * (20/15));
+                if (tokensUsed > 20) {
+                  const maxWords = Math.floor(20 / (20/15));
+                  handleAdditionalInfoChange(words.slice(0, maxWords).join(' '));
+                } else {
+                  handleAdditionalInfoChange(text);
+                }
+              }}
+              onSelectionChange={(event) => {
+                setAdditionalInfoCursorPos(event.nativeEvent.selection.start);
+              }}
+              placeholder="Add short note (up to ~20 tokens)…"
+              placeholderTextColor={Colors.text.tertiary}
+              multiline
+              numberOfLines={1}
+              maxLength={200}
+            />
+  
+            <View style={{ marginTop: 4, alignItems: "flex-end" }}>
+              <Text
+                style={[
+                  styles.tokenCounter,
+                  Math.max(0, 20 - Math.round((additionalInfo.trim() ? additionalInfo.trim().split(/\s+/).length : 0) * (20/15))) === 0
+                    ? { color: Colors.error[600] }
+                    : { color: Colors.success[600] },
+                ]}
+              >
+                {Math.max(0, 20 - Math.round((additionalInfo.trim() ? additionalInfo.trim().split(/\s+/).length : 0) * (20/15)))}
+              </Text>
+            </View>
+          </View>
+        </ScrollView>
+        {editModeActions}
+      </View>
+    );
+  
+    const defaultActions = (
+      <View style={styles.buttonColumn}>
+        <TouchableOpacity
+          style={[styles.fullWidthButton, styles.secondaryButton]}
+          onPress={() => router.push('/(tabs)/chats')}
+          disabled={loading}
+        >
+          <Text style={styles.secondaryButtonText}>Go to Chats Home</Text>
+        </TouchableOpacity>
+  
+        <TouchableOpacity
+          style={[styles.fullWidthButton, styles.secondaryButton]}
+          onPress={handleAddExtraInfo}
+          disabled={loading}
+        >
+          <Plus size={16} color={Colors.primary[600]} />
+          <Text style={styles.secondaryButtonText}>Add more context</Text>
+        </TouchableOpacity>
+  
+        <TouchableOpacity
+          style={[
+            styles.fullWidthButton,
+            styles.primaryButton,
+            summaryJustRegenerated && styles.primaryButtonDisabled,
+          ]}
+          onPress={handleSummaryApprove}
+          disabled={loading || summaryJustRegenerated}
+        >
+          <Check size={20} color="#fff" />
+          <Text style={styles.primaryButtonText}>
+            {summaryJustRegenerated ? 'Recap refreshed…' : 'Looks solid'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+    );
+  
+    return (
+      <View style={styles.stageContainer}>
+        <View style={[styles.headerSection, styles.stageHeaderInset]}>
+          <Text style={styles.stageTitle}>Stage 3 – Your Recap</Text>
+          <Text style={styles.stageSubtitle}>
+            Here's a gentle snapshot of what you've shared.
+          </Text>
+          <TouchableOpacity onPress={restartFlowToInitial} style={styles.smallLinkButton}>
+            <Text style={styles.smallLinkButtonText}>Revisit Stage 1</Text>
+          </TouchableOpacity>
+        </View>
+  
+        <View style={styles.stageBodyInset}>
+          {quickTipContent}
+          {summaryCardContent}
+  
+          {isSummaryUnclear
+            ? unclearActions
+            : showEditMode
+              ? editModeContent
+              : defaultActions}
+        </View>
+      </View>
+    );
+  };
 
 
 
@@ -4316,7 +4382,7 @@ Respond ONLY with valid JSON:
 
   const renderReadyStage = () => (
     <View style={styles.stageContainer}>
-      <View style={styles.headerSection}>
+      <View style={[styles.headerSection, styles.stageHeaderInset]}>
         <Check size={48} color={Colors.success[500]} />
         <Text style={styles.stageTitle}>Stage 4 – Launch Time</Text>
         <Text style={styles.stageSubtitle}>
@@ -4330,6 +4396,7 @@ Respond ONLY with valid JSON:
         </TouchableOpacity>
       </View>
 
+      <View style={styles.stageBodyInset}>
       {showReturnFromChatBanner && (
         <View style={styles.returnBanner}>
           <Text style={styles.returnBannerText}>Need to jump anywhere else?</Text>
@@ -4355,40 +4422,6 @@ Respond ONLY with valid JSON:
           <Text style={styles.loadingText}>Grabbing your recap…</Text>
         </View>
       )}
-
-
-      <View style={[styles.buttonColumn, { marginTop: Spacing.lg }]}>
-  <TouchableOpacity
-    style={[styles.fullWidthButton, styles.secondaryButton]}
-    onPress={() => router.push('/(tabs)/chats')}
-    disabled={loading}
-  >
-    <Text style={styles.secondaryButtonText}>Go to Chats Home</Text>
-  </TouchableOpacity>
-
-  <TouchableOpacity
-    style={[styles.fullWidthButton, styles.secondaryButton]}
-    onPress={handleBackToSummary}
-    disabled={loading || (((summary || '').trim().length === 0) && ((thoughts || '').trim().length === 0))}
-  >
-    <Eye size={16} color={Colors.primary[600]} />
-    <Text style={styles.secondaryButtonText}>Edit Summary</Text>
-  </TouchableOpacity>
-
-  <TouchableOpacity
-    style={[styles.fullWidthButton, styles.readyButton, loading && styles.primaryButtonDisabled]}
-    onPress={handleReadyToChat}
-    disabled={loading}
-  >
-    {loading ? (
-      <ActivityIndicator color="#fff" size="small" />
-    ) : (
-      <Text style={styles.readyButtonText}>Send to contact</Text>
-    )}
-  </TouchableOpacity>
-</View>
-
-
     {loading && (
   <>
     <View style={styles.loadingInfoBox}>
@@ -4401,29 +4434,60 @@ Respond ONLY with valid JSON:
     </Text>
   </>
       )}
+      </View>
+
+      <View style={[styles.stageFooter, styles.buttonColumn]}>
+        <TouchableOpacity
+          style={[styles.fullWidthButton, styles.secondaryButton]}
+          onPress={() => router.push('/(tabs)/chats')}
+          disabled={loading}
+        >
+          <Text style={styles.secondaryButtonText}>Go to Chats Home</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.fullWidthButton, styles.secondaryButton]}
+          onPress={handleBackToSummary}
+          disabled={
+            loading ||
+            (((summary || '').trim().length === 0) && ((thoughts || '').trim().length === 0))
+          }
+        >
+          <Eye size={16} color={Colors.primary[600]} />
+          <Text style={styles.secondaryButtonText}>Edit Summary</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.fullWidthButton, styles.readyButton, loading && styles.primaryButtonDisabled]}
+          onPress={handleReadyToChat}
+          disabled={loading}
+        >
+          {loading ? (
+            <ActivityIndicator color="#fff" size="small" />
+          ) : (
+            <Text style={styles.readyButtonText}>Send to contact</Text>
+          )}
+        </TouchableOpacity>
+      </View>
     </View>
   );
 
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      <KeyboardAvoidingView
-        style={styles.content}
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
+    <KeyboardSafeView style={styles.container} contentStyle={styles.content} edges={['top', 'left', 'right']}>
+      <ScrollView
+        ref={scrollViewRef}
+        style={styles.scrollView}
+        contentInsetAdjustmentBehavior="automatic"
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={[styles.scrollContent, { paddingTop: Spacing.md }]}
       >
-        <ScrollView
-          ref={scrollViewRef}
-          style={styles.scrollView}
-          contentInsetAdjustmentBehavior="automatic"
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={[styles.scrollContent, { paddingTop: Spacing.md }]}
-        >
-          {flowStage === "welcome" && renderWelcomeStage()}
-          {flowStage === "qa" && renderQAStage()}
-          {flowStage === "summary" && renderSummaryStage()}
-          {flowStage === "ready" && renderReadyStage()}
-        </ScrollView>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+        {flowStage === "welcome" && renderWelcomeStage()}
+        {flowStage === "qa" && renderQAStage()}
+        {flowStage === "summary" && renderSummaryStage()}
+        {flowStage === "ready" && renderReadyStage()}
+      </ScrollView>
+    </KeyboardSafeView>
   );
 }
 
@@ -4465,6 +4529,31 @@ const styles = StyleSheet.create({
   stageContainer: {
     flex: 1,
   },
+  stageScroll: {
+    flex: 1,
+  },
+  stageContent: {
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.lg,
+    paddingBottom: Spacing.xl,
+    gap: Spacing.lg,
+  },
+  stageFooter: {
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.lg,
+    borderTopWidth: 1,
+    borderTopColor: Colors.borderLight,
+    backgroundColor: Colors.background,
+  },
+  stageHeaderInset: {
+    paddingHorizontal: Spacing.lg,
+  },
+  stageBodyInset: {
+    paddingHorizontal: Spacing.lg,
+    paddingBottom: Spacing.xl,
+    gap: Spacing.lg,
+  },
   headerSection: {
     alignItems: "center",
     marginBottom: Spacing.lg,
@@ -4505,6 +4594,25 @@ const styles = StyleSheet.create({
   marginTop: Spacing.md,
   ...Shadows.small,
 },
+  descriptionWrapper: {
+    position: "relative",
+    width: "100%",
+    gap: Spacing.sm,
+  },
+  helperSummary: {
+    alignItems: "flex-end",
+    gap: Spacing.xs,
+  },
+  helperHint: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.text.tertiary,
+    fontStyle: "italic",
+  },
+  qaPairsContent: {
+    paddingHorizontal: Spacing.lg,
+    paddingBottom: Spacing.xl,
+    gap: Spacing.md,
+  },
   qaPairsContainer: {
     flex: 1,
     marginBottom: Spacing.lg,
@@ -4881,20 +4989,18 @@ readyButtonText: {
   },
 
   buttonColumn: {
-  flexDirection: "column",
-  alignItems: "stretch",
-  gap: Spacing.md,
-  marginTop: Spacing.xl,
-},
+    flexDirection: "column",
+    alignItems: "stretch",
+    gap: Spacing.sm,
+  },
 
 fullWidthButton: {
   width: "100%",
 },
 
   qaButtonSection: {
-  marginTop: Spacing.xl,
-  gap: Spacing.md,
-},
+    gap: Spacing.md,
+  },
 
 halfButton: {
   flex: 1,

@@ -5,12 +5,11 @@ import {
   StyleSheet,
   TextInput,
   TouchableOpacity,
-  KeyboardAvoidingView,
   Platform,
   ScrollView,
   ActivityIndicator,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import KeyboardSafeView from '@/components/KeyboardSafeView';
 import { router } from 'expo-router';
 import { Eye, EyeOff, ArrowLeft, Lock } from 'lucide-react-native';
 import NotificationBanner from '@/components/ui/NotificationBanner';
@@ -117,16 +116,17 @@ export default function ChangePasswordScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <KeyboardSafeView
+      style={styles.container}
+      contentStyle={styles.inner}
+      offset={Platform.OS === 'ios' ? 64 : 0}
+      edges={['top', 'left', 'right']}
+    >
       <NotificationBanner
         {...notification}
         onDismiss={handleDismissNotification}
       />
-      <KeyboardAvoidingView
-        style={styles.inner}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
-        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
           <View style={styles.header}>
             <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
               <ArrowLeft size={24} color={Colors.text.secondary} />
@@ -223,8 +223,7 @@ export default function ChangePasswordScreen() {
             )}
           </View>
         </ScrollView>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+    </KeyboardSafeView>
   );
 }
 

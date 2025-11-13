@@ -13,7 +13,6 @@ import {
   Animated,
   Platform,
   TouchableWithoutFeedback,
-  KeyboardAvoidingView,
 } from 'react-native';
 
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -38,6 +37,7 @@ import {
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/Colors';
 import LoadingSpinner from '@/components/ui/LoadingSpinner';
 import NotificationBanner from '@/components/ui/NotificationBanner';
+import KeyboardSafeView from '@/components/KeyboardSafeView';
 
 interface UserProfile {
   id: string;
@@ -533,7 +533,12 @@ setHasUnsavedChanges(false);
   return (
     <>
       <NotificationBanner {...notification} onDismiss={() => setNotification(p => ({ ...p, visible: false }))} />
-      <SafeAreaView style={styles.container}>
+      <KeyboardSafeView
+        style={styles.container}
+        contentStyle={styles.content}
+        offset={Platform.OS === 'ios' ? 80 : 0}
+        edges={['top', 'left', 'right']}
+      >
        <TouchableWithoutFeedback
   accessible={false}   // ✅ allow touches to pass through for scrolling
   onPress={() => {
@@ -553,12 +558,7 @@ setHasUnsavedChanges(false);
 
            
             
-            <KeyboardAvoidingView
-  style={{ flex: 1 }}
-  behavior={Platform.OS === "ios" ? "padding" : undefined}
-  keyboardVerticalOffset={Platform.OS === "ios" ? 80 : 0}
->
-  <ScrollView
+            <ScrollView
     style={styles.scrollView}
     contentContainerStyle={styles.scrollContent}
     showsVerticalScrollIndicator={false}
@@ -1012,7 +1012,6 @@ setHasUnsavedChanges(false);
             {/* Spacer for save button */}
 <View style={{ height: 60 }} />
 </ScrollView>
-</KeyboardAvoidingView>
 
 
           {/* Floating Save Button */}
@@ -1100,7 +1099,7 @@ setHasUnsavedChanges(false);
           </SafeAreaView>
         </Modal>
 
-      </SafeAreaView>
+      </KeyboardSafeView>
     </>
   );
 }

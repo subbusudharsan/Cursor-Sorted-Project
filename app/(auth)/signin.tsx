@@ -6,8 +6,6 @@ import {
   TouchableOpacity,
   StyleSheet,
   Alert,
-  KeyboardAvoidingView,
-  Platform,
   ScrollView,
   Animated,
 } from 'react-native';
@@ -17,6 +15,7 @@ import { ArrowLeft, Eye, EyeOff } from 'lucide-react-native';
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/Colors';
 import Button from '@/components/ui/Button';
 import NotificationBanner from '@/components/ui/NotificationBanner';
+import KeyboardSafeView from '@/components/KeyboardSafeView';
 
 function SignInScreen() {
   const [email, setEmail] = useState('');
@@ -71,16 +70,16 @@ function SignInScreen() {
   };
 
   return (
-    <>
+    <KeyboardSafeView style={styles.container}>
       <NotificationBanner
         {...notification}
         onDismiss={() => setNotification(prev => ({ ...prev, visible: false }))}
       />
-      <KeyboardAvoidingView
-        style={styles.container}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      <ScrollView
+        contentContainerStyle={styles.scrollContainer}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
-        <ScrollView contentContainerStyle={styles.scrollContainer} showsVerticalScrollIndicator={false}>
           <Animated.View style={[styles.content, { opacity: fadeAnim }]}>
             <View style={styles.header}>
               <TouchableOpacity
@@ -156,8 +155,7 @@ function SignInScreen() {
             </View>
           </Animated.View>
         </ScrollView>
-      </KeyboardAvoidingView>
-    </>
+    </KeyboardSafeView>
   );
 }
 

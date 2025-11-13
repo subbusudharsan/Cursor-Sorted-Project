@@ -6,8 +6,6 @@ import {
   TouchableOpacity,
   StyleSheet,
   Alert,
-  KeyboardAvoidingView,
-  Platform,
   ScrollView,
   Animated,
 } from 'react-native';
@@ -20,6 +18,7 @@ import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/
 import { isStrongPassword, PASSWORD_RULE_DESCRIPTION, getPasswordErrors } from '@/utils/passwordPolicy';
 import Button from '@/components/ui/Button';
 import NotificationBanner from '@/components/ui/NotificationBanner';
+import KeyboardSafeView from '@/components/KeyboardSafeView';
 
 export default function SignUpScreen() {
   const [firstName, setFirstName] = useState('');
@@ -172,17 +171,17 @@ export default function SignUpScreen() {
   };
 
   return (
-    <>
+    <KeyboardSafeView style={styles.container}>
       <NotificationBanner
         {...notification}
         onDismiss={() => setNotification(prev => ({ ...prev, visible: false }))}
       />
-      <KeyboardAvoidingView
-        style={styles.container}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      <ScrollView
+        contentContainerStyle={styles.scrollContainer}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
-        <ScrollView contentContainerStyle={styles.scrollContainer} showsVerticalScrollIndicator={false}>
-          <Animated.View style={[styles.content, { opacity: fadeAnim }]}>
+        <Animated.View style={[styles.content, { opacity: fadeAnim }]}>
             <View style={styles.header}>
               <TouchableOpacity
                 style={styles.backButton}
@@ -404,10 +403,9 @@ export default function SignUpScreen() {
                 </TouchableOpacity>
               </View>
             </View>
-          </Animated.View>
-        </ScrollView>
-      </KeyboardAvoidingView>
-    </>
+        </Animated.View>
+      </ScrollView>
+    </KeyboardSafeView>
   );
 }
 

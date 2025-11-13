@@ -36,7 +36,30 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { chatId, recipientId, currentUserId, currentMessage, summary, thoughts, wordLimit = 15, originalIssueSummary, recipientSummary, hint_from_b, originalIssue, hintFromB, hintToContact, summaryB, thoughtsB, conversationHistory, isInitial, contactCategory, conversationPhase, resolutionDetected, lastMessageTimestamp, taggedEntities } = await req.json();
+    const {
+      chatId,
+      recipientId,
+      currentUserId,
+      currentMessage,
+      summary,
+      thoughts,
+      wordLimit = 14,
+      originalIssueSummary,
+      recipientSummary,
+      hint_from_b,
+      originalIssue,
+      hintFromB,
+      hintToContact,
+      summaryB,
+      thoughtsB,
+      conversationHistory,
+      isInitial,
+      contactCategory,
+      conversationPhase,
+      resolutionDetected,
+      lastMessageTimestamp,
+      taggedEntities
+    } = await req.json();
     
     // ✅ Validate required parameters early
     if (!chatId || !recipientId) {
@@ -61,6 +84,14 @@ Deno.serve(async (req) => {
       hasConversationHistory: !!conversationHistory,
       conversationHistoryLength: Array.isArray(conversationHistory) ? conversationHistory.length : 0
     });
+
+    const parsedWordLimit =
+      typeof wordLimit === "number"
+        ? wordLimit
+        : parseInt(String(wordLimit), 10);
+    const HARD_WORD_CAP = Number.isFinite(parsedWordLimit)
+      ? Math.max(3, Math.min(15, Math.floor(parsedWordLimit)))
+      : 15;
 
     const CLAUDE_API_KEY = Deno.env.get("CLAUDE_API_KEY");
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
@@ -928,12 +959,13 @@ Example: ${isRecipientUserA ? `User A to User B: "I felt hurt when you ignored m
 - If multiple entities share pronouns, use names instead
 
 Your task is to generate ${isVeryFirstMessage ? '5' : '3'} options of what the person would ACTUALLY say:
-1. COMPLETE SENTENCES with natural punctuation
-2. DIRECTLY responding to what was just said
-3. Sound like a real human talking to someone they know
-4. Match the relationship type (casual with friends, respectful with family, professional with coworkers)
-5. Use contractions, natural speech patterns, and appropriate informality
-6. Choose pronouns based on WHO/WHAT is being discussed (you vs she/he/they)
+1. EACH OPTION = ONE sentence (no additional sentences or fragments)
+2. MAX 14 WORDS – concise, purposeful, complete
+3. DIRECTLY respond to what was just said
+4. Sound like a real human talking to someone they know
+5. Match the relationship type (casual with friends, respectful with family, professional with coworkers)
+6. Use contractions, natural speech patterns, and appropriate informality
+7. Choose pronouns based on WHO/WHAT is being discussed (you vs she/he/they)
 ${shouldUseHint ? `7. SUBTLY reflect the person's private feelings without exposing them` : ''}
 
 ${isVeryFirstMessage ? `
@@ -943,7 +975,7 @@ Timing Context: ${conversationTimingContext}
 
 ${conversationTimingContext === 'recent_argument' ? `
 ⚡ RECENT ARGUMENT - Skip pleasantries, go straight to resolution:
-Generate 5 DIFFERENT approaches (10-14 words each, complete and meaningful):
+Generate 5 DIFFERENT approaches (single sentence, maximum 14 words, complete and meaningful):
 1. Direct and urgent: "we need to talk about what just happened"
 2. Calm and conciliatory: "can we talk about earlier?"
 3. Honest and open: "I want to clear this up with you"
@@ -952,7 +984,7 @@ Generate 5 DIFFERENT approaches (10-14 words each, complete and meaningful):
 DO NOT use casual greetings - they want resolution NOW.
 ` : conversationTimingContext === 'long_gap' ? `
 🕰 LONG GAP - Warm reconnection first, then gentle purpose:
-Generate 5 DIFFERENT reconnection styles (10-14 words each, complete and meaningful):
+Generate 5 DIFFERENT reconnection styles (single sentence, maximum 14 words, complete and meaningful):
 1. Warm and nostalgic: "hey! it's been a while, how have you been?"
 2. Caring and thoughtful: "hi! been thinking about you, how are things?"
 3. Friendly and casual: "hey stranger! how's life treating you?"
@@ -961,7 +993,7 @@ Generate 5 DIFFERENT reconnection styles (10-14 words each, complete and meaning
 Balance warmth with genuine interest - reconnection comes first.
 ` : conversationTimingContext === 'same_day' ? `
 ⏱ SAME DAY - Friendly but purposeful:
-Generate 5 DIFFERENT check-in approaches (10-14 words each, complete and meaningful):
+Generate 5 DIFFERENT check-in approaches (single sentence, maximum 14 words, complete and meaningful):
 1. Casual and direct: "hey, how's your day? got a minute?"
 2. Warm with purpose: "hi! hope you're good, wanted to bring something up"
 3. Simple check-in: "hey, how are you? something on my mind"
@@ -969,7 +1001,7 @@ Generate 5 DIFFERENT check-in approaches (10-14 words each, complete and meaning
 5. Straightforward: "hi, can we talk about something that's been bothering me?"
 ` : `
 💬 NORMAL TIMING - Gentle opening with wellness check:
-Generate 5 DIFFERENT greeting styles (10-14 words each, complete and meaningful):
+Generate 5 DIFFERENT greeting styles (single sentence, maximum 14 words, complete and meaningful):
 1. Simple and warm: "hey, how are you?"
 2. Caring tone: "hi, hope you're doing well - can we chat?"
 3. Friendly check-in: "hey there, how's everything going with you?"
@@ -1226,7 +1258,7 @@ Build trust and understanding before closure.
           ? 'a teammate'
           : 'someone they know'}.
       - Tones: gentle, upbeat, curious, playful — no tension or conflict.
-      - Keep each message SHORT (≤ 12 words).
+      - Keep each message SHORT (≤ 12 words; hard cap 14).
       - NEVER mention any issue, event, emotion, or third person.
       - NEVER use or imply any @name, real name, or #tag — only say "you", "hey", or similar.
       - Use natural texting style: lowercase fine, small emoji ok ("hey you 😊", "yo", "hi there", "hey hey", etc.).
@@ -1341,8 +1373,8 @@ RELATIONSHIP-SPECIFIC TONE:
 - General: balanced, friendly but not too informal
 
 STRICT RULES - NO CROPPING ALLOWED:
-- TARGET: 10-14 words per option (10 words ideal, 4-5 words extra tolerance allowed)
-- MAXIMUM: 20 words per option (flexible limit - prioritize meaning over strict word count)
+- TARGET: 9-13 words per option (10 words ideal, a few extra words allowed)
+- MAXIMUM: 14 words per option (hard cap)
 - Each option MUST be a COMPLETE, MEANINGFUL sentence that makes sense on its own
 - NEVER generate incomplete sentences, truncated thoughts, or sentences that need "..." at the end
 - If you cannot express a complete thought in 14 words, simplify the sentence while keeping the meaning
@@ -1547,9 +1579,46 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     // ✅ ENFORCE WORD LIMIT: Validate and reject if exceeds (NO CROPPING - but be lenient)
     const countWords = (text: string): number => {
       if (!text || typeof text !== 'string') return 0;
-      // Don't count single emojis
-      if (/^[\p{Emoji}]$/u.test(text.trim())) return 0;
-      return text.trim().split(/\s+/).filter(w => w.length > 0).length;
+      if (/^[\p{Emoji}\p{Punctuation}]*$/u.test(text.trim())) return 0;
+      return text
+        .trim()
+        .split(/\s+/)
+        .filter((w) => w.length > 0)
+        .length;
+    };
+
+    const isSingleSentence = (text: string): boolean => {
+      if (!text || typeof text !== 'string') return false;
+      const cleaned = text.trim();
+      if (!cleaned) return false;
+      if (cleaned.includes('\n') || cleaned.includes('\r') || cleaned.includes('...')) {
+        return false;
+      }
+      const sentenceMarks = cleaned.match(/[.!?]/g) || [];
+      if (sentenceMarks.length > 1) return false;
+      if (sentenceMarks.length === 1) {
+        const idx = cleaned.search(/[.!?]/);
+        if (idx !== cleaned.length - 1) {
+          const trailing = cleaned.slice(idx + 1).trim();
+          if (trailing.length > 0) return false;
+        }
+      }
+      return true;
+    };
+    const meetsOptionConstraints = (text: string): boolean => {
+      const words = countWords(text);
+      if (words === 0) return false;
+      if (words >= HARD_WORD_CAP) {
+        console.warn(
+          `❌ Option exceeds ${HARD_WORD_CAP - 1} words (${words}) and will be rejected: "${String(text).substring(0, 60)}..."`
+        );
+        return false;
+      }
+      if (!isSingleSentence(text)) {
+        console.warn(`❌ Option is not a single sentence and will be rejected: "${String(text).substring(0, 60)}..."`);
+        return false;
+      }
+      return true;
     };
 
     // ✅ NAME LEAK DETECTION: Check if listener's name appears in any option
@@ -1570,8 +1639,8 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       });
     };
 
-    // ✅ LENIENT WORD LIMIT + NAME LEAK VALIDATION
-    // Target 10-14 words, but allow up to 20 words to ensure we always have options
+    // ✅ STRICT WORD LIMIT + NAME LEAK VALIDATION
+    // Target 9-13 words (hard cap 14), single sentence
     const validOptions = options.filter(opt => {
       if (!opt || typeof opt !== 'string') {
         console.warn(`⚠️ Invalid option (not a string):`, opt);
@@ -1585,15 +1654,8 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
         return false;
       }
 
-      const wordCount = countWords(opt);
-      // ✅ LENIENT: Allow up to 20 words (instead of strict 15) to ensure options are always available
-      if (wordCount > 20) {
-        console.warn(`⚠️ Option exceeds 20 words (${wordCount}) and will be rejected: "${opt.substring(0, 60)}..."`);
+      if (!meetsOptionConstraints(opt)) {
         return false;
-      }
-      // Log if option is ideal length or within tolerance
-      if (wordCount > 15) {
-        console.log(`ℹ️ Option has ${wordCount} words (above ideal 15, but within 20 limit - accepting)`);
       }
       return true;
     });
@@ -1622,7 +1684,11 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
         let fallbackIndex = 0;
         while (workingOptions.length < expectedCount && fallbackIndex < fallbackOptions.length) {
           // Check if fallback is not too similar to existing options
-          const fallback = fallbackOptions[fallbackIndex];
+            const fallback = fallbackOptions[fallbackIndex];
+            if (!meetsOptionConstraints(fallback)) {
+              fallbackIndex++;
+              continue;
+            }
           const isSimilar = workingOptions.some(existing => {
             const similarity = existing.toLowerCase().includes(fallback.toLowerCase().substring(0, 10));
             return similarity;
@@ -1640,7 +1706,8 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
         // No valid options at all - use ALL shortest options as fallback
         console.warn(`⚠️ No valid options. Using shortest options from AI response as fallback.`);
         const sortedByLength = options
-          .filter(opt => opt && typeof opt === 'string')
+          .filter(opt => opt && typeof opt === 'string' && meetsOptionConstraints(opt))
+          .filter(opt => opt && typeof opt === 'string' && meetsOptionConstraints(opt))
           .map(opt => ({ opt, wordCount: countWords(opt) }))
           .sort((a, b) => a.wordCount - b.wordCount)
           .slice(0, expectedCount);
@@ -2188,7 +2255,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     // ✅ CRITICAL: Apply full cleanup pipeline one final time before saving
     // This is a safety net to ensure NO names slip through, even from fallbacks
     // Applied to ALL options before database insertion - runs for EVERY turn
-    const normalizedOptions = Array.isArray(finalOptionsToUse) && finalOptionsToUse.length > 0
+    let normalizedOptions = Array.isArray(finalOptionsToUse) && finalOptionsToUse.length > 0
       ? finalOptionsToUse.map((opt: string) => 
           capitalizeFirstLetter(fixPronounMistakes(removeListenerName(stripTagSymbols(String(opt)))))
         )
@@ -2212,6 +2279,32 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
         });
       }
     }
+    
+    let constrainedNormalizedOptions = normalizedOptions.filter(meetsOptionConstraints);
+    if (constrainedNormalizedOptions.length < normalizedOptions.length) {
+      console.warn(`⚠️ After normalization, ${normalizedOptions.length - constrainedNormalizedOptions.length} options violated sentence/word rules and were removed.`);
+    }
+    if (constrainedNormalizedOptions.length < expectedCount) {
+      console.warn(`⚠️ Only ${constrainedNormalizedOptions.length} normalized options remain; adding fallbacks to reach ${expectedCount}.`);
+      const normalizationFallbacks = [
+        "Can you help me understand how you're feeling?",
+        "I'd like to hear your side of this.",
+        "Can we talk about what happened between us?",
+        "I want to understand what this feels like for you.",
+        "Can you tell me more about what you meant?"
+      ];
+      for (const fallback of normalizationFallbacks) {
+        if (constrainedNormalizedOptions.length >= expectedCount) break;
+        if (!constrainedNormalizedOptions.includes(fallback) && meetsOptionConstraints(fallback)) {
+          constrainedNormalizedOptions.push(fallback);
+          console.log(`   Added normalization fallback: "${fallback}"`);
+        }
+      }
+      if (constrainedNormalizedOptions.length < expectedCount) {
+        throw new Error(`Unable to provide ${expectedCount} valid options after normalization (only ${constrainedNormalizedOptions.length}).`);
+      }
+    }
+    normalizedOptions = constrainedNormalizedOptions.slice(0, expectedCount);
     
     console.log("   Final normalized options:", normalizedOptions);
 

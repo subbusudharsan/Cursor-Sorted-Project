@@ -10,6 +10,7 @@ import {
   Animated,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import KeyboardSafeView from '@/components/KeyboardSafeView';
 import { useAuth } from '@/contexts/AuthContext';
 import { router } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
@@ -247,7 +248,12 @@ function SettingsScreen() {
         {...notification}
         onDismiss={() => setNotification((prev) => ({ ...prev, visible: false }))}
       />
-      <SafeAreaView style={styles.container}>
+      <KeyboardSafeView
+        style={styles.container}
+        contentStyle={styles.content}
+        offset={(insets.top || 0) + 8}
+        edges={['top', 'left', 'right']}
+      >
         <Animated.View style={[styles.content, { opacity: fadeAnim, paddingTop: insets.top }]}> 
           {/* Centered content container */}
           <View style={styles.centeredContainer}>
@@ -319,7 +325,7 @@ function SettingsScreen() {
           </View>
           </View>
         </Animated.View>
-      </SafeAreaView>
+      </KeyboardSafeView>
     </>
   );
 }
