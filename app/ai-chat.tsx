@@ -3352,21 +3352,6 @@ Respond ONLY with valid JSON:
         }
       }
 
-      await supabase.from("notifications").insert({
-        user_id: contactIdValue,
-        type: "chat_request",
-        title: `${user.email?.split('@')[0] || 'Someone'} wants to talk`,
-        message: hintToContact.full_text,
-        data: {
-          chat_id: contactChatId,
-          sender_id: user.id,
-          sender_name: user.email,
-          issue: hintToContact.issue,
-          timeline: hintToContact.timeline,
-          hint_text: hintToContact.full_text,
-        },
-      });
-
       router.push(
         `/contact-chat?chatId=${contactChatId}&contactId=${contactIdValue}&isOngoing=true`
       );
@@ -3914,6 +3899,14 @@ Respond ONLY with valid JSON:
     </TouchableOpacity>
   </View>
 
+  <TouchableOpacity
+    style={[styles.fullWidthButton, styles.secondaryButton]}
+    onPress={() => router.push('/(tabs)/chats')}
+    disabled={loading}
+  >
+    <Text style={styles.secondaryButtonText}>Go to Chats Home</Text>
+  </TouchableOpacity>
+
   {/* Generate Summary button – disabled until at least 2 questions */}
 <TouchableOpacity
   style={[
@@ -4244,6 +4237,14 @@ Respond ONLY with valid JSON:
     <View style={styles.buttonColumn}>
   <TouchableOpacity
     style={[styles.fullWidthButton, styles.secondaryButton]}
+    onPress={() => router.push('/(tabs)/chats')}
+    disabled={loading}
+  >
+    <Text style={styles.secondaryButtonText}>Go to Chats Home</Text>
+  </TouchableOpacity>
+
+  <TouchableOpacity
+    style={[styles.fullWidthButton, styles.secondaryButton]}
     onPress={() => setShowEditMode(false)}
     disabled={loading}
   >
@@ -4269,6 +4270,14 @@ Respond ONLY with valid JSON:
   </View>
 ) : (
   <View style={styles.buttonColumn}>
+  <TouchableOpacity
+    style={[styles.fullWidthButton, styles.secondaryButton]}
+    onPress={() => router.push('/(tabs)/chats')}
+    disabled={loading}
+  >
+    <Text style={styles.secondaryButtonText}>Go to Chats Home</Text>
+  </TouchableOpacity>
+
   <TouchableOpacity
     style={[styles.fullWidthButton, styles.secondaryButton]}
     onPress={handleAddExtraInfo}
@@ -4349,6 +4358,14 @@ Respond ONLY with valid JSON:
 
 
       <View style={[styles.buttonColumn, { marginTop: Spacing.lg }]}>
+  <TouchableOpacity
+    style={[styles.fullWidthButton, styles.secondaryButton]}
+    onPress={() => router.push('/(tabs)/chats')}
+    disabled={loading}
+  >
+    <Text style={styles.secondaryButtonText}>Go to Chats Home</Text>
+  </TouchableOpacity>
+
   <TouchableOpacity
     style={[styles.fullWidthButton, styles.secondaryButton]}
     onPress={handleBackToSummary}

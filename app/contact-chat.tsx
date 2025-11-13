@@ -191,8 +191,7 @@ const pendingOptionsSinceRef = useRef<number | null>(null);
   const [optionsGenerationFailed, setOptionsGenerationFailed] = useState(false);
   const [manualInputMode, setManualInputMode] = useState(false);
   // 🔄 Option refresh tracking
-  const [lastOptionRefreshTime, setLastOptionRefreshTime] = useState<number>(0);
-  const OPTION_REFRESH_COOLDOWN = 30000; // 30 seconds
+  const [, setLastOptionRefreshTime] = useState<number>(0);
   const lastOptionsSignatureRef = useRef<string | null>(null);
   const fadeOutCurrentOptions = useCallback(() => {
     optionAnimationsRef.current.forEach((state) => {
@@ -379,35 +378,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     }, [isResolved])
   );
   // 🔄 Tab focus refresh logic - regenerate options when user returns
-  useFocusEffect(
-    useCallback(() => {
-      const refreshOptionsOnFocus = async () => {
-        if (!currentChatId || !user) return;
-        const now = Date.now();
-        const timeSinceLastRefresh = now - lastOptionRefreshTime;
-        // Check if it's the user's turn and cooldown has passed
-        if (messages.length > 0) {
-          const lastMessage = messages[messages.length - 1];
-          const isMyTurn = lastMessage.sender_id !== user.id;
-          if (isMyTurn && timeSinceLastRefresh > OPTION_REFRESH_COOLDOWN) {
-            console.log('🔄 Tab focused - refreshing options');
-            setShowSuggestedOptions(false);
-            setLastOptionRefreshTime(now);
-            // Wait a moment then fetch fresh options
-            setTimeout(() => {
-              fetchInitialOptions(currentChatId, user.id);
-            }, 500);
-          }
-        }
-      };
-      refreshOptionsOnFocus();
-      return () => {
-        if (showSuggestedOptions) {
-          console.log('👋 Tab unfocused - clearing options display');
-        }
-      };
-    }, [currentChatId, user, messages, lastOptionRefreshTime, showSuggestedOptions])
-  );
+  // Removed tab-focus auto refresh to avoid duplicate orchestrator calls
   useEffect(() => {
     navigation.setOptions({
       headerLeft: () => (
@@ -643,12 +614,11 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
   const fetchInitialOptions = async (
     chatId: string,
     userId: string,
-    retryCount = 0,
+    _retryCount = 0,
     options: { force?: boolean } = {}
   ) => {
     const { force = false } = options;
-    const maxRetries = 5;
-    console.log("🔍 FETCHING INITIAL OPTIONS", { chatId, userId, retryCount });
+    console.log("🔍 FETCHING INITIAL OPTIONS", { chatId, userId, forced: force });
     if (!force) {
       const { data: messagesData } = await supabase
         .from("messages")
@@ -676,16 +646,12 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       .limit(1);
     if (error) {
       console.error("❌ Failed to fetch initial options:", error);
-      if (retryCount < maxRetries) {
-        const delay = Math.min(1000 * Math.pow(1.5, retryCount), 5000);
-        console.log(`🔄 Retrying in ${delay}ms...`);
-        setTimeout(() => fetchInitialOptions(chatId, userId, retryCount + 1, options), delay);
-      } else {
-        console.error("❌ Max retries reached for fetching initial options");
+      if (force) {
         resolveWaitingForOptions(userId);
         setOptionsGenerationFailed(true);
         showNotification('error', 'Options Failed', 'Response options could not load. Try regenerating or use manual input.');
       }
+      return;
     } else if (data && data.length > 0 && data[0].options && Array.isArray(data[0].options) && data[0].options.length >= 1) {
       console.log(`✅ INITIAL OPTIONS FOUND (${data[0].options.length} total)`, data[0].options);
       console.log(" Recipient ID from DB:", data[0].recipient_id);
@@ -740,13 +706,9 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       }
     } else {
       console.log("ℹ️ NO INITIAL OPTIONS FOUND YET");
-      if (retryCount < maxRetries) {
-        const delay = Math.min(1000 * Math.pow(1.5, retryCount), 5000);
-        console.log(`🔄 Retrying in ${delay}ms...`);
-        setTimeout(() => fetchInitialOptions(chatId, userId, retryCount + 1, options), delay);
-      } else {
-        console.error("❌ Max retries reached, options not available");
+      if (force) {
         resolveWaitingForOptions(userId);
+        setOptionsGenerationFailed(true);
         showNotification('warning', 'Options Delayed', 'Response options are taking longer than expected. They will appear when ready.');
       }
     }
@@ -1151,6 +1113,36 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       }
       console.log("✅ MESSAGE INSERTED INTO DATABASE");
       console.log(" Message ID:", data.id);
+      if (recipientId) {
+        try {
+          const senderDisplay =
+            (user?.user_metadata as any)?.full_name ||
+            user?.email?.split("@")[0] ||
+            "Someone";
+          const preview =
+            content.length > 120 ? `${content.slice(0, 117)}…` : content;
+          await supabase.from("notifications").insert({
+            user_id: recipientId,
+            type: "chat_request",
+            title: `${senderDisplay} sent you a message`,
+            message: preview || "New message waiting for you.",
+            data: {
+              chat_id: currentChatId,
+              sender_id: user?.id,
+              sender_name: senderDisplay,
+              message_preview: preview,
+              issue: chatContext?.context_data?.hint_to_contact?.issue || null,
+              timeline:
+                chatContext?.context_data?.hint_to_contact?.timeline || null,
+            },
+          });
+        } catch (notifyError) {
+          console.error(
+            "⚠️ Failed to enqueue notification for contact message:",
+            notifyError
+          );
+        }
+      }
       // 😊 Mutual smiley detection for proper closure
       const CLOSURE_SMILEYS = ["👍", "🙂", "🤝", "❤️", "😊", "💖", "🌟", "✨", "🙏"];
       const isSmiley = CLOSURE_SMILEYS.some(smiley => content.trim() === smiley);
@@ -1431,81 +1423,9 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
   // 🔄 Regenerate options function
   const regenerateOptions = async () => {
     if (!currentChatId || !user) return;
-    enterWaitingForOptions(String(user.id));
     setOptionsGenerationFailed(false);
-    try {
-      // Get the latest message from contact to respond to
-      const latestContactMessage = messages
-        .filter((m) => m.sender_id === contactId)
-        .pop();
-      if (!latestContactMessage) {
-        showNotification('info', 'No Messages', 'Wait for a message from your contact first.');
-        resolveWaitingForOptions(String(user.id));
-        return;
-      }
-      let chatCtx = chatContext;
-      if (!chatCtx) {
-        const { data: fetched } = await supabase
-          .from("chats")
-          .select("context_data, user_id, contact_id, ai_confidence_level, conversation_phase, is_resolved, ai_source_chat_id, session_name, user_a_smiley_sent, user_b_smiley_sent")
-          .eq("id", currentChatId)
-          .single();
-        if (fetched) {
-          chatCtx = fetched;
-          setChatContext(fetched);
-        }
-      }
-      if (!chatCtx) {
-        throw new Error("Chat context not found");
-      }
-      const conversationHistory = buildHistory();
-      const isCurrentUserA = user.id === chatCtx.user_id;
-      const summaryA = chatCtx.context_data?.summary_a || chatCtx.context_data?.summary || "";
-      const thoughtsA = chatCtx.context_data?.thoughts_a || chatCtx.context_data?.thoughts || "";
-      const summaryB = chatCtx.context_data?.summary_b || "";
-      const thoughtsB = chatCtx.context_data?.thoughts_b || "";
-      const summaryToSend = isCurrentUserA ? summaryA : summaryB;
-      const thoughtsToSend = isCurrentUserA ? thoughtsA : thoughtsB;
-      console.log("🔄 Manually regenerating options");
-      const { error } = await supabase.functions.invoke(
-        "generate-contextual-options",
-        {
-          body: {
-            chatId: currentChatId,
-            recipientId: user.id,
-            currentUserId: user.id,
-            currentMessage: latestContactMessage.content,
-            summary: summaryToSend,
-            thoughts: thoughtsToSend,
-            originalIssue: {
-              summary: summaryA,
-              thoughts: thoughtsA,
-            },
-            hintFromB: chatCtx.context_data?.hint_from_b || "",
-            hintToContact: chatCtx.context_data?.hint_to_contact || null,
-            summaryB: summaryB,
-            thoughtsB: thoughtsB,
-            conversationHistory,
-            isInitial: false,
-            contactCategory: contact?.category || "General",
-            conversationPhase: conversationPhase,
-            resolutionDetected: false,
-            lastMessageTimestamp: latestContactMessage.created_at, // ⏰ For timing-aware context
-            wordLimit: 15, // ✅ Pass word limit
-          },
-        }
-      );
-      if (error) {
-        throw error;
-      }
-      showNotification('success', 'Options Regenerated', 'New response options are being generated.');
-    } catch (err) {
-      console.error("❌ Failed to regenerate options:", err);
-      setOptionsGenerationFailed(true);
-      showNotification('error', 'Regeneration Failed', 'Could not generate new options. Try manual input mode.');
-    } finally {
-      resolveWaitingForOptions(String(user.id));
-    }
+    enterWaitingForOptions(String(user.id));
+    await fetchInitialOptions(currentChatId, user.id, 0, { force: true });
   };
   const formatTime = (ts: string) =>
     new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -2862,15 +2782,15 @@ const styles = StyleSheet.create({
   // },
 
   userMessageBubble: {
-    backgroundColor: "#007AFF", // iMessage-style blue
-    borderColor: "#007AFF",
+    backgroundColor: Colors.secondary[100],
+    borderColor: Colors.secondary[200],
     borderBottomRightRadius: BorderRadius.md,
   },
-  userMessageText: { color: "#FFFFFF" },
+  userMessageText: { color: Colors.text.primary },
   
   contactMessageBubble: {
     backgroundColor: Colors.chat.contactBubble,
-    borderColor: Colors.warning[100],
+    borderColor: Colors.warning[200],
     borderBottomLeftRadius: BorderRadius.md,
   },
   messageText: {
@@ -2886,9 +2806,9 @@ const styles = StyleSheet.create({
     fontWeight: Typography.fontWeight.normal,
   },
   userMessageTime: {
-    color: Colors.text.inverse,
+    color: Colors.secondary[700],
     textAlign: "right",
-    opacity: 0.72,
+    opacity: 0.8,
   },
   contactMessageTime: {
     color: Colors.text.secondary,

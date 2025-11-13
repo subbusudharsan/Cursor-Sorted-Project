@@ -546,10 +546,15 @@ setContactChats(finalChats);
                 contentContainerStyle={styles.chatsContent}
                 showsVerticalScrollIndicator={false}
               >
-                {filteredContacts.map((contactChat) => (
+              {filteredContacts.map((contactChat) => {
+                const isContactTalk = !!contactChat.isUserB;
+                return (
                   <TouchableOpacity
                     key={contactChat.contact_id}
-                    style={styles.chatCard}
+                    style={[
+                      styles.chatCard,
+                      isContactTalk ? styles.contactTalkCard : styles.myTalkCard,
+                    ]}
                     onPress={() => handleContactPress(contactChat)}
                     onLongPress={() => {
                       if (!multiSelectMode) {
@@ -573,14 +578,16 @@ setContactChats(finalChats);
                         </View>
                         <View style={styles.chatDetails}>
                           <View style={styles.chatTitleRow}>
-                            <Text style={styles.chatName} numberOfLines={1}>{contactChat.contact_name}</Text>
                             <Text style={styles.chatTime}>{formatTime(contactChat.last_message_at || '')}</Text>
                           </View>
+                          <Text style={styles.chatName} numberOfLines={1}>
+                            {contactChat.contact_name}
+                          </Text>
                           {contactChat.chatTitle ? (
                             <Text style={styles.chatTitle} numberOfLines={1}>{contactChat.chatTitle}</Text>
                           ) : null}
                           {contactChat.issueSummary ? (
-                            <Text style={styles.issueText} numberOfLines={1}>{contactChat.issueSummary}</Text>
+                            <Text style={styles.issueText} numberOfLines={2}>{contactChat.issueSummary}</Text>
                           ) : null}
                           <Text style={styles.lastMsgText} numberOfLines={1}>
                             {contactChat.lastMsg || contactChat.last_message || 'No messages yet'}
@@ -608,7 +615,8 @@ setContactChats(finalChats);
                       </View>
                     </View>
                   </TouchableOpacity>
-                ))}
+                );
+              })}
               </ScrollView>
             )}
           </View>
@@ -833,13 +841,19 @@ const styles = StyleSheet.create({
     lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
   },
   chatCard: {
-    backgroundColor: Colors.surfaceElevated,
     borderRadius: BorderRadius.xl,
     padding: Spacing.md,
     marginBottom: Spacing.md,
     borderWidth: 1,
-    borderColor: Colors.borderLight,
     ...Shadows.medium,
+  },
+  myTalkCard: {
+    backgroundColor: Colors.primary[50],
+    borderColor: Colors.primary[200],
+  },
+  contactTalkCard: {
+    backgroundColor: Colors.secondary[50],
+    borderColor: Colors.secondary[100],
   },
   chatContent: {
     flexDirection: 'row',
@@ -869,16 +883,17 @@ const styles = StyleSheet.create({
   },
   chatTitleRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 2,
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    marginBottom: Spacing.xs,
   },
   chatName: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.lg,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.text.primary,
     flex: 1,
     marginRight: Spacing.sm,
+    marginBottom: 2,
   },
   chatTime: {
     fontSize: Typography.fontSize.sm,
@@ -886,21 +901,19 @@ const styles = StyleSheet.create({
   },
   chatTitle: {
     fontSize: Typography.fontSize.sm,
-    fontWeight: Typography.fontWeight.medium,
-    color: Colors.text.secondary,
-    marginBottom: 2,
+    fontWeight: Typography.fontWeight.semibold,
+    color: Colors.secondary[700],
+    marginBottom: 4,
   },
   issueText: {
-    color: Colors.primary[600],
-    fontSize: Typography.fontSize.xs,
-    fontWeight: Typography.fontWeight.semibold,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    color: Colors.text.secondary,
+    fontSize: Typography.fontSize.sm,
+    marginBottom: Spacing.xs,
   },
 lastMsgText: {
-  color: Colors.text.primary,
-  fontSize: Typography.fontSize.sm,
-  marginTop: 4,
+    color: Colors.text.tertiary,
+    fontSize: Typography.fontSize.sm,
+    marginTop: 2,
 },
 
 issueRow: {
