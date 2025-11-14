@@ -1608,18 +1608,29 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     const meetsOptionConstraints = (text: string): boolean => {
       const words = countWords(text);
       if (words === 0) return false;
-      if (words >= HARD_WORD_CAP) {
-        console.warn(
-          `❌ Option exceeds ${HARD_WORD_CAP - 1} words (${words}) and will be rejected: "${String(text).substring(0, 60)}..."`
-        );
+    
+      // Minimum: 8 words
+      if (words < 8) {
+        console.warn(`❌ Too short (${words} words) → reject: "${text}"`);
         return false;
       }
-      if (!isSingleSentence(text)) {
-        console.warn(`❌ Option is not a single sentence and will be rejected: "${String(text).substring(0, 60)}..."`);
-        return false;
+    
+      // Ideal range: 8–15 words
+      if (words <= 15) {
+        return isSingleSentence(text);
       }
-      return true;
+    
+      // Soft overflow allowed: 16–17 words (rare but okay)
+      if (words === 16 || words === 17) {
+        console.warn(`⚠️ Slightly long (${words} words) → soft-accept: "${text}"`);
+        return isSingleSentence(text);
+      }
+    
+      // Anything above 17 words → reject
+      console.warn(`❌ Too long (${words} words) → reject: "${text}"`);
+      return false;
     };
+    
 
     // ✅ NAME LEAK DETECTION: Check if listener's name appears in any option
     const listenerNameVariants = buildNameVariants(isRecipientUserA ? userBName : userAName);
@@ -1673,12 +1684,13 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
 
         // Generate contextual fallback options based on conversation state
         const fallbackOptions: string[] = [
-          "Can you help me understand your perspective?",
-          "I want to understand how you're feeling about this.",
+          "Can you help me explain what you meant earlier?",
+          "I want to understand your thoughts a little better.",
           "What was going through your mind when that happened?",
-          "Can we talk about what happened?",
-          "I'd like to hear your side of this."
+          "Can we talk more about what you just said?",
+          "I'd like to hear a bit more from your side."
         ];
+        
 
         // Add fallbacks until we reach expectedCount
         let fallbackIndex = 0;
@@ -2287,12 +2299,13 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     if (constrainedNormalizedOptions.length < expectedCount) {
       console.warn(`⚠️ Only ${constrainedNormalizedOptions.length} normalized options remain; adding fallbacks to reach ${expectedCount}.`);
       const normalizationFallbacks = [
-        "Can you help me understand how you're feeling?",
-        "I'd like to hear your side of this.",
-        "Can we talk about what happened between us?",
-        "I want to understand what this feels like for you.",
-        "Can you tell me more about what you meant?"
+        "Can you tell me more about what you're feeling?",
+        "I'd like to understand your side a little better.",
+        "Can we talk through what happened between us?",
+        "I want to understand what this meant to you.",
+        "Can you explain what you were thinking earlier?"
       ];
+      
       for (const fallback of normalizationFallbacks) {
         if (constrainedNormalizedOptions.length >= expectedCount) break;
         if (!constrainedNormalizedOptions.includes(fallback) && meetsOptionConstraints(fallback)) {

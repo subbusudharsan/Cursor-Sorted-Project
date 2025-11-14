@@ -347,6 +347,11 @@ function AIChatScreen() {
     [applyTaggedEntitiesForStage, entityRegistryCache, setPronounSelectionContext, setShowPronounDropdown]
   );
 
+  const finalizedContactMention = useCallback((text: string, startPos: number, contactName: string) => {
+    const replaced = replaceTypingTag(text, startPos, '@', `${contactName}`);
+    return replaced.endsWith(' ') ? replaced : `${replaced} `;
+  }, []);
+
   const resolvedContactId = contact?.id ?? contactIdValue ?? null;
 
   const updateChatRecord = useCallback(
@@ -790,10 +795,11 @@ const loadEntityRegistryCache = async (chatIdParam: string) => {
     const cacheKey = contactName.toLowerCase().trim();
     const cachedPronoun = entityRegistryCache[cacheKey]?.preferred_pronouns ?? null;
 
-    const newText = replaceTypingTag(initialDescription, typingTag.startPos, '@', contactName);
+    const newText = finalizedContactMention(initialDescription, typingTag.startPos, contactName);
     setInitialDescription(newText);
     setContactSuggestions([]);
     setShowTagDropdown(null);
+    markTagDropdownSuppressed('description', '@');
 
     const contacts = availableContacts.map(c => ({
       id: c.id,
@@ -1228,10 +1234,11 @@ const inferEntityCategory = (name: string): string => {
     const cacheKey = contactName.toLowerCase().trim();
     const cachedPronoun = entityRegistryCache[cacheKey]?.preferred_pronouns ?? null;
 
-    const newText = replaceTypingTag(currentAnswer, typingTag.startPos, '@', contactName);
+    const newText = finalizedContactMention(currentAnswer, typingTag.startPos, contactName);
     setCurrentAnswer(newText);
     setAnswerContactSuggestions([]);
     setShowAnswerTagDropdown(null);
+    markTagDropdownSuppressed('answer', '@');
 
     const contacts = availableContacts.map(c => ({
       id: c.id,
@@ -1426,10 +1433,11 @@ const inferEntityCategory = (name: string): string => {
     const cacheKey = contactName.toLowerCase().trim();
     const cachedPronoun = entityRegistryCache[cacheKey]?.preferred_pronouns ?? null;
 
-    const newText = replaceTypingTag(additionalInfo, typingTag.startPos, '@', contactName);
+    const newText = finalizedContactMention(additionalInfo, typingTag.startPos, contactName);
     setAdditionalInfo(newText);
     setAdditionalInfoContactSuggestions([]);
     setShowAdditionalInfoTagDropdown(null);
+    markTagDropdownSuppressed('additionalInfo', '@');
 
     const contacts = availableContacts.map(c => ({
       id: c.id,
@@ -3621,10 +3629,9 @@ Respond ONLY with valid JSON:
                         const cursorPos = prevAnswerCursorPos[index] || 0;
                         const typingTag = getLastTypingTag(pair.answer, cursorPos);
                         if (typingTag.type === '@') {
-          const newText = replaceTypingTag(
+          const newText = finalizedContactMention(
             pair.answer,
                             typingTag.startPos,
-                            '@',
                             contact.full_name || contact.email
                           );
                           const updated = [...qaPairs];
@@ -4115,10 +4122,9 @@ Respond ONLY with valid JSON:
                         const cursorPos = editModeCursorPos[index] || 0;
                         const typingTag = getLastTypingTag(pair.answer, cursorPos);
                         if (typingTag.type === '@') {
-                          const newText = replaceTypingTag(
+                          const newText = finalizedContactMention(
                             pair.answer,
                             typingTag.startPos,
-                            '@',
                             contact.full_name || contact.email
                           );
                           const updated = [...editedQAPairs];
