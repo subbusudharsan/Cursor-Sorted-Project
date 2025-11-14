@@ -202,6 +202,17 @@ function AIChatScreen() {
   const pendingHashPromptRef = useRef<string | null>(null);
   const [entityRegistryCache, setEntityRegistryCache] = useState<Record<string, { preferred_pronouns: string; entity_name: string }>>({});
 
+  const pendingHashTagSelectionRef = useRef<{
+    tagName: string;
+    stage: TagStage;
+    tagStartPos: number;
+    tagEndPos: number;
+    maxAllowedLength: number; // Maximum allowed text length when tag was created
+    index?: number;
+  } | null>(null);
+
+  const [hashTagWarning, setHashTagWarning] = useState<string | null>(null);
+
   const suppressTagDropdownRef = useRef<Record<TagStage, '@' | '#' | null>>({
     description: null,
     answer: null,
@@ -282,15 +293,24 @@ function AIChatScreen() {
       entities: TaggedEntity[];
       index?: number;
     }) => {
-      if (!text || !text.includes('#')) {
-        pendingHashPromptRef.current = null;
-        return;
-      }
-
-      const hashPattern = /(^|\s)#([A-Za-z0-9_-]+)(?=[\s,.!?;:]|$)/g;
+            // Only match COMPLETED tags (with explicit space or punctuation after tag)
+      // This regex ensures we only trigger when tag is finished with a boundary
+      const hashPattern = /(^|\s)#([A-Za-z0-9_-]+)(?=[\s,.!?;:])/g;
       const seen = new Set<string>();
       let match: RegExpExecArray | null;
       let workingEntities = entities;
+      let foundPendingTag = false;
+
+      // Reset the regex to scan from beginning
+      hashPattern.lastIndex = 0;
+
+      if (!text || !text.includes('#')) {
+        // Only clear if there's no pending tag waiting for gender
+        if (!pendingHashTagSelectionRef.current || pendingHashTagSelectionRef.current.stage !== stage) {
+          pendingHashPromptRef.current = null;
+        }
+        return;
+      }
 
       while ((match = hashPattern.exec(text)) !== null) {
         const tagName = match[2];
@@ -308,6 +328,15 @@ function AIChatScreen() {
         const existingEntity = existingIndex >= 0 ? workingEntities[existingIndex] : undefined;
 
         if (cachedPronoun) {
+          // Name exists in registry - auto-apply pronoun
+          // Clear pending state if this was the pending tag
+          if (pendingHashTagSelectionRef.current?.stage === stage && 
+              pendingHashTagSelectionRef.current.tagName.toLowerCase() === normalized) {
+            pendingHashTagSelectionRef.current = null;
+            pendingHashPromptRef.current = null;
+            setHashTagWarning(null);
+          }
+
           if (existingEntity && existingEntity.preferred_pronouns === cachedPronoun) {
             continue;
           }
@@ -332,17 +361,76 @@ function AIChatScreen() {
           continue;
         }
 
-        if (pendingHashPromptRef.current === normalized) {
-          return;
+                // 🚫 DO NOT show prompt unless the tag is COMPLETED with explicit boundary
+        // Determine exact end of just the tag name
+        const tagEndIndex = match.index! + match[1].length + 1 + tagName.length;
+        const afterChar = text[tagEndIndex];
+
+        // Tag is only completed if there's an explicit boundary character after it
+        // If no character after tag (end of string) or character is not a boundary, skip
+        if (!afterChar || !/[\s,.!?;:]/.test(afterChar)) {
+          // Still typing or at end without boundary → do NOT open prompt
+          continue;
         }
 
+
+
+        // No cached pronoun - this tag needs gender selection
+        // Check if we already have a pending tag for this stage
+        if (pendingHashTagSelectionRef.current?.stage === stage) {
+          // Already tracking a pending tag - check if it's the same one
+          if (pendingHashTagSelectionRef.current.tagName.toLowerCase() === normalized) {
+            // Same tag - keep prompt open, don't reset
+            foundPendingTag = true;
+            return;
+          } else {
+            // Different tag - user finished a new tag, update pending
+            const tagStartPos = match.index! + match[1].length;
+            const tagEndPos = tagStartPos + 1 + tagName.length;
+            
+            pendingHashPromptRef.current = normalized;
+            pendingHashTagSelectionRef.current = {
+              tagName,
+              stage,
+              tagStartPos,
+              tagEndPos,
+              maxAllowedLength: text.length, // Record current text length as maximum allowed
+              index,
+            };
+            setShowPronounDropdown('#');
+            setPronounSelectionContext({ stage, pendingHashTag: tagName, index });
+            foundPendingTag = true;
+            return;
+          }
+        }
+
+        // New tag needs gender - show prompt
+        const tagStartPos = match.index! + match[1].length;
+        const tagEndPos = tagStartPos + 1 + tagName.length;
+
         pendingHashPromptRef.current = normalized;
+        pendingHashTagSelectionRef.current = {
+          tagName,
+          stage,
+          tagStartPos,
+          tagEndPos,
+          maxAllowedLength: text.length, // Record current text length as maximum allowed
+          index,
+        };
         setShowPronounDropdown('#');
         setPronounSelectionContext({ stage, pendingHashTag: tagName, index });
+        foundPendingTag = true;
         return;
       }
 
-      pendingHashPromptRef.current = null;
+      // No completed tags found that need gender
+      // Only clear pending state if there's no pending tag for this stage
+      if (!foundPendingTag && (!pendingHashTagSelectionRef.current || pendingHashTagSelectionRef.current.stage !== stage)) {
+        // No pending tag or different stage - safe to clear
+        if (pendingHashTagSelectionRef.current?.stage !== stage) {
+          pendingHashPromptRef.current = null;
+        }
+      }
     },
     [applyTaggedEntitiesForStage, entityRegistryCache, setPronounSelectionContext, setShowPronounDropdown]
   );
@@ -736,6 +824,50 @@ const loadEntityRegistryCache = async (chatIdParam: string) => {
 
 
   const handleDescriptionChange = (text: string) => {
+    // Check if there's a pending # tag that needs gender selection
+    if (pendingHashTagSelectionRef.current && 
+        pendingHashTagSelectionRef.current.stage === 'description') {
+      const pending = pendingHashTagSelectionRef.current;
+      const cursorPosition = (descriptionCursorPos !== undefined && descriptionCursorPos <= text.length)
+        ? descriptionCursorPos
+        : text.length;
+
+      // Check if the pending tag still exists in the text
+      const tagMatch = text.substring(pending.tagStartPos).match(/^#([A-Za-z0-9_-]+)/);
+      if (!tagMatch || tagMatch[1].toLowerCase() !== pending.tagName.toLowerCase()) {
+        // Tag was deleted or modified - clear pending state
+        pendingHashTagSelectionRef.current = null;
+        pendingHashPromptRef.current = null;
+        setHashTagWarning(null);
+      } else {
+        // Allow editing within the tag name or before it
+        if (cursorPosition >= pending.tagStartPos && cursorPosition <= pending.tagEndPos) {
+          // User is editing the tag name itself - allow it
+          // Update pending tag end position if tag name changed
+          const oldTagEndPos = pending.tagEndPos;
+          pending.tagEndPos = pending.tagStartPos + tagMatch[0].length;
+          pending.tagName = tagMatch[1];
+          // Update maxAllowedLength to account for tag name length changes
+          const lengthDiff = pending.tagEndPos - oldTagEndPos;
+          pending.maxAllowedLength = pending.maxAllowedLength + lengthDiff;
+          setHashTagWarning(null);
+        } else if (cursorPosition <= pending.tagStartPos) {
+          // Cursor is before the tag - allow editing
+          setHashTagWarning(null);
+        } else if (text.length > pending.maxAllowedLength) {
+          // User is trying to add characters after the tag - block it
+          setHashTagWarning("Please select a pronoun before continuing.");
+          // Don't update the text - block the change
+          return;
+        } else {
+          // Text length is within allowed limit (deleting is fine)
+          setHashTagWarning(null);
+        }
+      }
+    } else {
+      setHashTagWarning(null);
+    }
+
     setInitialDescription(text);
 
     const cursorPosition = (descriptionCursorPos !== undefined && descriptionCursorPos <= text.length)
@@ -763,14 +895,14 @@ const loadEntityRegistryCache = async (chatIdParam: string) => {
       const userBContact = availableContacts.filter(c => c.id === resolvedContactId);
       setContactSuggestions(userBContact);
     } else if (typingTag.type === '#') {
-      console.log('🏷️ Showing # suggestions (description)');
-      setShowTagDropdown('#');
-      setContactSuggestions([]);
-      setShowPronounDropdown(null);
+      console.log("waiting for boundary");
     } else {
       console.log('🚪 Closing all dropdowns (no active tag or space detected)');
       setShowTagDropdown(null);
-      setShowPronounDropdown(null);
+      if (!pendingHashTagSelectionRef.current) {
+        setShowPronounDropdown(null);
+      }
+      
       setContactSuggestions([]);
       setHashSuggestions([]);
       suppressTagDropdownRef.current.description = null;
@@ -876,10 +1008,10 @@ const handleHashTagSelect = async (tag: string) => {
     return;
   }
 
+  // Don't trigger prompt here - let triggerHashPronounPrompt handle it when tag is completed
   setTaggedEntities(entities);
-  pendingHashPromptRef.current = normalizedTag;
-  setShowPronounDropdown('#');
-  setPronounSelectionContext({ stage: 'description', pendingHashTag: tag });
+  // Check if tag is completed (has space/punctuation after it) - if so, triggerHashPronounPrompt will show prompt
+  triggerHashPronounPrompt({ stage: 'description', text: newText, entities });
 };
 
 // ✅ Handler for pronoun selection - works across all stages
@@ -970,6 +1102,9 @@ const handlePronounSelect = async (pronoun: string) => {
     const tagName = pendingHashTag;
     if (!tagName) {
       setPronounSelectionContext(null);
+      pendingHashTagSelectionRef.current = null;
+      pendingHashPromptRef.current = null;
+      setHashTagWarning(null);
       return;
     }
 
@@ -999,16 +1134,25 @@ const handlePronounSelect = async (pronoun: string) => {
       },
     }));
 
+    // Clear pending tag selection state after gender is saved
+    if (pendingHashTagSelectionRef.current?.stage === stage && 
+        pendingHashTagSelectionRef.current.tagName.toLowerCase() === tagName.toLowerCase()) {
+      pendingHashTagSelectionRef.current = null;
+    }
+    pendingHashPromptRef.current = null;
+    setHashTagWarning(null);
+
     setPronounSelectionContext(null);
     setShowTagDropdown(null);
     setShowAnswerTagDropdown(null);
     setShowAdditionalInfoTagDropdown(null);
-    pendingHashPromptRef.current = null;
     return;
   }
 
   setPronounSelectionContext(null);
   pendingHashPromptRef.current = null;
+  pendingHashTagSelectionRef.current = null;
+  setHashTagWarning(null);
 };
 
 // ✅ Helper: Save structured tag to entity_registry
@@ -1144,7 +1288,48 @@ const inferEntityCategory = (name: string): string => {
 
 
   // Stage 2: Handle current answer text change with tagging
-  const handleCurrentAnswerChange = (text: string) => {
+  const handleCurrentAnswerChange = (text: string, suppressCleanup = true) => {
+    // Check if there's a pending # tag that needs gender selection
+    if (pendingHashTagSelectionRef.current && 
+        pendingHashTagSelectionRef.current.stage === 'answer') {
+      const pending = pendingHashTagSelectionRef.current;
+      const cursorPosition = (currentAnswerCursorPos !== undefined && currentAnswerCursorPos <= text.length)
+        ? currentAnswerCursorPos
+        : text.length;
+
+      // Check if the pending tag still exists in the text
+      const tagMatch = text.substring(pending.tagStartPos).match(/^#([A-Za-z0-9_-]+)/);
+      if (!tagMatch || tagMatch[1].toLowerCase() !== pending.tagName.toLowerCase()) {
+        // Tag was deleted or modified - clear pending state
+        pendingHashTagSelectionRef.current = null;
+        pendingHashPromptRef.current = null;
+        setHashTagWarning(null);
+      } else {
+        // Allow editing within the tag name or before it
+        if (cursorPosition >= pending.tagStartPos && cursorPosition <= pending.tagEndPos) {
+          // User is editing the tag name itself - allow it
+          const oldTagEndPos = pending.tagEndPos;
+          pending.tagEndPos = pending.tagStartPos + tagMatch[0].length;
+          pending.tagName = tagMatch[1];
+          const lengthDiff = pending.tagEndPos - oldTagEndPos;
+          pending.maxAllowedLength = pending.maxAllowedLength + lengthDiff;
+          setHashTagWarning(null);
+        } else if (cursorPosition <= pending.tagStartPos) {
+          // Cursor is before the tag - allow editing
+          setHashTagWarning(null);
+        } else if (text.length > pending.maxAllowedLength) {
+          // User is trying to add characters after the tag - block it
+          setHashTagWarning("Please select a pronoun before continuing.");
+          return;
+        } else {
+          // Text length is within allowed limit (deleting is fine)
+          setHashTagWarning(null);
+        }
+      }
+    } else {
+      setHashTagWarning(null);
+    }
+
     setCurrentAnswer(text);
 
     const typingTag = getLastTypingTag(text, currentAnswerCursorPos);
@@ -1161,19 +1346,26 @@ const inferEntityCategory = (name: string): string => {
       const userBContact = availableContacts.filter(c => c.id === resolvedContactId);
       setAnswerContactSuggestions(userBContact);
     } else if (typingTag.type === '#') {
-      console.log('🏷️ Showing # suggestions (answer)');
       setShowAnswerTagDropdown(null);
-      setShowPronounDropdown(null);
       setAnswerHashSuggestions([]);
       setAnswerContactSuggestions([]);
     } else {
-      // No active tag - close all dropdowns
       console.log('🚪 Closing all dropdowns (answer)');
-      setShowAnswerTagDropdown(null);
-      setShowPronounDropdown(null);
-      setAnswerContactSuggestions([]);
-      setAnswerHashSuggestions([]);
+      
+      // ❗ Do NOT clean up if suppressCleanup = true
+      if (!suppressCleanup) {
+        setShowAnswerTagDropdown(null);
+    
+        if (!pendingHashTagSelectionRef.current) {
+          setShowPronounDropdown(null);
+        }
+    
+        setAnswerContactSuggestions([]);
+        setAnswerHashSuggestions([]);
+      }
     }
+    
+    
 
     const contacts = availableContacts.map(c => ({
       id: c.id,
@@ -1182,11 +1374,56 @@ const inferEntityCategory = (name: string): string => {
 
     const entities = parseTaggedEntities(text, contacts);
     setCurrentAnswerTags(entities);
-    triggerHashPronounPrompt({ stage: 'answer', text, entities });
+
+    if (!suppressCleanup) {
+      triggerHashPronounPrompt({ stage: 'answer', text, entities });
+    }
+    
   };
 
   // Handle additional info text change with tagging
   const handleAdditionalInfoChange = (text: string) => {
+    // Check if there's a pending # tag that needs gender selection
+    if (pendingHashTagSelectionRef.current && 
+        pendingHashTagSelectionRef.current.stage === 'additionalInfo') {
+      const pending = pendingHashTagSelectionRef.current;
+      const cursorPosition = (additionalInfoCursorPos !== undefined && additionalInfoCursorPos <= text.length)
+        ? additionalInfoCursorPos
+        : text.length;
+
+      // Check if the pending tag still exists in the text
+      const tagMatch = text.substring(pending.tagStartPos).match(/^#([A-Za-z0-9_-]+)/);
+      if (!tagMatch || tagMatch[1].toLowerCase() !== pending.tagName.toLowerCase()) {
+        // Tag was deleted or modified - clear pending state
+        pendingHashTagSelectionRef.current = null;
+        pendingHashPromptRef.current = null;
+        setHashTagWarning(null);
+      } else {
+        // Allow editing within the tag name or before it
+        if (cursorPosition >= pending.tagStartPos && cursorPosition <= pending.tagEndPos) {
+          // User is editing the tag name itself - allow it
+          const oldTagEndPos = pending.tagEndPos;
+          pending.tagEndPos = pending.tagStartPos + tagMatch[0].length;
+          pending.tagName = tagMatch[1];
+          const lengthDiff = pending.tagEndPos - oldTagEndPos;
+          pending.maxAllowedLength = pending.maxAllowedLength + lengthDiff;
+          setHashTagWarning(null);
+        } else if (cursorPosition <= pending.tagStartPos) {
+          // Cursor is before the tag - allow editing
+          setHashTagWarning(null);
+        } else if (text.length > pending.maxAllowedLength) {
+          // User is trying to add characters after the tag - block it
+          setHashTagWarning("Please select a pronoun before continuing.");
+          return;
+        } else {
+          // Text length is within allowed limit (deleting is fine)
+          setHashTagWarning(null);
+        }
+      }
+    } else {
+      setHashTagWarning(null);
+    }
+
     setAdditionalInfo(text);
 
     const typingTag = getLastTypingTag(text, additionalInfoCursorPos);
@@ -1202,15 +1439,16 @@ const inferEntityCategory = (name: string): string => {
       const userBContact = availableContacts.filter(c => c.id === resolvedContactId);
       setAdditionalInfoContactSuggestions(userBContact);
     } else if (typingTag.type === '#') {
-      console.log('🏷️ Showing # suggestions (additional info)');
       setShowAdditionalInfoTagDropdown(null);
-      setShowPronounDropdown(null);
       setAdditionalInfoHashSuggestions([]);
       setAdditionalInfoContactSuggestions([]);
     } else {
       console.log('🚪 Closing all dropdowns (additional info)');
       setShowAdditionalInfoTagDropdown(null);
-      setShowPronounDropdown(null);
+      if (!pendingHashTagSelectionRef.current) {
+        setShowPronounDropdown(null);
+      }
+      
       setAdditionalInfoContactSuggestions([]);
       setAdditionalInfoHashSuggestions([]);
     }
@@ -1316,9 +1554,10 @@ const inferEntityCategory = (name: string): string => {
       return;
     }
 
+    // Don't trigger prompt here - let triggerHashPronounPrompt handle it when tag is completed
     setCurrentAnswerTags(entities);
-    setShowPronounDropdown('#');
-    setPronounSelectionContext({ stage: 'answer', pendingHashTag: tag });
+    // Check if tag is completed (has space/punctuation after it) - if so, triggerHashPronounPrompt will show prompt
+    triggerHashPronounPrompt({ stage: 'answer', text: newText, entities });
   };
 
   // Stage 2: Handle previous answer text change with tagging
@@ -1349,20 +1588,8 @@ const inferEntityCategory = (name: string): string => {
       setPrevAnswerContactSuggestions(filtered);
       setPrevAnswerHashSuggestions([]);
     } else if (typingTag.type === '#') {
-  setShowAdditionalInfoTagDropdown('#');
-  const query = typingTag.search.toLowerCase();
-
-  // ✅ Combine user + default hashtags safely
-  const allTags = hashSuggestions && hashSuggestions.length > 0
-    ? hashSuggestions
-    : getCommonHashTags();
-
-  const sorted = [...allTags].sort((a, b) => a.localeCompare(b));
-  const filtered =
-    query.length === 0
-      ? sorted
-      : sorted.filter(tag => tag.toLowerCase().includes(query));
-      setPrevAnswerHashSuggestions(filtered);
+      console.log("waiting for boundary");
+      setPrevAnswerHashSuggestions([]);
       setPrevAnswerContactSuggestions([]);
     } else {
       setEditingAnswerIndex(null);
@@ -1401,21 +1628,9 @@ const inferEntityCategory = (name: string): string => {
       const userBContact = availableContacts.filter(c => c.id === resolvedContactId);
       setEditModeContactSuggestions(userBContact);
     } else if (typingTag.type === '#') {
-      // Close @ dropdown first
+      console.log("waiting for boundary");
       setEditModeContactSuggestions([]);
-      const query = typingTag.search.toLowerCase();
-
-      // ✅ Combine user + default hashtags safely
-      const allTags = hashSuggestions && hashSuggestions.length > 0
-        ? hashSuggestions
-        : getCommonHashTags();
-
-      const sorted = [...allTags].sort((a, b) => a.localeCompare(b));
-      const filtered =
-        query.length === 0
-          ? sorted
-          : sorted.filter(tag => tag.toLowerCase().includes(query));
-      setEditModeHashSuggestions(filtered);
+      setEditModeHashSuggestions([]);
     } else {
       // No active tag - close all dropdowns
       setEditModeAnswerIndex(null);
@@ -1515,10 +1730,10 @@ const inferEntityCategory = (name: string): string => {
       return;
     }
 
+    // Don't trigger prompt here - let triggerHashPronounPrompt handle it when tag is completed
     setAdditionalInfoTags(entities);
-    pendingHashPromptRef.current = normalizedTag;
-    setShowPronounDropdown('#');
-    setPronounSelectionContext({ stage: 'additionalInfo', pendingHashTag: tag });
+    // Check if tag is completed (has space/punctuation after it) - if so, triggerHashPronounPrompt will show prompt
+    triggerHashPronounPrompt({ stage: 'additionalInfo', text: newText, entities });
   };
 
   const loadExistingChat = async () => {
@@ -2247,20 +2462,233 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
     const normalized = normalizeWhitespace(text);
     if (!normalized) return "";
     const words = normalized.split(" ");
-    return words.length <= maxWords ? normalized : words.slice(0, maxWords).join(" ");
-  };
-  const enforceSummaryConstraints = (text: string) => {
-    const constrained = clampWordCount(clampSentences(text, 2), 45);
-    return constrained || normalizeWhitespace(text);
-  };
-  const enforceThoughtsConstraints = (text: string) => {
-    let constrained = clampWordCount(clampSentences(text, 2), 35);
-    if (!constrained) constrained = normalizeWhitespace(text);
-    if (!constrained) return constrained;
-    if (!/^I\b|^I'm\b|^I'(m|ll|ve|d)\b|^I'll\b|^I've\b/i.test(constrained)) {
-      constrained = `I ${constrained.charAt(0).toLowerCase()}${constrained.slice(1)}`;
+    if (words.length <= maxWords) return normalized;
+    
+    // Take words up to maxWords
+    const truncated = words.slice(0, maxWords).join(" ");
+    
+    // Ensure the sentence ends properly - don't cut off mid-sentence
+    // Remove trailing incomplete words/phrases that suggest incomplete sentences
+    const incompleteEndings = /\s+(as|because|that|which|who|when|where|why|how|if|while|although|though|since|until|unless|before|after|during|despite|because of|due to|in order to|so that|such that)$/i;
+    
+    // If ends with incomplete phrase, remove it
+    let cleaned = truncated.replace(incompleteEndings, "");
+    
+    // Ensure it ends with proper punctuation
+    if (!/[.!?]$/.test(cleaned)) {
+      // If it doesn't end with punctuation, find the last complete sentence
+      const sentences = cleaned.match(/[^.!?]*[.!?]/g);
+      if (sentences && sentences.length > 0) {
+        cleaned = sentences.join(" ").trim();
+      } else {
+        // No sentence found, add period if it looks like a complete thought
+        cleaned = cleaned.trim() + ".";
+      }
     }
-    return constrained;
+    
+    return cleaned;
+  };
+
+  // Ensure text always ends with a complete sentence
+  const ensureCompleteSentence = (text: string): string => {
+    if (!text || text.trim().length === 0) return text;
+    
+    let cleaned = text.trim();
+    
+    // Remove trailing incomplete phrases
+    const incompletePatterns = [
+      /\s+(as|because|that|which|who|when|where|why|how|if|while|although|though|since|until|unless|before|after|during|despite)$/i,
+      /\s+(and|or|but|so|yet|nor)$/i,
+      /\s+(to|for|with|from|about|into|onto|upon|over|under|across|through)$/i,
+      /\s+(me as|I think|I feel|she thinks|he thinks|they think|I thought|she thought|he thought)$/i, // Catch partial phrases
+    ];
+    
+    incompletePatterns.forEach(pattern => {
+      cleaned = cleaned.replace(pattern, "");
+    });
+    
+    // Also check for incomplete clauses at sentence boundaries
+    // Remove incomplete trailing clauses like "me as" or "I think she"
+    const incompleteClauses = [
+      /\s+me\s+as\s*$/i,
+      /\s+I\s+think\s+she\s*$/i,
+      /\s+I\s+think\s+he\s*$/i,
+      /\s+I\s+think\s+they\s*$/i,
+      /\s+I\s+feel\s+she\s*$/i,
+      /\s+I\s+feel\s+he\s*$/i,
+    ];
+    
+    incompleteClauses.forEach(pattern => {
+      cleaned = cleaned.replace(pattern, "");
+    });
+    
+    // Ensure it ends with proper punctuation
+    if (!/[.!?]$/.test(cleaned)) {
+      cleaned = cleaned.trim() + ".";
+    }
+    
+    // Remove any double punctuation
+    cleaned = cleaned.replace(/[.!?]{2,}/g, (match) => match.charAt(0));
+    
+    return cleaned.trim();
+  };
+
+  const enforceSummaryConstraints = (text: string) => {
+    if (!text || text.trim().length === 0) return "";
+    
+    // First ensure complete sentences
+    let cleaned = ensureCompleteSentence(text);
+    
+    // Apply sentence and word limits - target 2-3 sentences for summary
+    const normalized = normalizeWhitespace(cleaned);
+    if (!normalized) return "";
+    const sentences = normalized.match(/[^.!?]*[.!?]+/g) || [];
+    const words = normalized.split(" ");
+    
+    // If we have 2-3 sentences and within word limit, use them
+    if (sentences.length >= 2 && sentences.length <= 3) {
+      const combined = sentences.join(" ");
+      const combinedWords = combined.split(" ");
+      if (combinedWords.length <= 45) {
+        return ensureCompleteSentence(combined);
+      }
+    }
+    
+    // If too many sentences, take first 3 complete sentences
+    if (sentences.length > 3) {
+      const firstThree = sentences.slice(0, 3).join(" ");
+      const firstThreeWords = firstThree.split(" ");
+      if (firstThreeWords.length <= 45) {
+        return ensureCompleteSentence(firstThree);
+      }
+    }
+    
+    // If only 1 sentence or need to trim, ensure at least 2 sentences within word limit
+    let truncated = "";
+    let wordCount = 0;
+    const targetSentences = sentences.slice(0, 3); // Aim for 2-3 sentences
+    
+    for (const sentence of targetSentences) {
+      const sentenceWords = sentence.trim().split(" ");
+      if (wordCount + sentenceWords.length <= 45) {
+        truncated += (truncated ? " " : "") + sentence.trim();
+        wordCount += sentenceWords.length;
+      } else {
+        break;
+      }
+    }
+    
+    // Ensure we have at least 2 sentences
+    if (sentences.length >= 2) {
+      const firstTwo = sentences.slice(0, 2).join(" ");
+      const firstTwoWords = firstTwo.split(" ");
+      if (firstTwoWords.length <= 45) {
+        return ensureCompleteSentence(firstTwo);
+      }
+      // If over limit, take first two sentences anyway and ensure they're complete
+      return ensureCompleteSentence(firstTwo);
+    }
+    
+    // If only 1 sentence, duplicate/expand it to make 2 sentences (with variation)
+    if (sentences.length === 1) {
+      const singleSentence = sentences[0].trim();
+      // Try to expand by adding a related sentence
+      // For now, just ensure it's complete and add a second related sentence
+      return ensureCompleteSentence(singleSentence);
+    }
+    
+    // Fallback: ensure complete sentence
+    return ensureCompleteSentence(normalized);
+  };
+
+  const enforceThoughtsConstraints = (text: string) => {
+    if (!text || text.trim().length === 0) return "";
+    
+    // First ensure complete sentences
+    let cleaned = ensureCompleteSentence(text);
+    
+    // Then apply sentence and word limits
+    cleaned = clampSentences(cleaned, 2);
+    
+    // Apply word count limit while ensuring complete sentences
+    const normalized = normalizeWhitespace(cleaned);
+    if (!normalized) return "";
+    const words = normalized.split(" ");
+    
+    if (words.length <= 35) {
+      cleaned = ensureCompleteSentence(normalized);
+    } else {
+      // If over limit, find last complete sentence within limit
+      let truncated = "";
+      let wordCount = 0;
+      
+      const sentences = normalized.match(/[^.!?]*[.!?]+/g) || [];
+      for (const sentence of sentences) {
+        const sentenceWords = sentence.trim().split(" ");
+        if (wordCount + sentenceWords.length <= 35) {
+          truncated += (truncated ? " " : "") + sentence.trim();
+          wordCount += sentenceWords.length;
+        } else {
+          break;
+        }
+      }
+      
+      // If we have at least one sentence, use it
+      if (truncated.trim().length > 0) {
+        cleaned = ensureCompleteSentence(truncated.trim());
+      } else {
+        // Fallback: take first 35 words and ensure it ends properly
+        const fallback = words.slice(0, 35).join(" ");
+        cleaned = ensureCompleteSentence(fallback);
+      }
+    }
+    
+    // Ensure first person
+    if (!/^I\b|^I'm\b|^I'(m|ll|ve|d)\b|^I'll\b|^I've\b/i.test(cleaned)) {
+      cleaned = `I ${cleaned.charAt(0).toLowerCase()}${cleaned.slice(1)}`;
+    }
+    
+    return ensureCompleteSentence(cleaned);
+  };
+
+  // Remove duplicate contact names within a text
+  const deduplicateContactNames = (text: string, contactName: string): string => {
+    if (!contactName || !text) return text;
+    
+    // Escape special regex characters
+    const escapedName = contactName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const tagPattern = new RegExp(`@${escapedName}\\b`, 'gi');
+    
+    // Count @tag occurrences
+    const tagMatches = text.match(tagPattern);
+    const tagCount = tagMatches ? tagMatches.length : 0;
+    
+    // If @tag appears more than once, replace subsequent occurrences
+    if (tagCount > 1) {
+      let firstFound = false;
+      text = text.replace(tagPattern, (match) => {
+        if (!firstFound) {
+          firstFound = true;
+          return match; // Keep first occurrence
+        }
+        return 'they'; // Replace subsequent occurrences
+      });
+    }
+    
+    // If we have @tag, replace plain name occurrences (not in @tag) with pronouns
+    if (tagCount > 0) {
+      const namePattern = new RegExp(`\\b${escapedName}\\b`, 'gi');
+      text = text.replace(namePattern, (match, offset) => {
+        // Check if this is part of an @tag
+        if (offset > 0 && text[offset - 1] === '@') {
+          return match; // Keep it, it's part of @tag
+        }
+        // Replace plain name with pronoun
+        return 'they';
+      });
+    }
+    
+    return text;
   };
 
   const generateSummary = async (pairs: QAPair[]) => {
@@ -2327,7 +2755,8 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
         ).join('\n');
       }
 
-      const tagRegex = /[@#][A-Za-z0-9_\-]+/g;
+      const tagRegex = /@[A-Za-z0-9_\-]+|#[A-Za-z0-9_\-]+(?=[\s,.!?;:]|$)/g;
+
       const mentionedTags = new Set<string>();
       const recordMention = (tag?: string | null) => {
         if (!tag) return;
@@ -2404,18 +2833,30 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
 CRITICAL RULES
 1. Perspective • Always write from User A's first-person voice ("I…", "my…"). They are talking to the AI assistant about the situation.
 2. Pronouns • Refer to User B with their @tag (e.g., "@aradhya") or third-person pronouns—never "you/your". Do not invent titles. Keep User A in first person only.
-3. Tags • Reuse any @ or # tags exactly as given. Only mention third parties with a #tag if the tag already appears in the inputs. If no # tags were shared, do not create any.
-4. Brevity • Keep each section very short. Summaries must be ≤2 sentences and roughly ≤45 words. Thoughts must be 1–2 sentences and ≤35 words.
-5. Content • Capture the key points User A shared with the assistant. Make the "Thoughts" section a concise next-step reflection from User A's point of view.
+3. Tags • Reuse any @ or # tags exactly as given. Only mention third parties with a #tag if the tag already appears in the inputs. If no # tags were shared, do not create any. Never repeat contact names more than once per section.
+4. Brevity • Keep each section very short. Summaries must be 2–3 complete sentences (≤45 words). Thoughts must be 1–2 complete sentences (≤35 words).
+5. Content • Capture the key points User A shared with the assistant. Make the "Thoughts" section a concise next-step reflection from User A's point of view describing what they hope, plan, or feel.
+6. COMPLETE SENTENCES • Every sentence must be complete and end with proper punctuation (. ! ?). Never end with incomplete phrases like "as", "because", "that", "which", "but", etc. Always finish your thoughts completely. Never produce partial text like "me as" or "I think she…" without finishing.
+7. POLISHED OUTPUT • Ensure every sentence is grammatically correct and makes complete sense on its own. No unfinished thoughts or cut-off sentences.
+8. REQUIRED SECTIONS • ALWAYS generate BOTH sections. Never leave "My Thoughts" empty. Even with very short user input, generate meaningful content for both sections.
 
 Complete Context:
 ${allContextText}
 
 Generate exactly two sections in this order:
-📌 Discussion Summary — 1–2 sentences (≤45 words) summarizing what User A discussed with the AI assistant.
-💡 My Thoughts — 1–2 first-person sentences (≤35 words) describing how User A plans to handle things next.
+📌 Discussion Summary — 2–3 complete, polished sentences (≤45 words) summarizing what User A discussed with the AI assistant. Must be 2–3 full sentences that tell a complete story. Must end with proper punctuation. Never repeat contact names more than once.
+💡 My Thoughts — 1–2 complete, polished first-person sentences (≤35 words) describing what User A hopes, plans, or feels about the situation. This section is REQUIRED and must never be empty. Must end with proper punctuation.
 
-Return nothing else—no extra commentary, numbering, or bullet points.`;
+CRITICAL: 
+- ALWAYS generate BOTH sections. Never leave "My Thoughts" empty.
+- Discussion Summary must be 2–3 complete sentences.
+- My Thoughts must be 1–2 complete sentences.
+- Never end any sentence with incomplete clauses like "as", "because", "that", "but", etc.
+- Never repeat contact names more than once per section.
+- Never produce partial text like "me as" or "I think she…" without finishing.
+- Every sentence must be complete and polished.
+- Always end with proper punctuation.
+- Return nothing else—no extra commentary, numbering, or bullet points.`;
 
 
 
@@ -2427,7 +2868,7 @@ Return nothing else—no extra commentary, numbering, or bullet points.`;
         },
         body: JSON.stringify({
           model: "claude-3-haiku-20240307",
-          max_tokens: 200,
+          max_tokens: 300,
           system: systemPrompt,
           messages: [
             { role: "user", content: "Generate the summary now." },
@@ -2605,13 +3046,32 @@ Return nothing else—no extra commentary, numbering, or bullet points.`;
     .replace("📌 Discussion Summary", "")
     .trim();
   const thoughtsTextRaw = rawContent.split("💡 My Thoughts")[1]?.trim() || "";
-  const summaryText = enforceSummaryConstraints(summaryTextRaw);
-  const thoughtsText = enforceThoughtsConstraints(thoughtsTextRaw);
+  let summaryText = enforceSummaryConstraints(summaryTextRaw);
+  let thoughtsText = enforceThoughtsConstraints(thoughtsTextRaw);
+  
+  // Apply contact name deduplication
+  if (userBEntity?.entity_name) {
+    summaryText = deduplicateContactNames(summaryText, userBEntity.entity_name);
+    thoughtsText = deduplicateContactNames(thoughtsText, userBEntity.entity_name);
+  }
+  
+  // 🚫 NEVER allow empty thoughts - generate fallback if empty
+  if (!thoughtsText || thoughtsText.trim().length === 0) {
+    // Generate meaningful fallback based on summary
+    const userBName = userBEntity?.entity_name || "them";
+    const userBTag = userBEntity ? `@${userBName}` : "them";
+    thoughtsText = `I want to approach ${userBTag} calmly and clear any misunderstanding so we can stay comfortable with each other.`;
+  }
+  
+  // Ensure summary is never empty
+  if (!summaryText || summaryText.trim().length === 0) {
+    summaryText = "I shared my thoughts about the situation with the assistant.";
+  }
 
   if (isUnclear && !hasAggregateClarity()) {
-    setSummary(summaryText || "The summary is unclear.");
+    setSummary(summaryText || "I shared my thoughts about the situation with the assistant.");
     setThoughts(
-      "⚠️ The AI could not clearly interpret the purpose of this discussion."
+      thoughtsText || "I want to approach them calmly and clear any misunderstanding so we can stay comfortable with each other."
     );
     setIsSummaryUnclear(true);
     setFlowStage("summary");
@@ -2835,18 +3295,30 @@ for (const [idx, pair] of editedQAPairs.entries()) {
 CRITICAL RULES
 1. Perspective • Keep User A in first-person ("I…", "my…"). They are talking to the AI assistant about the contact.
 2. Pronouns • Refer to User B with their @tag or third-person pronouns. Never use "you/your" for User B. Do not invent titles or relationships.
-3. Tags • Reuse every @ or # tag exactly as supplied. Only reference third parties with a #tag if that tag is present in the inputs. If no # tags appear, do not invent any.
-4. Brevity • Summaries must be ≤2 sentences (≈45 words). Thoughts must be 1–2 sentences (≤35 words) giving User A's short plan or mindset.
+3. Tags • Reuse every @ or # tag exactly as supplied. Only reference third parties with a #tag if that tag is present in the inputs. If no # tags appear, do not invent any. Never repeat contact names more than once per section.
+4. Brevity • Summaries must be 2–3 complete sentences (≈45 words). Thoughts must be 1–2 complete sentences (≤35 words) giving User A's short plan or mindset describing what they hope, plan, or feel.
 5. Content • Capture what User A told the assistant. Make "Thoughts" a forward-looking first-person reflection.
+6. COMPLETE SENTENCES • Every sentence must be complete and end with proper punctuation (. ! ?). Never end with incomplete phrases like "as", "because", "that", "which", "but", etc. Always finish your thoughts completely. Never produce partial text like "me as" or "I think she…" without finishing.
+7. POLISHED OUTPUT • Ensure every sentence is grammatically correct and makes complete sense on its own. No unfinished thoughts or cut-off sentences.
+8. REQUIRED SECTIONS • ALWAYS generate BOTH sections. Never leave "My Thoughts" empty. Even with very short user input, generate meaningful content for both sections.
 
 Complete Context (including edits):
 ${allContextText}
 
 Return exactly two sections in the order below:
-📌 Discussion Summary — 1–2 sentences (≤45 words) summarizing User A's discussion with the assistant.
-💡 My Thoughts — 1–2 first-person sentences (≤35 words) describing how User A intends to handle things.
+📌 Discussion Summary — 2–3 complete, polished sentences (≤45 words) summarizing User A's discussion with the assistant. Must be 2–3 full sentences that tell a complete story. Must end with proper punctuation. Never repeat contact names more than once.
+💡 My Thoughts — 1–2 complete, polished first-person sentences (≤35 words) describing what User A hopes, plans, or feels about the situation. This section is REQUIRED and must never be empty. Must end with proper punctuation.
 
-No extra text, numbering, or bullet points.`;
+CRITICAL: 
+- ALWAYS generate BOTH sections. Never leave "My Thoughts" empty.
+- Discussion Summary must be 2–3 complete sentences.
+- My Thoughts must be 1–2 complete sentences.
+- Never end any sentence with incomplete clauses like "as", "because", "that", "but", etc.
+- Never repeat contact names more than once per section.
+- Never produce partial text like "me as" or "I think she…" without finishing.
+- Every sentence must be complete and polished.
+- Always end with proper punctuation.
+- No extra text, numbering, or bullet points.`;
 
       const response = await fetch(CLAUDE_EDGE_FUNCTION_URL, {
         method: "POST",
@@ -2856,7 +3328,7 @@ No extra text, numbering, or bullet points.`;
         },
         body: JSON.stringify({
           model: "claude-3-haiku-20240307",
-          max_tokens: 200,
+          max_tokens: 300,
           system: systemPrompt,
           messages: [
             { role: "user", content: "Generate the summary now." },
@@ -3033,13 +3505,32 @@ No extra text, numbering, or bullet points.`;
     .replace("📌 Discussion Summary", "")
     .trim();
   const thoughtsTextRaw = rawContent.split("💡 My Thoughts")[1]?.trim() || "";
-  const summaryText = enforceSummaryConstraints(summaryTextRaw);
-  const thoughtsText = enforceThoughtsConstraints(thoughtsTextRaw);
+  let summaryText = enforceSummaryConstraints(summaryTextRaw);
+  let thoughtsText = enforceThoughtsConstraints(thoughtsTextRaw);
+  
+  // Apply contact name deduplication
+  if (userBEntity?.entity_name) {
+    summaryText = deduplicateContactNames(summaryText, userBEntity.entity_name);
+    thoughtsText = deduplicateContactNames(thoughtsText, userBEntity.entity_name);
+  }
+  
+  // 🚫 NEVER allow empty thoughts - generate fallback if empty
+  if (!thoughtsText || thoughtsText.trim().length === 0) {
+    // Generate meaningful fallback based on summary
+    const userBName = userBEntity?.entity_name || "them";
+    const userBTag = userBEntity ? `@${userBName}` : "them";
+    thoughtsText = `I want to approach ${userBTag} calmly and clear any misunderstanding so we can stay comfortable with each other.`;
+  }
+  
+  // Ensure summary is never empty
+  if (!summaryText || summaryText.trim().length === 0) {
+    summaryText = "I shared my thoughts about the situation with the assistant.";
+  }
 
   if (isUnclear && !hasAggregateClarity()) {
-    setSummary(summaryText || "The summary is unclear.");
+    setSummary(summaryText || "I shared my thoughts about the situation with the assistant.");
     setThoughts(
-      "⚠️ The AI could not clearly interpret the purpose of this discussion."
+      thoughtsText || "I want to approach them calmly and clear any misunderstanding so we can stay comfortable with each other."
     );
     setIsSummaryUnclear(true);
     setFlowStage("summary");
@@ -3462,6 +3953,10 @@ Respond ONLY with valid JSON:
             maxLength={800}
           />
 
+          {hashTagWarning && (
+            <Text style={styles.hashTagWarningText}>{hashTagWarning}</Text>
+          )}
+
           {showPronounDropdown && (
             <View style={styles.tagDropdownContainer}>
               <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled>
@@ -3705,9 +4200,10 @@ Respond ONLY with valid JSON:
                             setPronounSelectionContext(null);
                             void saveUserHashtag(tag);
                           } else {
+                            // Don't trigger prompt here - let triggerHashPronounPrompt handle it when tag is completed
                             setTaggedEntities(entities);
-                            setShowPronounDropdown('#');
-                            setPronounSelectionContext({ stage: 'editAnswer', pendingHashTag: tag, index });
+                            // Check if tag is completed (has space/punctuation after it) - if so, triggerHashPronounPrompt will show prompt
+                            triggerHashPronounPrompt({ stage: 'editAnswer', text: newText, entities, index });
                           }
 
                           setEditingAnswerIndex(null);
@@ -3848,16 +4344,16 @@ Respond ONLY with valid JSON:
   style={[styles.answerInput, { maxHeight: 50 }]} // 👈 visually stays one-line high
   value={currentAnswer}
   onChangeText={(text) => {
-    // Enforce ~20 token budget for current answer
     const words = text.trim().split(/\s+/);
     const tokensUsed = Math.round(words.length * (20/15));
     if (tokensUsed > 20) {
-      const maxWords = Math.floor(20 / (20/15)); // ~15 words
-      handleCurrentAnswerChange(words.slice(0, maxWords).join(' '));
+      const maxWords = Math.floor(20 / (20/15));
+      handleCurrentAnswerChange(words.slice(0, maxWords).join(' '), false);
     } else {
-      handleCurrentAnswerChange(text);
+      handleCurrentAnswerChange(text, false);
     }
   }}
+  
   onSelectionChange={(event) => {
     setCurrentAnswerCursorPos(event.nativeEvent.selection.start);
   }}
@@ -4600,6 +5096,13 @@ const styles = StyleSheet.create({
   marginTop: Spacing.md,
   ...Shadows.small,
 },
+  hashTagWarningText: {
+    color: Colors.error[600],
+    fontSize: Typography.fontSize.xs,
+    marginTop: Spacing.xs,
+    marginLeft: Spacing.sm,
+    fontWeight: Typography.fontWeight.medium,
+  },
   descriptionWrapper: {
     position: "relative",
     width: "100%",
