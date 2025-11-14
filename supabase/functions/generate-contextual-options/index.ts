@@ -2343,12 +2343,8 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
         chat_id: chatId,
         recipient_id: recipientId,
         options: normalizedOptions,
-      
-        // ⭐ CRITICAL FIX – FINAL BATCH MARKER ⭐
-        status: "final",
         context_data: {
           validated: true,
-      
           conversationStage: conversationPhase || 'discussion',
           turnCount: safeConversationHistory.length,
           hintUsed: !!hintFromB,

@@ -655,6 +655,35 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       console.log(`✅ INITIAL OPTIONS FOUND (${data[0].options.length} total)`, data[0].options);
       console.log(" Recipient ID from DB:", data[0].recipient_id);
       console.log(" Current User ID:", userId);
+      
+      const ctx = data[0].context_data || {};
+      // ✅ FIX: Validate initial options same way as realtime handler
+      const isInitialOptions = 
+        ctx.isVeryFirstMessage === true && 
+        (ctx.turnCount === 0 || ctx.turnCount === undefined) &&
+        data[0].options.length >= 3 &&
+        ctx.fallback !== true;
+      
+      const isFinalSubsequentOptions =
+        data[0].options.length > 0 &&
+        ctx.turnCount > 0 &&
+        ctx.isVeryFirstMessage === false &&
+        ctx.fallback !== true;
+      
+      const isValidOptions = isInitialOptions || isFinalSubsequentOptions;
+      
+      if (!isValidOptions) {
+        console.log("⏳ Options found but not ready yet:", {
+          isVeryFirstMessage: ctx.isVeryFirstMessage,
+          turnCount: ctx.turnCount,
+          optionsCount: data[0].options.length,
+          fallback: ctx.fallback
+        });
+        // Enter waiting state and let realtime handler process when ready
+        enterWaitingForOptions(userId);
+        return;
+      }
+      
       const signature = `${data[0].id || ""}|${JSON.stringify(data[0].options || [])}`;
       if (signature && lastOptionsSignatureRef.current === signature) {
         console.log("ℹ️ Options already applied from initial fetch");
@@ -662,30 +691,39 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         return;
       }
       const fetchedOptionId = data[0].id ? String(data[0].id) : null;
-      const awaitingForCurrentUser =
-        waitingForOptions &&
-        pendingOptionsRecipientRef.current &&
-        String(pendingOptionsRecipientRef.current) === String(userId);
       const createdAtMs = data[0].created_at ? Date.parse(data[0].created_at) : Date.now();
-      if (
-        awaitingForCurrentUser &&
-        pendingOptionsSinceRef.current &&
-        createdAtMs < pendingOptionsSinceRef.current
-      ) {
-        console.log("ℹ️ Ignoring stale options while waiting for fresh batch (initial fetch)");
-        return;
-      }
-      const shouldApplyOptions =
-        !isPendingForCurrentUser ||
-        !pendingOptionsSinceRef.current ||
-        createdAtMs >= pendingOptionsSinceRef.current;
-      if (!shouldApplyOptions) {
-        console.log("ℹ️ Ignoring stale options while waiting for fresh batch (initial fetch)");
-        return;
+      
+      // ✅ FIX: For initial options (from Stage 4), always apply if valid
+      // Don't block them based on timestamp since they're created before navigation
+      if (isInitialOptions) {
+        console.log("✅ Initial options from Stage 4 - applying immediately");
+        // Apply initial options regardless of timestamp
+      } else {
+        // For subsequent options, check timestamp to avoid stale options
+        const awaitingForCurrentUser =
+          waitingForOptions &&
+          pendingOptionsRecipientRef.current &&
+          String(pendingOptionsRecipientRef.current) === String(userId);
+        if (
+          awaitingForCurrentUser &&
+          pendingOptionsSinceRef.current &&
+          createdAtMs < pendingOptionsSinceRef.current
+        ) {
+          console.log("ℹ️ Ignoring stale options while waiting for fresh batch (initial fetch)");
+          return;
+        }
+        const shouldApplyOptions =
+          !isPendingForCurrentUser ||
+          !pendingOptionsSinceRef.current ||
+          createdAtMs >= pendingOptionsSinceRef.current;
+        if (!shouldApplyOptions) {
+          console.log("ℹ️ Ignoring stale options while waiting for fresh batch (initial fetch)");
+          return;
+        }
       }
       lastOptionsSignatureRef.current = signature;
       const cleanedOptions = cleanOptionsForDisplay(data[0].options || [], contact?.full_name || null);
-      console.log(" After client-side cleaning:", cleanedOptions);
+      console.log("✅ Applying initial options:", cleanedOptions);
       setSuggestedOptions(cleanedOptions);
       setShowSuggestedOptions(true);
       pendingOptionsSinceRef.current = null;
@@ -705,7 +743,51 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       }
     } else {
       console.log("ℹ️ NO INITIAL OPTIONS FOUND YET");
-      if (force) {
+      // ✅ FIX: Enter waiting state when no options found
+      enterWaitingForOptions(userId);
+      
+      // ✅ FIX: For initial load (not force), retry once after a short delay
+      // This handles cases where options are being generated but not yet in DB
+      if (!force) {
+        console.log("🔄 Retrying fetch after 2 seconds for initial options...");
+        setTimeout(async () => {
+          // Retry fetch once
+          const { data: retryData, error: retryError } = await supabase
+            .from("message_options")
+            .select("id, options, context_data, recipient_id, created_at")
+            .eq("chat_id", chatId)
+            .eq("recipient_id", userId)
+            .order("created_at", { ascending: false })
+            .limit(1);
+          
+          if (!retryError && retryData && retryData.length > 0 && retryData[0].options && Array.isArray(retryData[0].options) && retryData[0].options.length >= 1) {
+            const retryCtx = retryData[0].context_data || {};
+            const retryIsInitialOptions = 
+              retryCtx.isVeryFirstMessage === true && 
+              (retryCtx.turnCount === 0 || retryCtx.turnCount === undefined) &&
+              retryData[0].options.length >= 3 &&
+              retryCtx.fallback !== true;
+            
+            if (retryIsInitialOptions) {
+              console.log("✅ Initial options found on retry - applying");
+              const retrySignature = `${retryData[0].id || ""}|${JSON.stringify(retryData[0].options || [])}`;
+              if (retrySignature !== lastOptionsSignatureRef.current) {
+                lastOptionsSignatureRef.current = retrySignature;
+                const retryCleanedOptions = cleanOptionsForDisplay(retryData[0].options || [], contact?.full_name || null);
+                setSuggestedOptions(retryCleanedOptions);
+                setShowSuggestedOptions(true);
+                resolveWaitingForOptions(userId);
+                setLastOptionRefreshTime(Date.now());
+                if (retryData[0].context_data) {
+                  setAiPerspective(retryData[0].context_data.newPerspective || "");
+                  setAiClosure(retryData[0].context_data.closure || "");
+                }
+              }
+            }
+          }
+        }, 2000);
+      } else {
+        // Force mode - don't retry, just resolve
         resolveWaitingForOptions(userId);
         setOptionsGenerationFailed(true);
         showNotification('warning', 'Options Delayed', 'Response options are taking longer than expected. They will appear when ready.');
@@ -718,30 +800,91 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     try {
       const { data, error } = await supabase
         .from("message_options")
-        .select("id, options")
+        .select("id, options, context_data")
         .eq("chat_id", chatId)
         .eq("recipient_id", user.id)
         .order("created_at", { ascending: false })
         .limit(1);
       if (error) throw error;
-      if (!data || data.length === 0 || data[0].options.length < 3) {
+      
+      // ✅ FIX: Validate initial options same way as other handlers
+      if (!data || data.length === 0 || !data[0].options || data[0].options.length < 3) {
         console.log("ℹ️ No initial options found in DB — waiting for generation.");
         enterWaitingForOptions(String(user.id));
-        // Set a timeout to stop waiting after 20 seconds
+        // Set a timeout to stop waiting after 30 seconds (increased from 20)
         setTimeout(() => {
           resolveWaitingForOptions(String(user.id));
           if (!showSuggestedOptions) {
-            console.warn("⚠️ Options generation timeout after 20 seconds");
+            console.warn("⚠️ Options generation timeout after 30 seconds");
             showNotification('info', 'Options Delayed', 'You can send a message manually or wait for AI-generated options.');
           }
-        }, 20000);
+        }, 30000);
+        return;
+      }
+      
+      const ctx = data[0].context_data || {};
+      const optionsArray = Array.isArray(data[0].options) ? data[0].options : [];
+      
+      // ✅ FIX: Validate if options are valid initial options
+      const isInitialOptions = 
+        ctx.isVeryFirstMessage === true && 
+        (ctx.turnCount === 0 || ctx.turnCount === undefined) &&
+        optionsArray.length >= 3 &&
+        ctx.fallback !== true;
+      
+      const isFinalSubsequentOptions =
+        optionsArray.length > 0 &&
+        ctx.turnCount > 0 &&
+        ctx.isVeryFirstMessage === false &&
+        ctx.fallback !== true;
+      
+      const isValidOptions = isInitialOptions || isFinalSubsequentOptions;
+      
+      if (!isValidOptions) {
+        console.log("⏳ Options found but not valid yet:", {
+          isVeryFirstMessage: ctx.isVeryFirstMessage,
+          turnCount: ctx.turnCount,
+          optionsCount: optionsArray.length,
+          fallback: ctx.fallback,
+          validated: ctx.validated
+        });
+        enterWaitingForOptions(String(user.id));
+        // Wait for realtime handler to process when options become valid
+        return;
+      }
+      
+      console.log("✅ Valid initial options already exist", {
+        isInitial: isInitialOptions,
+        optionsCount: optionsArray.length
+      });
+      // ✅ FIX: Apply valid options directly if they exist
+      // This handles the case where options exist but fetchInitialOptions hasn't found them yet
+      const signature = `${data[0].id || ""}|${JSON.stringify(data[0].options || [])}`;
+      if (signature !== lastOptionsSignatureRef.current) {
+        lastOptionsSignatureRef.current = signature;
+        const cleanedOptions = cleanOptionsForDisplay(data[0].options || [], contact?.full_name || null);
+        console.log("✅ Applying valid options from ensureInitialOptions:", cleanedOptions);
+        setSuggestedOptions(cleanedOptions);
+        setShowSuggestedOptions(true);
+        resolveWaitingForOptions(String(user.id));
+        setLastOptionRefreshTime(Date.now());
+        if (data[0].context_data) {
+          setAiPerspective(data[0].context_data.newPerspective || "");
+          setAiClosure(data[0].context_data.closure || "");
+          if (data[0].context_data.conversationStage) {
+            setConversationStage(data[0].context_data.conversationStage);
+          }
+          if (data[0].context_data.turnCount !== undefined) {
+            setTurnCount(data[0].context_data.turnCount);
+          }
+        }
       } else {
-        console.log("✅ Options already exist, no need to wait");
+        // Options already applied, just resolve waiting
         resolveWaitingForOptions(String(user.id));
       }
     } catch (err) {
       console.error("❌ ensureInitialOptions error:", err);
-      resolveWaitingForOptions(user ? String(user.id) : null);
+      enterWaitingForOptions(user ? String(user.id) : undefined);
     }
   };
   // ---- realtime: options ----
@@ -761,21 +904,42 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
 
       const ctx = row.context_data || {};
       const optionsArray = Array.isArray(row.options) ? row.options : [];
-      const isFinal =
+      
+      // ✅ FIX: Handle both initial options (from Stage 4) and subsequent options
+      const isInitialOptions = 
+        ctx.isVeryFirstMessage === true && 
+        (ctx.turnCount === 0 || ctx.turnCount === undefined) &&
+        optionsArray.length >= 3 && // Initial options should have at least 3 (or 5)
+        ctx.fallback !== true;
+      
+      const isFinalSubsequentOptions =
         optionsArray.length > 0 &&
         ctx.turnCount > 0 &&
         ctx.isVeryFirstMessage === false &&
         ctx.fallback !== true;
+      
+      const isFinal = isInitialOptions || isFinalSubsequentOptions;
 
       if (!isFinal) {
+        console.log("⏳ Options not ready yet:", { 
+          isVeryFirstMessage: ctx.isVeryFirstMessage,
+          turnCount: ctx.turnCount,
+          optionsCount: optionsArray.length,
+          fallback: ctx.fallback
+        });
         enterWaitingForOptions(currentUserId);
         return;
       }
 
-      console.log("✅ Final validated options received for", recipientId);
+      console.log("✅ Final validated options received for", recipientId, {
+        isInitial: isInitialOptions,
+        isSubsequent: isFinalSubsequentOptions,
+        optionsCount: optionsArray.length
+      });
       lastOptionsSignatureRef.current = `${row.id || ""}|${JSON.stringify(row.options || [])}`;
 
-      setSuggestedOptions(optionsArray);
+      const cleanedOptions = cleanOptionsForDisplay(optionsArray, contact?.full_name || null);
+      setSuggestedOptions(cleanedOptions);
       setShowSuggestedOptions(true);
       resolveWaitingForOptions(recipientId);
       setLastOptionRefreshTime(Date.now());
