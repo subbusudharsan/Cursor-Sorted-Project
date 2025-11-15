@@ -2539,17 +2539,21 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
     // First ensure complete sentences
     let cleaned = ensureCompleteSentence(text);
     
+    // ✅ UPDATED: Increased limits - prioritize completeness (soft 50-55, hard max 70)
+    const SOFT_WORD_LIMIT = 55;  // Soft target for AI
+    const HARD_WORD_LIMIT = 70;  // Safety cap
+    
     // Apply sentence and word limits - target 2-3 sentences for summary
     const normalized = normalizeWhitespace(cleaned);
     if (!normalized) return "";
     const sentences = normalized.match(/[^.!?]*[.!?]+/g) || [];
     const words = normalized.split(" ");
     
-    // If we have 2-3 sentences and within word limit, use them
+    // If we have 2-3 sentences and within hard limit, use them (prioritize completeness)
     if (sentences.length >= 2 && sentences.length <= 3) {
       const combined = sentences.join(" ");
       const combinedWords = combined.split(" ");
-      if (combinedWords.length <= 45) {
+      if (combinedWords.length <= HARD_WORD_LIMIT) {
         return ensureCompleteSentence(combined);
       }
     }
@@ -2558,7 +2562,7 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
     if (sentences.length > 3) {
       const firstThree = sentences.slice(0, 3).join(" ");
       const firstThreeWords = firstThree.split(" ");
-      if (firstThreeWords.length <= 45) {
+      if (firstThreeWords.length <= HARD_WORD_LIMIT) {
         return ensureCompleteSentence(firstThree);
       }
     }
@@ -2570,7 +2574,7 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
     
     for (const sentence of targetSentences) {
       const sentenceWords = sentence.trim().split(" ");
-      if (wordCount + sentenceWords.length <= 45) {
+      if (wordCount + sentenceWords.length <= HARD_WORD_LIMIT) {
         truncated += (truncated ? " " : "") + sentence.trim();
         wordCount += sentenceWords.length;
       } else {
@@ -2578,14 +2582,14 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
       }
     }
     
-    // Ensure we have at least 2 sentences
+    // Ensure we have at least 2 sentences (allow up to HARD_WORD_LIMIT for completeness)
     if (sentences.length >= 2) {
       const firstTwo = sentences.slice(0, 2).join(" ");
       const firstTwoWords = firstTwo.split(" ");
-      if (firstTwoWords.length <= 45) {
+      if (firstTwoWords.length <= HARD_WORD_LIMIT) {
         return ensureCompleteSentence(firstTwo);
       }
-      // If over limit, take first two sentences anyway and ensure they're complete
+      // If slightly over hard limit, take first two sentences anyway (completeness priority)
       return ensureCompleteSentence(firstTwo);
     }
     
@@ -2607,6 +2611,10 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
     // First ensure complete sentences
     let cleaned = ensureCompleteSentence(text);
     
+    // ✅ UPDATED: Increased limits - prioritize completeness (soft 35-40, hard max 50)
+    const SOFT_WORD_LIMIT = 40;  // Soft target for AI
+    const HARD_WORD_LIMIT = 50;  // Safety cap
+    
     // Then apply sentence and word limits
     cleaned = clampSentences(cleaned, 2);
     
@@ -2615,7 +2623,7 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
     if (!normalized) return "";
     const words = normalized.split(" ");
     
-    if (words.length <= 35) {
+    if (words.length <= HARD_WORD_LIMIT) {
       cleaned = ensureCompleteSentence(normalized);
     } else {
       // If over limit, find last complete sentence within limit
@@ -2625,7 +2633,7 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
       const sentences = normalized.match(/[^.!?]*[.!?]+/g) || [];
       for (const sentence of sentences) {
         const sentenceWords = sentence.trim().split(" ");
-        if (wordCount + sentenceWords.length <= 35) {
+        if (wordCount + sentenceWords.length <= HARD_WORD_LIMIT) {
           truncated += (truncated ? " " : "") + sentence.trim();
           wordCount += sentenceWords.length;
         } else {
@@ -2637,8 +2645,8 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
       if (truncated.trim().length > 0) {
         cleaned = ensureCompleteSentence(truncated.trim());
       } else {
-        // Fallback: take first 35 words and ensure it ends properly
-        const fallback = words.slice(0, 35).join(" ");
+        // Fallback: take first HARD_WORD_LIMIT words and ensure it ends properly
+        const fallback = words.slice(0, HARD_WORD_LIMIT).join(" ");
         cleaned = ensureCompleteSentence(fallback);
       }
     }
@@ -2689,6 +2697,77 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
     }
     
     return text;
+  };
+
+  // ✅ Clean up unwanted prefixes and formatting issues from AI output
+  const cleanSummaryText = (text: string): string => {
+    if (!text || typeof text !== 'string') return text || '';
+    
+    let cleaned = text.trim();
+    
+    // ✅ FIX: Remove emoji headers first (before other processing)
+    cleaned = cleaned.replace(/^📌\s*Discussion Summary\s*/i, '');
+    cleaned = cleaned.replace(/^💡\s*My Thoughts\s*/i, '');
+    cleaned = cleaned.replace(/📌\s*Discussion Summary/g, '');
+    cleaned = cleaned.replace(/💡\s*My Thoughts/g, '');
+    cleaned = cleaned.replace(/📌/g, '');  // Remove any remaining 📌 emojis
+    cleaned = cleaned.replace(/💡/g, '');  // Remove any remaining 💡 emojis
+    
+    // Remove common unwanted prefixes
+    const prefixesToRemove = [
+      /^Here is the summary for you::?\s*/i,
+      /^Here is the discussion summary and my thoughts[^:]*::?\s*/i,
+      /^Okay, here is a concise recap[^:]*::?\s*/i,
+      /^Here is the summary::?\s*/i,
+      /^I :\s*/i,
+      /^I:\s*/,
+      /^Here is\s*/i,
+      /^Okay, here is\s*/i,
+      /^Here's\s*/i,
+      /^Here are\s*/i,
+      /^Summary::?\s*/i,
+      /^Discussion Summary::?\s*/i,
+      /^My Thoughts::?\s*/i,
+    ];
+    
+    prefixesToRemove.forEach(pattern => {
+      cleaned = cleaned.replace(pattern, '');
+    });
+    
+    // Remove double colons and colon-space-colon patterns
+    cleaned = cleaned.replace(/::+/g, ':');
+    cleaned = cleaned.replace(/:\s*:/g, ':');
+    cleaned = cleaned.replace(/:\s+$/g, ':');
+    
+    // Remove stray colons at the start
+    cleaned = cleaned.replace(/^:\s*/, '');
+    
+    // Remove emoji headers if they appear in the middle (should only be at section start)
+    // Keep only the first occurrence of each emoji header
+    const discussionHeader = '📌 Discussion Summary';
+    const thoughtsHeader = '💡 My Thoughts';
+    
+    // Split by headers if they exist
+    if (cleaned.includes(discussionHeader) && cleaned.includes(thoughtsHeader)) {
+      const parts = cleaned.split(thoughtsHeader);
+      const summaryPart = parts[0]?.replace(discussionHeader, '').trim();
+      const thoughtsPart = parts[1]?.trim() || '';
+      
+      // Clean each part separately
+      let cleanSummary = summaryPart?.replace(/^:\s*/, '').replace(/::+/g, ':').trim() || '';
+      let cleanThoughts = thoughtsPart?.replace(/^:\s*/, '').replace(/::+/g, ':').trim() || '';
+      
+      // Remove "I :" or "I:" prefixes from thoughts if present
+      cleanThoughts = cleanThoughts.replace(/^I\s*:\s*/i, '').trim();
+      
+      // ✅ FIX: Remove emojis from individual parts before returning
+      cleanSummary = cleanSummary.replace(/📌/g, '').replace(/💡/g, '').trim();
+      cleanThoughts = cleanThoughts.replace(/📌/g, '').replace(/💡/g, '').trim();
+      
+      return `${discussionHeader}\n${cleanSummary}\n\n${thoughtsHeader}\n${cleanThoughts}`;
+    }
+    
+    return cleaned.trim();
   };
 
   const generateSummary = async (pairs: QAPair[]) => {
@@ -2825,8 +2904,11 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
         ? `\n\nTagged Participants and Pronouns:\n${allTaggedEntitiesList}`
         : '';
 
-      // Accumulate ALL information: Stage 1 description + Stage 2 answers + structured context + tags
-      const allContextText = `Initial Description (Stage 1):\n${initialDescription}\n\nQuestion & Answer History (Stage 2):\n${conversationHistory}${structuredAnswersText ? `\n\nStructured Context Data:\n${structuredAnswersText}` : ''}${entityContextText}`;
+      // ✅ FIX: Include additionalInfo in the context (Stage 3 Additional Information)
+      const additionalContext = additionalInfo.trim() ? `\n\nAdditional Information (Stage 3):\n${additionalInfo}` : '';
+
+      // Accumulate ALL information: Stage 1 description + Stage 2 answers + Stage 3 additional info + structured context + tags
+      const allContextText = `Initial Description (Stage 1):\n${initialDescription}\n\nQuestion & Answer History (Stage 2):\n${conversationHistory}${additionalContext}${structuredAnswersText ? `\n\nStructured Context Data:\n${structuredAnswersText}` : ''}${entityContextText}`;
 
       const systemPrompt = `You are helping User A craft a crisp recap for their AI assistant. Read ALL of the context below and produce two short, polished sections that sound like User A speaking directly to the assistant.
 
@@ -2834,21 +2916,40 @@ CRITICAL RULES
 1. Perspective • Always write from User A's first-person voice ("I…", "my…"). They are talking to the AI assistant about the situation.
 2. Pronouns • Refer to User B with their @tag (e.g., "@aradhya") or third-person pronouns—never "you/your". Do not invent titles. Keep User A in first person only.
 3. Tags • Reuse any @ or # tags exactly as given. Only mention third parties with a #tag if the tag already appears in the inputs. If no # tags were shared, do not create any. Never repeat contact names more than once per section.
-4. Brevity • Keep each section very short. Summaries must be 2–3 complete sentences (≤45 words). Thoughts must be 1–2 complete sentences (≤35 words).
-5. Content • Capture the key points User A shared with the assistant. Make the "Thoughts" section a concise next-step reflection from User A's point of view describing what they hope, plan, or feel.
+4. Brevity & Completeness • Aim for 2–3 complete sentences (~50-55 words for summary, ~35-40 words for thoughts).
+   - CRITICAL: Use efficient word choices ("accused" not "said that I was accused", "jealous" not "being jealous about")
+   - CRITICAL: ALWAYS include ALL emotional words (jealous, hurt, accused, upset, frustrated, etc.) and action words (accused, said, told, ignored, etc.)
+   - If including all important words brings summary to 55-60 words, that's acceptable — completeness over brevity
+   - Maximum: ~70 words for summary, ~50 words for thoughts (safety cap)
+   - Never drop emotional/action words to save space — these are essential
+5. Content • Capture ALL key points User A shared with the assistant, including:
+   - CRITICAL: Preserve ALL emotional words (jealous, hurt, angry, accused, upset, frustrated, etc.) - these are essential
+   - CRITICAL: Preserve ALL action words (accused, said, told, ignored, etc.) - these describe what happened
+   - CRITICAL: Preserve ALL key details that explain WHY User A is concerned (e.g., "jealous about accomplishments", "ignored at party", "accused of being rude")
+   - NEVER drop emotional context or action words to save space - these are the core of the issue
+   - If User A said "accused me of being jealous", the summary MUST include both "accused" and "jealous"
+   - Make the "Thoughts" section a concise next-step reflection from User A's point of view describing what they hope, plan, or feel.
 6. COMPLETE SENTENCES • Every sentence must be complete and end with proper punctuation (. ! ?). Never end with incomplete phrases like "as", "because", "that", "which", "but", etc. Always finish your thoughts completely. Never produce partial text like "me as" or "I think she…" without finishing.
 7. POLISHED OUTPUT • Ensure every sentence is grammatically correct and makes complete sense on its own. No unfinished thoughts or cut-off sentences.
 8. REQUIRED SECTIONS • ALWAYS generate BOTH sections. Never leave "My Thoughts" empty. Even with very short user input, generate meaningful content for both sections.
+9. FORMATTING • NEVER add prefixes like "Here is the summary:", "I :", "Here is the discussion summary and my thoughts", "Okay, here is a concise recap", "Summary:", etc. Start directly with the emoji headers (📌 or 💡).
+10. NO INTRODUCTORY TEXT • Do not add any introductory sentences or explanations. Do not write as the assistant speaking. Start immediately with "📌 Discussion Summary" or "💡 My Thoughts".
+11. NO DOUBLE PUNCTUATION • Never use "::" or ": :". Use single punctuation only.
+12. NO NAME CHANGES • Use only names and tags that User A explicitly typed. Do not invent or change names.
 
 Complete Context:
 ${allContextText}
 
-Generate exactly two sections in this order:
-📌 Discussion Summary — 2–3 complete, polished sentences (≤45 words) summarizing what User A discussed with the AI assistant. Must be 2–3 full sentences that tell a complete story. Must end with proper punctuation. Never repeat contact names more than once.
-💡 My Thoughts — 1–2 complete, polished first-person sentences (≤35 words) describing what User A hopes, plans, or feels about the situation. This section is REQUIRED and must never be empty. Must end with proper punctuation.
+Generate exactly two sections in this exact format (start directly with emoji headers, no prefixes):
+📌 Discussion Summary
+<2–3 complete sentences summarizing what User A discussed with the AI assistant. MUST include all emotional words (jealous, hurt, accused, etc.) and action words (accused, said, told, etc.) from the original context. Example: If User A said "User B accused me of being jealous", include both "accused" and "jealous". Use efficient word choices to keep concise (~50-55 words, max 70). Must be 2–3 full sentences that tell a complete story. Must end with proper punctuation. Never repeat contact names more than once.>
+
+💡 My Thoughts
+<1–2 complete sentences describing what User A hopes, plans, or feels about the situation. This section is REQUIRED and must never be empty. Must end with proper punctuation.>
 
 CRITICAL: 
 - ALWAYS generate BOTH sections. Never leave "My Thoughts" empty.
+- Start directly with emoji headers (📌 or 💡). No prefixes, no "Here is:", no "I :", no introductory text.
 - Discussion Summary must be 2–3 complete sentences.
 - My Thoughts must be 1–2 complete sentences.
 - Never end any sentence with incomplete clauses like "as", "because", "that", "but", etc.
@@ -3041,13 +3142,34 @@ CRITICAL:
   !rawContent.includes("💡 My Thoughts");
 
 
-  const summaryTextRaw = rawContent
+  // Extract and clean summary text
+  let summaryTextRaw = rawContent
     .split("💡 My Thoughts")[0]
     .replace("📌 Discussion Summary", "")
+    .replace(/^📌\s*/, '')  // ✅ FIX: Remove emoji if at start
     .trim();
-  const thoughtsTextRaw = rawContent.split("💡 My Thoughts")[1]?.trim() || "";
+
+  // Clean up unwanted prefixes and formatting
+  summaryTextRaw = cleanSummaryText(summaryTextRaw)
+    .replace("📌 Discussion Summary", "")
+    .replace(/^📌\s*/, '')  // ✅ FIX: Remove emoji if at start
+    .replace(/📌/g, '')  // ✅ FIX: Remove any remaining emojis
+    .replace(/^:\s*/, '')
+    .replace(/::+/g, ':')
+    .trim();
+
+  let thoughtsTextRaw = rawContent.split("💡 My Thoughts")[1]?.trim() || "";
+  let thoughtsTextRawCleaned = cleanSummaryText(thoughtsTextRaw)
+    .replace("💡 My Thoughts", "")
+    .replace(/^💡\s*/, '')  // ✅ FIX: Remove emoji if at start
+    .replace(/💡/g, '')  // ✅ FIX: Remove any remaining emojis
+    .replace(/^:\s*/, '')
+    .replace(/::+/g, ':')
+    .replace(/^I\s*:\s*/i, '')
+    .trim();
+
   let summaryText = enforceSummaryConstraints(summaryTextRaw);
-  let thoughtsText = enforceThoughtsConstraints(thoughtsTextRaw);
+  let thoughtsText = enforceThoughtsConstraints(thoughtsTextRawCleaned);
   
   // Apply contact name deduplication
   if (userBEntity?.entity_name) {
@@ -3296,21 +3418,40 @@ CRITICAL RULES
 1. Perspective • Keep User A in first-person ("I…", "my…"). They are talking to the AI assistant about the contact.
 2. Pronouns • Refer to User B with their @tag or third-person pronouns. Never use "you/your" for User B. Do not invent titles or relationships.
 3. Tags • Reuse every @ or # tag exactly as supplied. Only reference third parties with a #tag if that tag is present in the inputs. If no # tags appear, do not invent any. Never repeat contact names more than once per section.
-4. Brevity • Summaries must be 2–3 complete sentences (≈45 words). Thoughts must be 1–2 complete sentences (≤35 words) giving User A's short plan or mindset describing what they hope, plan, or feel.
-5. Content • Capture what User A told the assistant. Make "Thoughts" a forward-looking first-person reflection.
+4. Brevity & Completeness • Aim for 2–3 complete sentences (~50-55 words for summary, ~35-40 words for thoughts).
+   - CRITICAL: Use efficient word choices ("accused" not "said that I was accused", "jealous" not "being jealous about")
+   - CRITICAL: ALWAYS include ALL emotional words (jealous, hurt, accused, upset, frustrated, etc.) and action words (accused, said, told, ignored, etc.)
+   - If including all important words brings summary to 55-60 words, that's acceptable — completeness over brevity
+   - Maximum: ~70 words for summary, ~50 words for thoughts (safety cap)
+   - Never drop emotional/action words to save space — these are essential
+5. Content • Capture ALL details User A told the assistant, including:
+   - CRITICAL: Preserve ALL emotional words (jealous, hurt, angry, accused, upset, frustrated, etc.) - these are essential
+   - CRITICAL: Preserve ALL action words (accused, said, told, ignored, etc.) - these describe what happened
+   - CRITICAL: Preserve ALL key details that explain WHY User A is concerned (e.g., "jealous about accomplishments", "ignored at party", "accused of being rude")
+   - NEVER drop emotional context or action words to save space - these are the core of the issue
+   - If User A said "accused me of being jealous", the summary MUST include both "accused" and "jealous"
+   - Make "Thoughts" a forward-looking first-person reflection.
 6. COMPLETE SENTENCES • Every sentence must be complete and end with proper punctuation (. ! ?). Never end with incomplete phrases like "as", "because", "that", "which", "but", etc. Always finish your thoughts completely. Never produce partial text like "me as" or "I think she…" without finishing.
 7. POLISHED OUTPUT • Ensure every sentence is grammatically correct and makes complete sense on its own. No unfinished thoughts or cut-off sentences.
 8. REQUIRED SECTIONS • ALWAYS generate BOTH sections. Never leave "My Thoughts" empty. Even with very short user input, generate meaningful content for both sections.
+9. FORMATTING • NEVER add prefixes like "Here is the summary:", "I :", "Here is the discussion summary and my thoughts, as if I am User A", "Okay, here is a concise recap", "Summary:", etc. Start directly with the emoji headers (📌 or 💡).
+10. NO INTRODUCTORY TEXT • Do not add any introductory sentences or explanations. Do not write as the assistant speaking. Start immediately with "📌 Discussion Summary" or "💡 My Thoughts".
+11. NO DOUBLE PUNCTUATION • Never use "::" or ": :". Use single punctuation only.
+12. NO NAME CHANGES • Use only names and tags that User A explicitly typed. Do not invent or change names.
 
 Complete Context (including edits):
 ${allContextText}
 
-Return exactly two sections in the order below:
-📌 Discussion Summary — 2–3 complete, polished sentences (≤45 words) summarizing User A's discussion with the assistant. Must be 2–3 full sentences that tell a complete story. Must end with proper punctuation. Never repeat contact names more than once.
-💡 My Thoughts — 1–2 complete, polished first-person sentences (≤35 words) describing what User A hopes, plans, or feels about the situation. This section is REQUIRED and must never be empty. Must end with proper punctuation.
+Return exactly two sections in this exact format (start directly with emoji headers, no prefixes):
+📌 Discussion Summary
+<2–3 complete sentences summarizing User A's discussion with the assistant. MUST include all emotional words (jealous, hurt, accused, etc.) and action words (accused, said, told, etc.) from the original context. Example: If User A said "User B accused me of being jealous", include both "accused" and "jealous". Use efficient word choices to keep concise (~50-55 words, max 70). Must be 2–3 full sentences that tell a complete story. Must end with proper punctuation. Never repeat contact names more than once.>
+
+💡 My Thoughts
+<1–2 complete sentences describing what User A hopes, plans, or feels about the situation. This section is REQUIRED and must never be empty. Must end with proper punctuation.>
 
 CRITICAL: 
 - ALWAYS generate BOTH sections. Never leave "My Thoughts" empty.
+- Start directly with emoji headers (📌 or 💡). No prefixes, no "Here is:", no "I :", no introductory text.
 - Discussion Summary must be 2–3 complete sentences.
 - My Thoughts must be 1–2 complete sentences.
 - Never end any sentence with incomplete clauses like "as", "because", "that", "but", etc.
@@ -3500,13 +3641,34 @@ CRITICAL:
   !rawContent.includes("💡 My Thoughts");
 
 
-  const summaryTextRaw = rawContent
+  // Extract and clean summary text
+  let summaryTextRaw = rawContent
     .split("💡 My Thoughts")[0]
     .replace("📌 Discussion Summary", "")
+    .replace(/^📌\s*/, '')  // ✅ FIX: Remove emoji if at start
     .trim();
-  const thoughtsTextRaw = rawContent.split("💡 My Thoughts")[1]?.trim() || "";
+
+  // Clean up unwanted prefixes and formatting
+  summaryTextRaw = cleanSummaryText(summaryTextRaw)
+    .replace("📌 Discussion Summary", "")
+    .replace(/^📌\s*/, '')  // ✅ FIX: Remove emoji if at start
+    .replace(/📌/g, '')  // ✅ FIX: Remove any remaining emojis
+    .replace(/^:\s*/, '')
+    .replace(/::+/g, ':')
+    .trim();
+
+  let thoughtsTextRaw = rawContent.split("💡 My Thoughts")[1]?.trim() || "";
+  let thoughtsTextRawCleaned = cleanSummaryText(thoughtsTextRaw)
+    .replace("💡 My Thoughts", "")
+    .replace(/^💡\s*/, '')  // ✅ FIX: Remove emoji if at start
+    .replace(/💡/g, '')  // ✅ FIX: Remove any remaining emojis
+    .replace(/^:\s*/, '')
+    .replace(/::+/g, ':')
+    .replace(/^I\s*:\s*/i, '')
+    .trim();
+
   let summaryText = enforceSummaryConstraints(summaryTextRaw);
-  let thoughtsText = enforceThoughtsConstraints(thoughtsTextRaw);
+  let thoughtsText = enforceThoughtsConstraints(thoughtsTextRawCleaned);
   
   // Apply contact name deduplication
   if (userBEntity?.entity_name) {
@@ -3603,6 +3765,12 @@ CRITICAL:
       const contactCategory = contactData?.category || "General";
       const contactName = contact?.full_name || contact?.email || "Contact";
 
+      // ✅ FIX: Get User A's name (the sender) instead of contact name (User B)
+      const userADisplayName = 
+        (user?.user_metadata as any)?.full_name ||
+        user?.email?.split("@")[0] ||
+        "Someone";
+
       const completedMyTalks = await getCompletedMyTalksCount(user.id, contactIdValue);
       if (completedMyTalks >= MY_TALKS_LIMIT) {
         Alert.alert('Limit Reached', buildMyTalksLimitMessage(contactName));
@@ -3632,7 +3800,7 @@ Respond ONLY with valid JSON:
       let hintToContact = {
         issue: "recent concern",
         timeline: "",
-        full_text: `${contactName} wants to chat`,
+        full_text: `${userADisplayName} wants to chat`,
       };
 
       if (hintResult?.content) {
@@ -3646,8 +3814,8 @@ Respond ONLY with valid JSON:
             issue: parsed.issue || "recent concern",
             timeline: parsed.timeline || "",
             full_text: parsed.timeline
-              ? `${contactName} wants to talk about **${parsed.issue}** ${parsed.timeline}`
-              : `${contactName} wants to talk about **${parsed.issue}**`,
+              ? `${userADisplayName} wants to talk about **${parsed.issue}** ${parsed.timeline}`
+              : `${userADisplayName} wants to talk about **${parsed.issue}**`,
           };
         } catch (e) {
           console.error("Failed to parse hint JSON:", e);

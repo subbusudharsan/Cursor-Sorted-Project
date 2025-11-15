@@ -85,13 +85,7 @@ Deno.serve(async (req) => {
       conversationHistoryLength: Array.isArray(conversationHistory) ? conversationHistory.length : 0
     });
 
-    const parsedWordLimit =
-      typeof wordLimit === "number"
-        ? wordLimit
-        : parseInt(String(wordLimit), 10);
-    const HARD_WORD_CAP = Number.isFinite(parsedWordLimit)
-      ? Math.max(3, Math.min(15, Math.floor(parsedWordLimit)))
-      : 15;
+    // ✅ REMOVED: Word limit no longer used (single-sentence validation only)
 
     const CLAUDE_API_KEY = Deno.env.get("CLAUDE_API_KEY");
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
@@ -180,6 +174,54 @@ Deno.serve(async (req) => {
         headers: { ...corsHeaders, "Content-Type": "application/json" }
       });
     }
+
+    // ✅ CODE-PATH SAFETY: Verify correct summary is passed before generating options
+    // Note: contextData will be defined later, so we use chatData.context_data directly here
+    const chatContextData = chatData?.context_data || {};
+    const expectedSummaryForRecipient = isRecipientUserA 
+      ? (chatContextData.summary_a || chatContextData.summary || '')
+      : (chatContextData.summary_b || '');
+
+    const receivedSummary = recipientSummary || summary || '';
+
+    // Validate that received summary matches expected (allow empty for User B if summary_b not set yet)
+    if (isRecipientUserA) {
+      // For User A, we MUST have summary_a
+      if (!expectedSummaryForRecipient || expectedSummaryForRecipient.trim().length === 0) {
+        console.error("❌ CODE-PATH SAFETY: Missing summary_a for User A");
+        return new Response(JSON.stringify({
+          success: false,
+          error: "Missing required summary for User A",
+          details: {
+            recipientId,
+            isRecipientUserA,
+            hasSummaryA: !!expectedSummaryForRecipient,
+            receivedSummaryLength: receivedSummary.length
+          }
+        }), {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" }
+        });
+      }
+      
+      // Verify received summary matches expected (allow for perspective swapping)
+      const summaryMatches = receivedSummary.includes(expectedSummaryForRecipient.substring(0, 50)) ||
+                            expectedSummaryForRecipient.includes(receivedSummary.substring(0, 50));
+      
+      if (!summaryMatches && receivedSummary.length > 0) {
+        console.warn("⚠️ CODE-PATH SAFETY: Received summary may not match expected for User A", {
+          expectedPreview: expectedSummaryForRecipient.substring(0, 100),
+          receivedPreview: receivedSummary.substring(0, 100)
+        });
+      }
+    }
+
+    console.log("✅ CODE-PATH SAFETY: Summary validation passed", {
+      isRecipientUserA,
+      expectedSummaryLength: expectedSummaryForRecipient.length,
+      receivedSummaryLength: receivedSummary.length,
+      summaryMatches: receivedSummary.includes(expectedSummaryForRecipient.substring(0, 50))
+    });
 
     // ✅ FETCH STRUCTURED CONTEXT from entity registry
     const { data: entities } = await supabase
@@ -426,8 +468,9 @@ if (isRecipientUserA) {
     }
   }
 
-// ✅ FIX: Ensure recipientSummary is always set
-const finalRecipientSummary = recipientSummary || derivedRecipientSummary || summary || '';
+// ✅ FIX: Ensure recipientSummary is always set (never empty)
+const finalRecipientSummary = recipientSummary || derivedRecipientSummary || summary || 
+  "General context unavailable — keep responses simple and friendly.";
 const finalRecipientThoughts = thoughts || derivedRecipientThoughts || '';
 
 console.log("✅ Final recipientSummary determination:", {
@@ -629,6 +672,21 @@ use their preferred pronouns from the Entity Registry or their #Name directly.
 Never call them 'you' — only User A and User B can be 'you/your'.
 `;
 
+// ✅ SUMMARY = SINGLE SOURCE OF TRUTH (CRITICAL)
+const summarySourceOfTruthRules = `
+🧾 SUMMARY = SINGLE SOURCE OF TRUTH (CRITICAL):
+- All @contact and #third-party information MUST come ONLY from the summary
+- Do NOT guess, modify, flip meaning, or create actions not in the summary
+- Use EXACT names as written: If summary says "Vikram", use "Vikram" (not "Vikram's" or "him" unless context requires)
+- Keep original meaning: If summary says "Vikram & Sneha supported me", they stay supportive (NOT hurtful)
+- NEVER flip meaning: Supportive → stays supportive, Hurtful → stays hurtful
+- NEVER assign actions not in summary
+- NEVER mix @contact actions with #third-party actions
+- @Name = contact in this chat - use exactly as written in summary
+- #Name = third-party - use exact name from summary, pronouns only if registry has them AND context requires
+- Summary text always defines the meaning - do NOT change it
+`;
+
 // 🧠 Simplified Pronoun-Tone Mapping (prevents name leakage)
 const pronounToneContext = generatingFor === 'User A'
   ? `
@@ -713,6 +771,30 @@ if (entities && entities.length > 0) {
   });
 }
 
+// ✅ Extract third-party names EXACTLY as they appear in summary
+// Note: cleanSummary, cleanRecipientSummary, cleanOriginalIssueSummary will be defined later
+// We'll extract from the raw summaries first, then use cleaned versions when available
+const extractThirdPartyNamesFromSummary = (summaryText: string): string[] => {
+  if (!summaryText || typeof summaryText !== 'string') return [];
+  const names: string[] = [];
+  const hashTagPattern = /#(\w+)/g;
+  let match;
+  while ((match = hashTagPattern.exec(summaryText)) !== null) {
+    const name = match[1];
+    if (name && !names.includes(name)) {
+      names.push(name);
+    }
+  }
+  return names;
+};
+
+// Extract from all possible summary sources
+const rawSummaryText = summary || recipientSummary || originalIssueSummary || '';
+const rawContextSummaryA = chatContextData.summary_a || chatContextData.summary || '';
+const rawContextSummaryB = chatContextData.summary_b || '';
+const allRawSummaries = [rawSummaryText, rawContextSummaryA, rawContextSummaryB].filter(Boolean).join(' ');
+const thirdPartyNamesInSummary = extractThirdPartyNamesFromSummary(allRawSummaries);
+
 
     // Build tag context for AI with pronoun guidance
     let tagContext = '';
@@ -765,6 +847,43 @@ if (recipientEntity && recipientEntity.entity_name) {
     console.log('  isVeryFirstMessage:', isVeryFirstMessage);
     console.log('  shouldUseHint:', shouldUseHint);
     console.log('  conversationHistory.length:', safeConversationHistory.length);
+
+    // ✅ ROLE SAFETY: Final verification before generation
+    console.log("🔒 ROLE SAFETY CHECK:", {
+      generatingFor,
+      isRecipientUserA,
+      isRecipientUserB,
+      recipientId,
+      chatUserA: chatData?.user_id,
+      chatContactB: chatData?.contact_id,
+      summaryPreview: (cleanRecipientSummary || cleanSummary || '').substring(0, 100),
+      currentMessagePreview: cleanCurrentMessage.substring(0, 100)
+    });
+
+    // Verify recipient ID matches expected role
+    if (isRecipientUserA && recipientId !== chatData?.user_id) {
+      console.error("❌ ROLE SAFETY: Recipient ID mismatch for User A");
+      return new Response(JSON.stringify({
+        success: false,
+        error: "Role safety violation: Recipient ID does not match User A",
+        details: { recipientId, expectedUserA: chatData?.user_id }
+      }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      });
+    }
+
+    if (isRecipientUserB && recipientId !== chatData?.contact_id) {
+      console.error("❌ ROLE SAFETY: Recipient ID mismatch for User B");
+      return new Response(JSON.stringify({
+        success: false,
+        error: "Role safety violation: Recipient ID does not match User B",
+        details: { recipientId, expectedUserB: chatData?.contact_id }
+      }), {
+        status: 400,
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      });
+    }
 
     // ✅ ENHANCED: Emotionally-aware gradual closure detection
     const recentMessages = safeConversationHistory.slice(-4).map(m => {
@@ -843,7 +962,7 @@ const formattedHistory = cleanConversationHistory.map((msg) => {
 
 Tone: Warm, caring, non-judgmental, genuinely supportive.`;
 
-    const systemPrompt = `${perspectiveLine} ${thirdPartyLine}
+    const systemPrompt = `${perspectiveLine} ${thirdPartyLine} ${summarySourceOfTruthRules}
 
 🚫 ABSOLUTE RULE - NAME USAGE FORBIDDEN:
 The listener (the person you're speaking TO) MUST NEVER be called by their name in the generated options.
@@ -890,8 +1009,13 @@ ${isRecipientUserA ? `
 - ❗ CRITICAL: NEVER use "her/his/their" when referring to User B - ALWAYS use "you/your"
   ❌ WRONG: "I felt hurt when you accused me of being jealous of her stuff"
   ✅ CORRECT: "I felt hurt when you accused me of being jealous of your stuff"
-- Third parties (#tagged in summary) = Use their names OR their pronouns from entity_registry
-  Example: "Sarah didn't invite me" or "she didn't invite me" (use names without # prefix in actual messages)
+- Third parties (#tagged in summary) = Use EXACT names as they appear in summary
+  * Summary is SINGLE SOURCE OF TRUTH - use only what's written
+  * Example: If summary says "Vikram and Sneha told her to calm down", use "Vikram" and "Sneha" exactly
+  * Do NOT change names, do NOT guess, do NOT invent actions
+  * Keep original meaning: If summary says "supported", stay supportive (never flip to hurtful)
+  * Pronouns from registry may be used ONLY when needed and consistent with summary meaning
+  * Example: "Sarah didn't invite me" or "she didn't invite me" (use names without # prefix in actual messages)
 - ✅ The summary has been perspective-cleaned:
   * Original @ tags (pointing to User B) have been replaced with "you/your"
   * # tags (third parties) remain as markers but use natural names/pronouns in messages
@@ -902,8 +1026,13 @@ ${isRecipientUserA ? `
 - User A (listener) = ALWAYS use "you / your / yours / yourself" when User B addresses User A
 - ❗ NEVER use User A's real name - always use "you/your" when addressing them
 - ❗ CRITICAL: NEVER use "her/his/their" when referring to User A - ALWAYS use "you/your"
-- Third parties (#tagged in summary) = Use their names OR their pronouns from entity_registry
-  Example: "Sarah told me about it" or "she mentioned it" (use names without # prefix in actual messages)
+- Third parties (#tagged in summary) = Use EXACT names as they appear in summary
+  * Summary is SINGLE SOURCE OF TRUTH - use only what's written
+  * Example: If summary says "Vikram and Sneha told her to calm down", use "Vikram" and "Sneha" exactly
+  * Do NOT change names, do NOT guess, do NOT invent actions
+  * Keep original meaning: If summary says "supported", stay supportive (never flip to hurtful)
+  * Pronouns from registry may be used ONLY when needed and consistent with summary meaning
+  * Example: "Sarah told me about it" or "she mentioned it" (use names without # prefix in actual messages)
 - ✅ The summary has been perspective-cleaned for User B's viewpoint:
   * @ tags pointing to User B (yourself) have been replaced with "I/me/my"
   * @ tags pointing to User A have been replaced with "you/your"
@@ -960,7 +1089,7 @@ Example: ${isRecipientUserA ? `User A to User B: "I felt hurt when you ignored m
 
 Your task is to generate ${isVeryFirstMessage ? '5' : '3'} options of what the person would ACTUALLY say:
 1. EACH OPTION = ONE sentence (no additional sentences or fragments)
-2. MAX 14 WORDS – concise, purposeful, complete
+2. Keep options short and natural – concise, purposeful, complete (single sentence only)
 3. DIRECTLY respond to what was just said
 4. Sound like a real human talking to someone they know
 5. Match the relationship type (casual with friends, respectful with family, professional with coworkers)
@@ -975,7 +1104,7 @@ Timing Context: ${conversationTimingContext}
 
 ${conversationTimingContext === 'recent_argument' ? `
 ⚡ RECENT ARGUMENT - Skip pleasantries, go straight to resolution:
-Generate 5 DIFFERENT approaches (single sentence, maximum 14 words, complete and meaningful):
+Generate 5 DIFFERENT approaches (single sentence, complete and meaningful):
 1. Direct and urgent: "we need to talk about what just happened"
 2. Calm and conciliatory: "can we talk about earlier?"
 3. Honest and open: "I want to clear this up with you"
@@ -984,7 +1113,7 @@ Generate 5 DIFFERENT approaches (single sentence, maximum 14 words, complete and
 DO NOT use casual greetings - they want resolution NOW.
 ` : conversationTimingContext === 'long_gap' ? `
 🕰 LONG GAP - Warm reconnection first, then gentle purpose:
-Generate 5 DIFFERENT reconnection styles (single sentence, maximum 14 words, complete and meaningful):
+Generate 5 DIFFERENT reconnection styles (single sentence, complete and meaningful):
 1. Warm and nostalgic: "hey! it's been a while, how have you been?"
 2. Caring and thoughtful: "hi! been thinking about you, how are things?"
 3. Friendly and casual: "hey stranger! how's life treating you?"
@@ -993,7 +1122,7 @@ Generate 5 DIFFERENT reconnection styles (single sentence, maximum 14 words, com
 Balance warmth with genuine interest - reconnection comes first.
 ` : conversationTimingContext === 'same_day' ? `
 ⏱ SAME DAY - Friendly but purposeful:
-Generate 5 DIFFERENT check-in approaches (single sentence, maximum 14 words, complete and meaningful):
+Generate 5 DIFFERENT check-in approaches (single sentence, complete and meaningful):
 1. Casual and direct: "hey, how's your day? got a minute?"
 2. Warm with purpose: "hi! hope you're good, wanted to bring something up"
 3. Simple check-in: "hey, how are you? something on my mind"
@@ -1001,7 +1130,7 @@ Generate 5 DIFFERENT check-in approaches (single sentence, maximum 14 words, com
 5. Straightforward: "hi, can we talk about something that's been bothering me?"
 ` : `
 💬 NORMAL TIMING - Gentle opening with wellness check:
-Generate 5 DIFFERENT greeting styles (single sentence, maximum 14 words, complete and meaningful):
+Generate 5 DIFFERENT greeting styles (single sentence, complete and meaningful):
 1. Simple and warm: "hey, how are you?"
 2. Caring tone: "hi, hope you're doing well - can we chat?"
 3. Friendly check-in: "hey there, how's everything going with you?"
@@ -1061,7 +1190,11 @@ ${shouldUseHint ? `
 - Keep User A's voice authentic to their original concern
 - User A speaks about themselves with "I/me/my" and addresses User B with "you/your"
 - ❗ CRITICAL: When User A addresses User B, use "you/your" NOT "her/his/their"
-- When mentioning third parties from summary, use their names naturally or pronouns from entity_registry
+- When mentioning third parties from summary, use EXACT names as written
+- Summary is SINGLE SOURCE OF TRUTH - do NOT modify, guess, or invent
+- Example: If summary says "Vikram and Sneha supported me", use "Vikram" and "Sneha" exactly
+- Keep original meaning: "supported" stays supportive, NOT hurtful
+- NEVER flip meaning, NEVER assign actions not in summary
 - Example: "I felt hurt when you ignored me. Sarah told me about the party." (User A speaking - using name without #)
 ` : ''}
 ${isRecipientUserB ? `
@@ -1175,7 +1308,12 @@ User B is having a direct conversation WITH User A (not talking ABOUT them):
 - If hint mentions third parties: Use their names naturally (no #) or pronouns from entity_registry ("Sarah excluded me", "she made me feel bad")
 - If hint describes User B's feelings: Share with "I felt X", "I needed Y", "I was hurt when Z"
 - Relationship language: "us/we" when discussing the relationship ("we need to work this out", "I don't want us to fight")
-- Summary text has been cleaned: User mentions are now "I/me/my" for User A and "you/your" for User B. Any third parties that were referenced with # tags remain exactly as #Name.
+- Summary text has been cleaned: User mentions are now "I/me/my" for User A and "you/your" for User B
+- Third parties: # symbols removed, but EXACT names remain from summary
+- Use EXACT third-party names as written in summary (e.g., "Vikram", "Sneha")
+- Do NOT change names, do NOT guess, do NOT invent actions
+- Keep original meaning: If summary says "supported", stay supportive
+- NEVER flip meaning, NEVER mix @contact actions with #third-party actions
 
 CRITICAL CONTEXT:
 - User B is RESPONDING to User A's latest message: "${cleanCurrentMessage}"
@@ -1213,7 +1351,7 @@ CRITICAL: ONLY single emojis - no text, no combinations, no explanations.
 Resolution is emerging. Focus on appreciation while staying grounded in what was discussed.
 
 Generate ${isVeryFirstMessage ? '5' : '3'} options:
-- Share gratitude or relief (8-14 words) tied to something they said.
+- Share gratitude or relief (short, single sentence) tied to something they said.
 - Reinforce mutual understanding: "thanks for explaining why you felt that way".
 - Reinforce continued openness: "I want us to keep being honest like this".
 
@@ -1258,7 +1396,7 @@ Build trust and understanding before closure.
           ? 'a teammate'
           : 'someone they know'}.
       - Tones: gentle, upbeat, curious, playful — no tension or conflict.
-      - Keep each message SHORT (≤ 12 words; hard cap 14).
+      - Keep each message SHORT (single sentence only).
       - NEVER mention any issue, event, emotion, or third person.
       - NEVER use or imply any @name, real name, or #tag — only say "you", "hey", or similar.
       - Use natural texting style: lowercase fine, small emoji ok ("hey you 😊", "yo", "hi there", "hey hey", etc.).
@@ -1328,19 +1466,29 @@ ${shouldUseHint ? `9. MANDATORY: Strongly incorporate User B's hint perspective 
 10. CRITICAL: Maintain absolute consistency with hint's emotional context and subject matter across ALL conversation turns
 11. PERSISTENT: The hint is active throughout the ENTIRE conversation - incorporate it in turn 1, turn 5, turn 10, etc.` : ''}
 
-CRITICAL: Each option must be a FULL, COMPLETE sentence that makes sense on its own. If you cannot express the complete thought in 14 words, simplify the sentence while keeping the core meaning intact. Options will NOT be truncated - they must be complete within the word limit.
+CRITICAL: Each option must be a FULL, COMPLETE sentence that makes sense on its own. Keep options short, natural, and meaningful. Each option must be a single sentence.
 
 ${isRecipientUserB ? `
-✅ DIFFERENTIATION RULE FOR USER B:
-- User B's options MUST be different from User A's options
-- User B is RESPONDING, not continuing User A's issue
-- User B's options should show they heard User A's message and are responding to it
-- If User A said "I felt hurt", User B should respond with options like:
+✅ DIFFERENTIATION RULE FOR USER B - CRITICAL (ROLE SAFETY):
+- User B's options MUST be RESPONSES to User A's latest message: "${cleanCurrentMessage}"
+- User B is NOT continuing User A's issue - they are RESPONDING with their own perspective
+- User B's options MUST sound different from User A's options (different viewpoints)
+- User B uses "I/me/my" for themselves and "you/your" for User A
+- Third parties: Use EXACT names from summary - do NOT change names
+- If User A said "I felt hurt", User B should respond with:
   ✅ "I'm sorry you felt that way, I didn't mean to hurt you"
   ✅ "I hear you, can we talk about what happened?"
   ✅ "I understand, I should have been more considerate"
-  ❌ NOT: "I felt hurt when you ignored me" (this sounds like User A's issue, not User B's response)
-` : ''}
+  ❌ NOT: "I felt hurt when you ignored me" (this is User A's issue, not User B's response)
+- 🔒 ROLE SAFETY: These are User B options ONLY - do NOT reuse User A's options
+- Example: If User A said "Vikram and Sneha supported me", User B MUST NOT say "I felt hurt when Vikram and Sneha..."
+` : `
+✅ DIFFERENTIATION RULE FOR USER A (ROLE SAFETY):
+- User A's options should address their original concern or respond to User B's latest message
+- User A uses "I/me/my" for themselves and "you/your" for User B
+- Third parties: Use EXACT names from summary - do NOT change names
+- 🔒 ROLE SAFETY: These are User A options ONLY - do NOT reuse User B's options
+`}
 
 CRITICAL - MAKE IT RELATABLE:
 - If they mentioned a specific event ("the party", "last week"), reference it
@@ -1373,12 +1521,11 @@ RELATIONSHIP-SPECIFIC TONE:
 - General: balanced, friendly but not too informal
 
 STRICT RULES - NO CROPPING ALLOWED:
-- TARGET: 9-13 words per option (10 words ideal, a few extra words allowed)
-- MAXIMUM: 14 words per option (hard cap)
+- Keep each option short and natural (single sentence only)
 - Each option MUST be a COMPLETE, MEANINGFUL sentence that makes sense on its own
 - NEVER generate incomplete sentences, truncated thoughts, or sentences that need "..." at the end
-- If you cannot express a complete thought in 14 words, simplify the sentence while keeping the meaning
-- CRITICAL: Generate options that are COMPLETE and MEANINGFUL within the word limit - they will NOT be truncated
+- Keep options short, natural, and meaningful (single sentence only)
+- CRITICAL: Generate options that are COMPLETE and MEANINGFUL - single sentence only
 - Use natural contractions ("you're" not "you are", "didn't" not "did not") to save words
 - Remove unnecessary filler words ("like", "just", "really") but keep emotional words if they add meaning
 - NO AI/counselor language ("I acknowledge", "Let's work together", "I understand your perspective")
@@ -1576,59 +1723,34 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     // Log received option count
     console.log(`📊 Received ${options.length} options from AI, expected ${expectedCount}`);
 
-    // ✅ ENFORCE WORD LIMIT: Validate and reject if exceeds (NO CROPPING - but be lenient)
-    const countWords = (text: string): number => {
-      if (!text || typeof text !== 'string') return 0;
-      if (/^[\p{Emoji}\p{Punctuation}]*$/u.test(text.trim())) return 0;
-      return text
-        .trim()
-        .split(/\s+/)
-        .filter((w) => w.length > 0)
-        .length;
-    };
+    // ✅ SIMPLE FALLBACK OPTIONS: Short, single-sentence responses (defined once at top)
+    const simpleFallbackOptions = [
+      "Can you tell me more?",
+      "What do you think about this?",
+      "How did that make you feel?",
+      "Can we talk about this calmly?",
+      "I want to understand you better."
+    ];
 
-    const isSingleSentence = (text: string): boolean => {
+    // ✅ SIMPLIFIED: Only check for single sentence (no word count validation)
+    const meetsOptionConstraints = (text: string): boolean => {
       if (!text || typeof text !== 'string') return false;
       const cleaned = text.trim();
       if (!cleaned) return false;
+      
+      // Reject if contains newline or ellipsis
       if (cleaned.includes('\n') || cleaned.includes('\r') || cleaned.includes('...')) {
         return false;
       }
+      
+      // Reject if multiple sentences (more than one . ? or !)
       const sentenceMarks = cleaned.match(/[.!?]/g) || [];
-      if (sentenceMarks.length > 1) return false;
-      if (sentenceMarks.length === 1) {
-        const idx = cleaned.search(/[.!?]/);
-        if (idx !== cleaned.length - 1) {
-          const trailing = cleaned.slice(idx + 1).trim();
-          if (trailing.length > 0) return false;
-        }
-      }
-      return true;
-    };
-    const meetsOptionConstraints = (text: string): boolean => {
-      const words = countWords(text);
-      if (words === 0) return false;
-    
-      // Minimum: 8 words
-      if (words < 8) {
-        console.warn(`❌ Too short (${words} words) → reject: "${text}"`);
+      if (sentenceMarks.length > 1) {
         return false;
       }
-    
-      // Ideal range: 8–15 words
-      if (words <= 15) {
-        return isSingleSentence(text);
-      }
-    
-      // Soft overflow allowed: 16–17 words (rare but okay)
-      if (words === 16 || words === 17) {
-        console.warn(`⚠️ Slightly long (${words} words) → soft-accept: "${text}"`);
-        return isSingleSentence(text);
-      }
-    
-      // Anything above 17 words → reject
-      console.warn(`❌ Too long (${words} words) → reject: "${text}"`);
-      return false;
+      
+      // Accept if single sentence (or no punctuation, which is acceptable for short responses)
+      return true;
     };
     
 
@@ -1650,8 +1772,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       });
     };
 
-    // ✅ STRICT WORD LIMIT + NAME LEAK VALIDATION
-    // Target 9-13 words (hard cap 14), single sentence
+    // ✅ SIMPLIFIED: Filter options by single-sentence rule only (no word count)
     const validOptions = options.filter(opt => {
       if (!opt || typeof opt !== 'string') {
         console.warn(`⚠️ Invalid option (not a string):`, opt);
@@ -1665,6 +1786,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
         return false;
       }
 
+      // Only check single-sentence constraint (no word count)
       if (!meetsOptionConstraints(opt)) {
         return false;
       }
@@ -1674,68 +1796,48 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     // ✅ Store validOptions for potential fallback
     let workingOptions = validOptions;
 
-    // ✅ ENFORCE MINIMUM: Must have at least expectedCount options (retry or generate fallbacks)
+    // ✅ ENSURE MINIMUM: Fill with fallbacks if needed (never throw error)
     if (validOptions.length < expectedCount) {
-      console.warn(`⚠️ Only ${validOptions.length} valid options, expected ${expectedCount}. Need to add fallback options.`);
-
-      // If we have at least 1 valid option, pad with contextual fallbacks
-      if (validOptions.length >= 1) {
-        console.log(`✅ Have ${validOptions.length} valid options, generating ${expectedCount - validOptions.length} contextual fallbacks...`);
-
-        // Generate contextual fallback options based on conversation state
-        const fallbackOptions: string[] = [
-          "Can you help me explain what you meant earlier?",
-          "I want to understand your thoughts a little better.",
-          "What was going through your mind when that happened?",
-          "Can we talk more about what you just said?",
-          "I'd like to hear a bit more from your side."
-        ];
+      console.warn(`⚠️ Only ${validOptions.length} valid options, expected ${expectedCount}. Adding fallback options.`);
+      
+      // Add simple fallbacks until we reach expectedCount
+      let fallbackIndex = 0;
+      while (workingOptions.length < expectedCount && fallbackIndex < simpleFallbackOptions.length) {
+        const fallback = simpleFallbackOptions[fallbackIndex];
+        // Check if fallback is not already in workingOptions
+        const isDuplicate = workingOptions.some(existing => 
+          existing.toLowerCase().trim() === fallback.toLowerCase().trim()
+        );
         
-
-        // Add fallbacks until we reach expectedCount
-        let fallbackIndex = 0;
-        while (workingOptions.length < expectedCount && fallbackIndex < fallbackOptions.length) {
-          // Check if fallback is not too similar to existing options
-            const fallback = fallbackOptions[fallbackIndex];
-            if (!meetsOptionConstraints(fallback)) {
-              fallbackIndex++;
-              continue;
-            }
-          const isSimilar = workingOptions.some(existing => {
-            const similarity = existing.toLowerCase().includes(fallback.toLowerCase().substring(0, 10));
-            return similarity;
-          });
-
-          if (!isSimilar) {
-            workingOptions.push(fallback);
-            console.log(`   Added fallback: "${fallback}"`);
-          }
-          fallbackIndex++;
+        if (!isDuplicate) {
+          workingOptions.push(fallback);
+          console.log(`   Added fallback: "${fallback}"`);
         }
-
-        console.log(`✅ Final count after fallbacks: ${workingOptions.length} options`);
-      } else {
-        // No valid options at all - use ALL shortest options as fallback
-        console.warn(`⚠️ No valid options. Using shortest options from AI response as fallback.`);
-        const sortedByLength = options
-          .filter(opt => opt && typeof opt === 'string' && meetsOptionConstraints(opt))
-          .filter(opt => opt && typeof opt === 'string' && meetsOptionConstraints(opt))
-          .map(opt => ({ opt, wordCount: countWords(opt) }))
-          .sort((a, b) => a.wordCount - b.wordCount)
-          .slice(0, expectedCount);
-
-        if (sortedByLength.length >= expectedCount) {
-          workingOptions = sortedByLength.map(item => item.opt);
-          console.log(`⚠️ Using ${workingOptions.length} shortest options (${sortedByLength.map(i => i.wordCount).join(', ')} words each)`);
-        } else {
-          throw new Error(`Cannot generate ${expectedCount} options: AI provided ${options.length}, only ${sortedByLength.length} usable`);
-        }
+        fallbackIndex++;
       }
-    } else {
-      // Use exactly expectedCount valid options
-      workingOptions = validOptions.slice(0, expectedCount);
-      console.log(`✅ Have ${validOptions.length} valid options, using exactly ${expectedCount} as expected`);
+      
+      // If still not enough, repeat fallbacks (shouldn't happen, but safety)
+      while (workingOptions.length < expectedCount) {
+        const fallback = simpleFallbackOptions[workingOptions.length % simpleFallbackOptions.length];
+        workingOptions.push(fallback);
+        console.log(`   Added repeated fallback: "${fallback}"`);
+      }
+      
+      console.log(`✅ Final count after fallbacks: ${workingOptions.length} options`);
     }
+    
+    // ✅ GUARANTEE: Always have at least expectedCount options
+    if (workingOptions.length < expectedCount) {
+      console.warn(`⚠️ Still need ${expectedCount - workingOptions.length} more options. Filling with fallbacks.`);
+      while (workingOptions.length < expectedCount) {
+        const fallback = simpleFallbackOptions[workingOptions.length % simpleFallbackOptions.length];
+        workingOptions.push(fallback);
+      }
+    }
+    
+    // ✅ FINAL GUARANTEE: Take exactly expectedCount options
+    workingOptions = workingOptions.slice(0, expectedCount);
+    console.log(`✅ Final working options: ${workingOptions.length} (expected: ${expectedCount})`);
 
     // Fetch recent options for deduplication
     const { data: recentOptions } = await supabase
@@ -1768,56 +1870,70 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
 
       console.log(`🔍 After deduplication: ${workingOptions.length} unique options (removed ${originalCount - workingOptions.length} duplicates)`);
 
-      // ✅ If deduplication removed too many, restore some unique validated options to meet expectedCount
-      if (workingOptions.length < expectedCount && validOptions.length > 0) {
-        console.warn(`⚠️ Deduplication left only ${workingOptions.length} options. Restoring unique options to reach ${expectedCount}...`);
-
-        // Find validOptions not in workingOptions
-        const additionalOptions = validOptions.filter(vo => !workingOptions.includes(vo));
-
-        // Add back options until we reach expectedCount
-        let addedCount = 0;
-        for (const opt of additionalOptions) {
-          if (workingOptions.length >= expectedCount) break;
-          workingOptions.push(opt);
-          addedCount++;
+      // ✅ If deduplication removed too many, add fallbacks to meet expectedCount
+      if (workingOptions.length < expectedCount) {
+        console.warn(`⚠️ Deduplication left only ${workingOptions.length} options. Adding fallbacks to reach ${expectedCount}...`);
+        
+        let fallbackIndex = 0;
+        while (workingOptions.length < expectedCount && fallbackIndex < simpleFallbackOptions.length) {
+          const fallback = simpleFallbackOptions[fallbackIndex];
+          const isDuplicate = workingOptions.some(existing => 
+            existing.toLowerCase().trim() === fallback.toLowerCase().trim()
+          );
+          
+          if (!isDuplicate) {
+            workingOptions.push(fallback);
+            console.log(`   Added dedup fallback: "${fallback}"`);
+          }
+          fallbackIndex++;
         }
-
-        console.log(`   Restored ${addedCount} unique options to meet minimum count`);
+        
+        // If still not enough, repeat fallbacks
+        while (workingOptions.length < expectedCount) {
+          const fallback = simpleFallbackOptions[workingOptions.length % simpleFallbackOptions.length];
+          workingOptions.push(fallback);
+        }
       }
     }
 
-    // ✅ ENFORCE: Ensure we ALWAYS have expectedCount options
+    // ✅ FINAL GUARANTEE: Ensure we ALWAYS have expectedCount options after deduplication
     if (workingOptions.length < expectedCount) {
       console.warn(`⚠️ After deduplication, only ${workingOptions.length}/${expectedCount} options. Padding with fallbacks...`);
 
-      const genericFallbacks = [
-        "I hear what you're saying.",
-        "Can we work through this together?",
-        "I want to make things right between us."
-      ];
-
-      // Add generic fallbacks to reach expectedCount
+      // Add simple fallbacks to reach expectedCount
       let fallbackIndex = 0;
-      while (workingOptions.length < expectedCount && fallbackIndex < genericFallbacks.length) {
-        if (!workingOptions.includes(genericFallbacks[fallbackIndex])) {
-          workingOptions.push(genericFallbacks[fallbackIndex]);
+      while (workingOptions.length < expectedCount && fallbackIndex < simpleFallbackOptions.length) {
+        const fallback = simpleFallbackOptions[fallbackIndex];
+        const isDuplicate = workingOptions.some(existing => 
+          existing.toLowerCase().trim() === fallback.toLowerCase().trim()
+        );
+        
+        if (!isDuplicate) {
+          workingOptions.push(fallback);
+          console.log(`   Added final fallback: "${fallback}"`);
         }
         fallbackIndex++;
+      }
+      
+      // If still not enough, repeat fallbacks
+      while (workingOptions.length < expectedCount) {
+        const fallback = simpleFallbackOptions[workingOptions.length % simpleFallbackOptions.length];
+        workingOptions.push(fallback);
       }
 
       console.log(`   Final count after padding: ${workingOptions.length} options`);
     }
     
-    // ✅ Final safety check: Ensure we have at least 1 option (use ANYTHING if needed)
-    if (!workingOptions || workingOptions.length === 0) {
-      // Absolute last resort: use first option from original array
-      if (options && options.length > 0) {
-        console.warn("⚠️ Using first option from original array as absolute fallback");
-        workingOptions = [options[0]];
-      } else {
-        throw new Error(`No options available after all validation steps`);
+    // ✅ Final safety check: Ensure we have at least expectedCount options
+    if (!workingOptions || workingOptions.length === 0 || workingOptions.length < expectedCount) {
+      console.warn(`⚠️ Final safety check: Only ${workingOptions?.length || 0} options. Using fallbacks.`);
+      
+      workingOptions = [];
+      while (workingOptions.length < expectedCount) {
+        const fallback = simpleFallbackOptions[workingOptions.length % simpleFallbackOptions.length];
+        workingOptions.push(fallback);
       }
+      console.log(`✅ Final safety check: Generated ${workingOptions.length} fallback options`);
     }
     
     // Set options to workingOptions for final processing
@@ -2292,31 +2408,40 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       }
     }
     
+    // ✅ SIMPLIFIED: Filter by single-sentence only (no word count)
     let constrainedNormalizedOptions = normalizedOptions.filter(meetsOptionConstraints);
     if (constrainedNormalizedOptions.length < normalizedOptions.length) {
-      console.warn(`⚠️ After normalization, ${normalizedOptions.length - constrainedNormalizedOptions.length} options violated sentence/word rules and were removed.`);
+      console.warn(`⚠️ After normalization, ${normalizedOptions.length - constrainedNormalizedOptions.length} options violated single-sentence rule and were removed.`);
     }
+    
+    // ✅ GUARANTEE: Always return expectedCount options (never throw error)
     if (constrainedNormalizedOptions.length < expectedCount) {
       console.warn(`⚠️ Only ${constrainedNormalizedOptions.length} normalized options remain; adding fallbacks to reach ${expectedCount}.`);
-      const normalizationFallbacks = [
-        "Can you tell me more about what you're feeling?",
-        "I'd like to understand your side a little better.",
-        "Can we talk through what happened between us?",
-        "I want to understand what this meant to you.",
-        "Can you explain what you were thinking earlier?"
-      ];
       
-      for (const fallback of normalizationFallbacks) {
-        if (constrainedNormalizedOptions.length >= expectedCount) break;
-        if (!constrainedNormalizedOptions.includes(fallback) && meetsOptionConstraints(fallback)) {
+      let fallbackIndex = 0;
+      while (constrainedNormalizedOptions.length < expectedCount && fallbackIndex < simpleFallbackOptions.length) {
+        const fallback = simpleFallbackOptions[fallbackIndex];
+        // Check if fallback is not duplicate
+        const isDuplicate = constrainedNormalizedOptions.some(existing => 
+          existing.toLowerCase().trim() === fallback.toLowerCase().trim()
+        );
+        
+        if (!isDuplicate) {
           constrainedNormalizedOptions.push(fallback);
           console.log(`   Added normalization fallback: "${fallback}"`);
         }
+        fallbackIndex++;
       }
-      if (constrainedNormalizedOptions.length < expectedCount) {
-        throw new Error(`Unable to provide ${expectedCount} valid options after normalization (only ${constrainedNormalizedOptions.length}).`);
+      
+      // If still not enough, repeat fallbacks
+      while (constrainedNormalizedOptions.length < expectedCount) {
+        const fallback = simpleFallbackOptions[constrainedNormalizedOptions.length % simpleFallbackOptions.length];
+        constrainedNormalizedOptions.push(fallback);
+        console.log(`   Added repeated fallback: "${fallback}"`);
       }
     }
+    
+    // ✅ FINAL GUARANTEE: Take exactly expectedCount options
     normalizedOptions = constrainedNormalizedOptions.slice(0, expectedCount);
     
     console.log("   Final normalized options:", normalizedOptions);

@@ -1528,7 +1528,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             summary: recipientSummary || "",
             thoughts: recipientThoughts || "",
             originalIssueSummary: summaryA || "",
-            recipientSummary: summaryB || "",
+            recipientSummary: recipientSummary || "",
             hint_from_b: chatData.context_data?.hint_from_b || '',
             // ✅ CRITICAL: Always pass User A's original issue context
             originalIssue: {
