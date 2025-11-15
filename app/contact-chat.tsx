@@ -656,6 +656,19 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       console.log(" Recipient ID from DB:", data[0].recipient_id);
       console.log(" Current User ID:", userId);
       
+      // ✅ CRITICAL FIX: Validate recipient_id before proceeding
+      if (String(data[0].recipient_id) !== String(userId)) {
+        console.warn("⚠️ SECURITY BLOCK: Options recipient_id mismatch!", {
+          recipientIdFromDB: data[0].recipient_id,
+          currentUserId: userId,
+          chatId: chatId,
+          optionId: data[0].id
+        });
+        console.warn("⚠️ BLOCKED: Not applying options - wrong recipient");
+        return;
+      }
+      console.log("✅ Recipient ID validated - proceeding to apply options");
+      
       const ctx = data[0].context_data || {};
       // ✅ FIX: Validate initial options same way as realtime handler
       const isInitialOptions = 
@@ -770,6 +783,22 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             
             if (retryIsInitialOptions) {
               console.log("✅ Initial options found on retry - applying");
+              
+              // ✅ CRITICAL FIX: Validate recipient_id before applying
+              console.log("🔍 Retry validation - Recipient ID from DB:", retryData[0].recipient_id);
+              console.log("🔍 Retry validation - Current User ID:", userId);
+              if (String(retryData[0].recipient_id) !== String(userId)) {
+                console.warn("⚠️ SECURITY BLOCK: Retry options recipient_id mismatch!", {
+                  recipientIdFromDB: retryData[0].recipient_id,
+                  currentUserId: userId,
+                  chatId: chatId,
+                  optionId: retryData[0].id
+                });
+                console.warn("⚠️ BLOCKED: Not applying retry options - wrong recipient");
+                return;
+              }
+              console.log("✅ Retry recipient ID validated - proceeding to apply options");
+              
               const retrySignature = `${retryData[0].id || ""}|${JSON.stringify(retryData[0].options || [])}`;
               if (retrySignature !== lastOptionsSignatureRef.current) {
                 lastOptionsSignatureRef.current = retrySignature;
@@ -790,7 +819,10 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         // Force mode - don't retry, just resolve
         resolveWaitingForOptions(userId);
         setOptionsGenerationFailed(true);
-        showNotification('warning', 'Options Delayed', 'Response options are taking longer than expected. They will appear when ready.');
+        // ✅ FIX: Only show notification if waiting state is for current user
+        if (pendingOptionsRecipientRef.current && String(pendingOptionsRecipientRef.current) === String(userId)) {
+          showNotification('warning', 'Options Delayed', 'Response options are taking longer than expected. They will appear when ready.');
+        }
       }
     }
   };
@@ -800,7 +832,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     try {
       const { data, error } = await supabase
         .from("message_options")
-        .select("id, options, context_data")
+        .select("id, options, context_data, recipient_id")
         .eq("chat_id", chatId)
         .eq("recipient_id", user.id)
         .order("created_at", { ascending: false })
@@ -813,10 +845,13 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         enterWaitingForOptions(String(user.id));
         // Set a timeout to stop waiting after 30 seconds (increased from 20)
         setTimeout(() => {
-          resolveWaitingForOptions(String(user.id));
-          if (!showSuggestedOptions) {
-            console.warn("⚠️ Options generation timeout after 30 seconds");
-            showNotification('info', 'Options Delayed', 'You can send a message manually or wait for AI-generated options.');
+          // ✅ FIX: Only resolve and show notification if still waiting for this specific user
+          if (pendingOptionsRecipientRef.current && String(pendingOptionsRecipientRef.current) === String(user.id)) {
+            resolveWaitingForOptions(String(user.id));
+            if (!showSuggestedOptions) {
+              console.warn("⚠️ Options generation timeout after 30 seconds");
+              showNotification('info', 'Options Delayed', 'You can send a message manually or wait for AI-generated options.');
+            }
           }
         }, 30000);
         return;
@@ -861,6 +896,21 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       // This handles the case where options exist but fetchInitialOptions hasn't found them yet
       const signature = `${data[0].id || ""}|${JSON.stringify(data[0].options || [])}`;
       if (signature !== lastOptionsSignatureRef.current) {
+        // ✅ CRITICAL FIX: Validate recipient_id before applying
+        console.log("🔍 ensureInitialOptions validation - Recipient ID from DB:", data[0].recipient_id);
+        console.log("🔍 ensureInitialOptions validation - Current User ID:", user.id);
+        if (String(data[0].recipient_id) !== String(user.id)) {
+          console.warn("⚠️ SECURITY BLOCK: ensureInitialOptions recipient_id mismatch!", {
+            recipientIdFromDB: data[0].recipient_id,
+            currentUserId: user.id,
+            chatId: chatId,
+            optionId: data[0].id
+          });
+          console.warn("⚠️ BLOCKED: Not applying options from ensureInitialOptions - wrong recipient");
+          return;
+        }
+        console.log("✅ ensureInitialOptions recipient ID validated - proceeding to apply options");
+        
         lastOptionsSignatureRef.current = signature;
         const cleanedOptions = cleanOptionsForDisplay(data[0].options || [], contact?.full_name || null);
         console.log("✅ Applying valid options from ensureInitialOptions:", cleanedOptions);
@@ -898,9 +948,18 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       }
 
       const recipientId = String(row.recipient_id || "");
+      console.log("🔍 Realtime subscription - Recipient ID from payload:", recipientId);
+      console.log("🔍 Realtime subscription - Current User ID:", currentUserId);
       if (recipientId !== String(currentUserId)) {
+        console.warn("⚠️ SECURITY BLOCK: Realtime subscription recipient_id mismatch - ignoring", {
+          recipientIdFromPayload: recipientId,
+          currentUserId: currentUserId,
+          chatId: chatId,
+          optionId: row.id
+        });
         return;
       }
+      console.log("✅ Realtime subscription recipient ID validated - proceeding");
 
       const ctx = row.context_data || {};
       const optionsArray = Array.isArray(row.options) ? row.options : [];
@@ -957,7 +1016,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           event: "INSERT",
           schema: "public",
           table: "message_options",
-          filter: `chat_id=eq.${chatId}`,
+          filter: `chat_id=eq.${chatId} AND recipient_id=eq.${currentUserId}`,
         },
         handleOptionsUpdate
       )
@@ -967,7 +1026,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           event: "UPDATE",
           schema: "public",
           table: "message_options",
-          filter: `chat_id=eq.${chatId}`,
+          filter: `chat_id=eq.${chatId} AND recipient_id=eq.${currentUserId}`,
         },
         handleOptionsUpdate
       )
@@ -977,10 +1036,10 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           event: "DELETE",
           schema: "public",
           table: "message_options",
-          filter: `chat_id=eq.${chatId}`,
+          filter: `chat_id=eq.${chatId} AND recipient_id=eq.${currentUserId}`,
         },
         (payload) => {
-          if (payload.old?.recipient_id !== currentUserId) return;
+          if (String(payload.old?.recipient_id) !== String(currentUserId)) return;
           console.log("🧹 Options deleted for current user - waiting for regenerated set");
           lastOptionsSignatureRef.current = null;
           enterWaitingForOptions(String(payload.old.recipient_id));
@@ -1257,7 +1316,31 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     console.log("🚀".repeat(30) + "\n");
     setLoading(true);
     setShowSuggestedOptions(false);
-    const recipientId = contactId ? String(contactId) : null;
+    
+    // ✅ CRITICAL FIX: Determine recipient based on who is sending
+    // If current user is User A (user_id), recipient is User B (contact_id)
+    // If current user is User B (contact_id), recipient is User A (user_id)
+    let recipientId: string | null = null;
+    if (chatCheck) {
+      const isCurrentUserA = user?.id === chatCheck.user_id;
+      recipientId = isCurrentUserA 
+        ? String(chatCheck.contact_id)  // User A sends to User B
+        : String(chatCheck.user_id);    // User B sends to User A
+      
+      console.log("✅ RECIPIENT ID DETERMINATION:", {
+        currentUserId: user?.id,
+        chatUserA: chatCheck.user_id,
+        chatContactB: chatCheck.contact_id,
+        isCurrentUserA,
+        recipientId,
+        recipientIsUserA: recipientId === String(chatCheck.user_id),
+        recipientIsUserB: recipientId === String(chatCheck.contact_id)
+      });
+    } else {
+      // Fallback to old logic if chatCheck not available
+      recipientId = contactId ? String(contactId) : null;
+      console.warn("⚠️ Using fallback recipientId (chatCheck not available):", recipientId);
+    }
     try {
       const { data, error } = await supabase
         .from("messages")

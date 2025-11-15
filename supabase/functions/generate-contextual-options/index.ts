@@ -128,7 +128,7 @@ Deno.serve(async (req) => {
     // ✅ Get chat data to properly identify User A vs User B and extract tagged entities
     const { data: chatData, error: chatDataError } = await supabase
       .from('chats')
-      .select('user_id, contact_id, context_data')
+      .select('user_id, contact_id, context_data, user_a_smiley_sent, user_b_smiley_sent, closure_state, is_resolved')
       .eq('id', chatId)
       .single();
 
@@ -148,6 +148,37 @@ Deno.serve(async (req) => {
     const isRecipientUserA = recipientId === chatData?.user_id;
     const isRecipientUserB = recipientId === chatData?.contact_id;
     const shouldUseHint = isRecipientUserB && hintFromB;
+
+    // ✅ DETECT: Has the other user already sent a smiley?
+    const otherUserSentSmiley = isRecipientUserA 
+      ? chatData?.user_b_smiley_sent 
+      : chatData?.user_a_smiley_sent;
+    
+    const currentUserSentSmiley = isRecipientUserA
+      ? chatData?.user_a_smiley_sent
+      : chatData?.user_b_smiley_sent;
+    
+    // ✅ DETECT: Smiley emojis in recent conversation history
+    const detectSmileyInHistory = (history: any[]): boolean => {
+      return history.some(msg => {
+        const content = typeof msg === 'object' ? msg.content : String(msg);
+        const contentStr = String(content).trim();
+        return /^[\p{Emoji}]+$/u.test(contentStr) || 
+               /🙂|😊|❤️|🤝|💙|🫂|✨|👍/.test(contentStr);
+      });
+    };
+    
+    const hasSmileyInRecentMessages = detectSmileyInHistory(safeConversationHistory.slice(-3));
+    const otherUserRecentSmiley = safeConversationHistory.some(msg => {
+      if (typeof msg !== 'object') return false;
+      const senderMatchesOther = isRecipientUserA 
+        ? msg.sender_id === chatData?.contact_id
+        : msg.sender_id === chatData?.user_id;
+      if (!senderMatchesOther) return false;
+      const content = String(msg.content || '');
+      const contentStr = content.trim();
+      return /^[\p{Emoji}]+$/u.test(contentStr) || /🙂|😊|❤️|🤝|💙|🫂|✨|👍/.test(contentStr);
+    });
     
     console.log("👥 User identification:", {
       recipientId,
@@ -155,7 +186,14 @@ Deno.serve(async (req) => {
       chatContactB: chatData?.contact_id,
       isRecipientUserA,
       isRecipientUserB,
-      shouldUseHint
+      shouldUseHint,
+      otherUserSentSmiley,
+      currentUserSentSmiley,
+      hasSmileyInRecentMessages,
+      otherUserRecentSmiley,
+      // ✅ VERIFY: Check string conversion for type safety (for User A/B switching detection)
+      recipientMatchesUserA: String(recipientId) === String(chatData?.user_id),
+      recipientMatchesContactB: String(recipientId) === String(chatData?.contact_id)
     });
     
     // ✅ Validate recipient ID matches either User A or User B
@@ -383,88 +421,17 @@ if (isRecipientUserA) {
       derivedRecipientThoughts = thoughtsBFromContext || '';
       console.log("✅ For User B: Using existing summary_b from context_data");
     } else if (summaryA && summaryA.length > 0) {
-      // ✅ FIX: Derive summary_b from summary_a by swapping perspectives
-      // The summary_a is written from User A's perspective where:
-      // - User A uses "I/me/my" for themselves
-      // - User B is referenced with @UserB or their name
-      // For User B's perspective, we need to swap:
-      // - @UserA or User A's name → "you" (User B addressing User A)
-      // - @UserB or User B's name → "I" (User B speaking about themselves)
-      // - User A's "I/me/my" → "you/your" (since User B is addressing User A)
-      
-      // ✅ FIX: Derive summary_b from summary_a by swapping perspectives
-      // The summary_a is written from User A's perspective where:
-      // - User A uses "I/me/my" for themselves
-      // - User B is referenced with @UserB or their name
-      // For User B's perspective, we need to swap:
-      // - User A's "I/me/my" → "you/your" (User B describing what User A felt/experienced)
-      // - @UserA or User A's name → "you" (User B addressing User A)
-      // - @UserB or User B's name → "I" (User B speaking about themselves)
-      
-      let swappedSummary = summaryA;
-      
-      if (userAName && userBName) {
-        const escapedAName = userAName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const escapedBName = userBName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        
-        // Step 1: Replace @UserB or User B's name with a placeholder first (before handling "I")
-        // This prevents "I" from User B's name being confused with User A's "I"
-        swappedSummary = swappedSummary.replace(new RegExp(`@${escapedBName}'s\\b`, 'gi'), 'USERB_POSSESSIVE_PLACEHOLDER');
-        swappedSummary = swappedSummary.replace(new RegExp(`\\b${escapedBName}'s\\b`, 'gi'), 'USERB_POSSESSIVE_PLACEHOLDER');
-        swappedSummary = swappedSummary.replace(new RegExp(`@${escapedBName}\\b`, 'gi'), 'USERB_PLACEHOLDER');
-        swappedSummary = swappedSummary.replace(new RegExp(`\\b${escapedBName}\\b`, 'gi'), 'USERB_PLACEHOLDER');
-        
-        // Step 2: Replace @UserA or User A's name with placeholder
-        swappedSummary = swappedSummary.replace(new RegExp(`@${escapedAName}'s\\b`, 'gi'), 'USERA_POSSESSIVE_PLACEHOLDER');
-        swappedSummary = swappedSummary.replace(new RegExp(`\\b${escapedAName}'s\\b`, 'gi'), 'USERA_POSSESSIVE_PLACEHOLDER');
-        swappedSummary = swappedSummary.replace(new RegExp(`@${escapedAName}\\b`, 'gi'), 'USERA_PLACEHOLDER');
-        swappedSummary = swappedSummary.replace(new RegExp(`\\b${escapedAName}\\b`, 'gi'), 'USERA_PLACEHOLDER');
-        
-        // Step 3: Replace User A's first-person pronouns ("I/me/my/mine") with "you/your"
-        // These refer to User A, so from User B's perspective they become "you/your"
-        // Use word boundaries to avoid partial matches
-        swappedSummary = swappedSummary.replace(/\bI\b/gi, (match, offset, string) => {
-          // Check if it's at the start of sentence or after punctuation
-          const before = offset > 0 ? string[offset - 1] : ' ';
-          const isStartOfSentence = /[.!?]\s*$/.test(string.substring(0, offset));
-          return isStartOfSentence || /^\s/.test(string.substring(offset - 1, offset)) ? 'You' : 'you';
-        });
-        swappedSummary = swappedSummary.replace(/\bme\b/gi, (match, offset, string) => {
-          const before = offset > 0 ? string[offset - 1] : ' ';
-          const isStartOfSentence = /[.!?]\s*$/.test(string.substring(0, offset));
-          return isStartOfSentence ? 'You' : 'you';
-        });
-        swappedSummary = swappedSummary.replace(/\bmy\b/gi, (match, offset, string) => {
-          const before = offset > 0 ? string[offset - 1] : ' ';
-          const isStartOfSentence = /[.!?]\s*$/.test(string.substring(0, offset));
-          return isStartOfSentence ? 'Your' : 'your';
-        });
-        swappedSummary = swappedSummary.replace(/\bmine\b/gi, (match, offset, string) => {
-          const before = offset > 0 ? string[offset - 1] : ' ';
-          const isStartOfSentence = /[.!?]\s*$/.test(string.substring(0, offset));
-          return isStartOfSentence ? 'Yours' : 'yours';
-        });
-        
-        // Step 4: Replace placeholders with actual pronouns
-        // UserB → "I" (User B speaking about themselves)
-        swappedSummary = swappedSummary.replace(/USERB_POSSESSIVE_PLACEHOLDER/gi, (match) => match === 'USERB_POSSESSIVE_PLACEHOLDER' ? 'my' : 'My');
-        swappedSummary = swappedSummary.replace(/USERB_PLACEHOLDER/gi, (match) => match === 'USERB_PLACEHOLDER' ? 'I' : 'I');
-        
-        // UserA → "you" (User B addressing User A)
-        swappedSummary = swappedSummary.replace(/USERA_POSSESSIVE_PLACEHOLDER/gi, (match) => match === 'USERA_POSSESSIVE_PLACEHOLDER' ? 'your' : 'Your');
-        swappedSummary = swappedSummary.replace(/USERA_PLACEHOLDER/gi, (match) => match === 'USERA_PLACEHOLDER' ? 'you' : 'You');
-      }
-      
-      derivedRecipientSummary = swappedSummary;
-      derivedRecipientThoughts = thoughtsA || '';
-      console.log("✅ For User B: Derived recipientSummary from summary_a with perspective swap");
-      console.log("   Original (User A perspective):", summaryA.substring(0, 150));
-      console.log("   Swapped (User B perspective):", swappedSummary.substring(0, 150));
+      // ✅ FIX: For User B, DON'T swap summary_a - it creates perspective mixing
+      // If User B has no hint, we'll use latest message + topic + relationship tone + neutral baseline
+      // User A's summary will be shown separately as external context only (not as User B's perspective)
+      derivedRecipientSummary = ''; // Empty - prevents perspective mixing
+      derivedRecipientThoughts = '';
+      console.log("✅ For User B: NOT using swapped summary (prevents perspective mixing)");
+      console.log("   If no hint: Will use latest message + topic + relationship tone + neutral baseline");
     } else {
-      // Fallback: use the passed summary or recipientSummary
-      derivedRecipientSummary = summary || recipientSummary || '';
-      derivedRecipientThoughts = thoughts || '';
-      console.log("⚠️ For User B: Using fallback summary (no summary_a found)");
+      derivedRecipientSummary = ''; // Empty for User B
+      derivedRecipientThoughts = '';
+      console.log("⚠️ For User B: No summary_a found - will use latest message + topic + relationship tone");
     }
   }
 
@@ -658,6 +625,44 @@ const generatingFor = isRecipientUserA ? 'User A' : 'User B';
 const isFirstResponseForUserB = !isRecipientUserA && safeConversationHistory.length <= 1;
 
 const hintPromptSnippet = shouldUseHint ? cleanPerspective(hintFromB || '') : '';
+
+// ✅ Extract neutral topic from conversation (factual only, no emotions)
+const extractNeutralTopic = (): string => {
+  if (!isRecipientUserB || safeConversationHistory.length === 0) return '';
+  
+  // Get last few messages to extract topic
+  const recentMessages = safeConversationHistory.slice(-4)
+    .map((msg: any) => typeof msg === 'object' ? String(msg.content || '') : String(msg))
+    .join(' ')
+    .toLowerCase();
+  
+  // Extract factual topics (remove emotional words)
+  const topicKeywords: string[] = [];
+  
+  // Common topics (factual, not emotional)
+  const topicPatterns = [
+    /\b(party|event|gathering|meeting|dinner|celebration)\b/i,
+    /\b(invitation|invite|asked|told)\b/i,
+    /\b(text|message|call|phone|contact)\b/i,
+    /\b(work|job|project|meeting|colleague)\b/i,
+    /\b(friend|friendship|relationship|connection)\b/i,
+    /\b(jealousy|jealous|accusation|accused)\b/i,
+    /\b(ignored|left out|excluded|missed)\b/i
+  ];
+  
+  topicPatterns.forEach(pattern => {
+    const match = recentMessages.match(pattern);
+    if (match) {
+      topicKeywords.push(match[0]);
+    }
+  });
+  
+  // Remove duplicates and return
+  const uniqueTopics = [...new Set(topicKeywords)];
+  return uniqueTopics.length > 0 ? uniqueTopics.join(', ') : '';
+};
+
+const neutralTopic = isRecipientUserB ? extractNeutralTopic() : '';
 
 // ✅ Define perspective clearly (who's speaking to whom)
 const perspectiveLine =
@@ -893,6 +898,14 @@ if (recipientEntity && recipientEntity.entity_name) {
       return String(m).toLowerCase();
     }).join(' ');
 
+    // Detect smiley emojis in conversation
+    const hasSmileyInMessages = /🙂|😊|❤️|🤝|💙|🫂|✨|👍/.test(recentMessages) || 
+                                 safeConversationHistory.some(m => {
+                                   const content = typeof m === 'object' ? m.content : String(m);
+                                   const contentStr = String(content).trim();
+                                   return /^[\p{Emoji}]+$/u.test(contentStr);
+                                 });
+
     // Detect multiple emotional resolution signals
     const hasGratitude = /thank|grateful|appreciate|glad|happy we talked/.test(recentMessages);
     const hasForgiveness = /sorry|forgive|understand|my bad|apologize|didn't mean to/.test(recentMessages);
@@ -907,6 +920,9 @@ if (recipientEntity && recipientEntity.entity_name) {
     if (hasUnderstanding) emotionalClosureScore += 0.2;
     if (hasClosure) emotionalClosureScore += 0.15;
     if (hasPositiveAffirmation) emotionalClosureScore += 0.15;
+    // ✅ NEW: Add score boost if smiley detected or other user sent smiley
+    if (hasSmileyInMessages || otherUserSentSmiley) emotionalClosureScore += 0.2;
+    if (otherUserRecentSmiley) emotionalClosureScore += 0.15; // Recent smiley from other user
 
     // Detect if conversation has mutual exchange (both sides have spoken)
     const mutualExchange = safeConversationHistory.length >= 4 &&
@@ -915,7 +931,8 @@ if (recipientEntity && recipientEntity.entity_name) {
 
     // Only consider closure if conversation has meaningful exchange
     const closureEligible = safeConversationHistory.length >= 6;
-    const naturalClosureDetected = closureEligible && mutualExchange && emotionalClosureScore >= 0.5;
+    // ✅ ADJUSTED: Lower threshold for gradual introduction (was 0.5, now 0.3 for early introduction)
+    const naturalClosureDetected = closureEligible && mutualExchange && emotionalClosureScore >= 0.3;
 
     const latestLower = (cleanCurrentMessage || '').toLowerCase();
     const closureSignalRegex = /(thank you|thanks for|glad we|happy we|appreciate you|feel better|we're on the same page|we're good|can we move forward|ready to move forward|i forgive you|i understand you|no worries|let's keep this energy|i value you|i'm here for you)/i;
@@ -932,17 +949,109 @@ if (recipientEntity && recipientEntity.entity_name) {
       hasUnderstanding,
       hasClosure,
       hasPositiveAffirmation,
+      hasSmileyInMessages,
+      otherUserSentSmiley,
+      otherUserRecentSmiley,
       mutualExchange,
       naturalClosureDetected,
       messageCount: safeConversationHistory.length
     });
 
-// Format conversation history (already cleaned via cleanConversationHistory above)
-const formattedHistory = cleanConversationHistory.map((msg) => {
+// ✅ DETECT: Has User A already explained the issue?
+const hasUserAExplainedIssue = isRecipientUserA && safeConversationHistory.length > 0 && 
+  safeConversationHistory.some((msg) => {
+    if (typeof msg !== 'object' || msg.sender_id !== recipientId) return false;
+    const content = String(msg.content || '').toLowerCase();
+    const issueKeywords = (cleanOriginalIssueSummary || cleanSummary || '')
+      .toLowerCase().split(/\s+/).filter(w => w.length > 4).slice(0, 5);
+    const hasIssueKeywords = issueKeywords.some(keyword => content.includes(keyword));
+    const hasExplanatoryLanguage = /\b(felt|hurt|upset|bothered|happened|when|because|issue|problem)\b/i.test(content);
+    return hasIssueKeywords && hasExplanatoryLanguage;
+  });
+
+// Check if User B has acknowledged/responded
+const hasUserBAcknowledged = safeConversationHistory.some((msg) => {
+  if (typeof msg !== 'object' || msg.sender_id === recipientId) return false;
+  const content = String(msg.content || '').toLowerCase();
+  return /\b(understand|hear|see|sorry|get it|makes sense|i see|i know|i realize)\b/i.test(content);
+});
+
+// Determine conversation phase
+const shouldFocusOnProgress = hasUserAExplainedIssue && hasUserBAcknowledged && safeConversationHistory.length > 2;
+
+// ✅ DETECT: Specific accusations or issues mentioned in latest message
+const detectSpecificAccusations = (message: string): string[] => {
+  if (!message) return [];
+  const lowerMessage = message.toLowerCase();
+  const accusations: string[] = [];
+  
+  // Common accusation patterns
+  const accusationKeywords = [
+    'jealous', 'jealousy',
+    'selfish', 'selfishness',
+    'inconsiderate', 'inconsiderate',
+    'wrong',
+    'blame',
+    'accus',
+    'insensitive',
+    'rude',
+    'mean',
+    'unfair',
+    'uncaring',
+    'thoughtless'
+  ];
+  
+  // Extract specific words/accusations
+  accusationKeywords.forEach(keyword => {
+    if (new RegExp(`\\b${keyword}\\w*\\b`, 'i').test(lowerMessage)) {
+      accusations.push(keyword);
+    }
+  });
+  
+  // Extract quoted or emphasized phrases (potential accusations)
+  const quotedPhrases = message.match(/"([^"]+)"/g) || [];
+  quotedPhrases.forEach(q => {
+    const phrase = q.replace(/"/g, '').trim();
+    if (phrase.length > 3 && phrase.length < 50) {
+      accusations.push(phrase);
+    }
+  });
+  
+  // Check for "you said/called me" patterns
+  const saidPattern = /(?:you|they) (?:said|called|told|think) (?:me|I|you) (?:was|am|were|are) (\w+)/i;
+  const saidMatch = message.match(saidPattern);
+  if (saidMatch && saidMatch[1]) {
+    accusations.push(saidMatch[1]);
+  }
+  
+  return [...new Set(accusations)]; // Remove duplicates
+};
+
+const specificAccusationsInMessage = isRecipientUserA && cleanCurrentMessage 
+  ? detectSpecificAccusations(cleanCurrentMessage)
+  : [];
+
+const needsClarification = specificAccusationsInMessage.length > 0 && isRecipientUserA;
+
+// ✅ OPTIMIZED: Smart history selection - last 5 messages for context, truncated for efficiency
+const totalHistoryLength = cleanConversationHistory.length;
+const contextMessages = totalHistoryLength <= 5 
+  ? cleanConversationHistory  // If 5 or fewer, use all
+  : cleanConversationHistory.slice(-5); // Otherwise, last 5 for context
+
+const formattedHistory = contextMessages.map((msg) => {
   const senderId = typeof msg === 'object' ? msg.sender_id : null;
   const content = typeof msg === 'object' ? msg.content : String(msg);
-  return `${senderId === recipientId ? 'You' : 'Contact'}: ${content}`;
+  // Truncate longer messages to 120 chars for efficiency
+  const truncatedContent = content.length > 120 ? content.substring(0, 120) + '...' : content;
+  return `${senderId === recipientId ? 'You' : 'Contact'}: ${truncatedContent}`;
 }).join('\n');
+
+// For immediate response context (last 2 messages), keep full content for reference
+const lastTwoMessages = cleanConversationHistory.slice(-2).map((msg) => {
+  const content = typeof msg === 'object' ? msg.content : String(msg);
+  return content;
+}).join(' | ');
 
 
 
@@ -1202,24 +1311,61 @@ ${isRecipientUserB ? `
 - ✅ CRITICAL: User B is RESPONDING to User A's LATEST MESSAGE: "${cleanCurrentMessage}"
 - User B is NOT continuing User A's original issue - they are RESPONDING to what User A just said
 - User B's options should be DIRECT RESPONSES to: "${cleanCurrentMessage}"
-- User B has their own feelings and perspective to share with User A
+
 ${shouldUseHint ? `
-- ✅ CRITICAL: User B's hint: "${hintFromB}"
-- User B's hint explains WHY they behaved the way they did
-- User B's options MUST STRONGLY CONVEY their reasons and perspective
-- Help User B EXPLAIN their side so User A can UNDERSTAND their perspective
-- Compare User B's hint with User A's original issue to bridge understanding
+✅ USER B HAS HINT - USE HINT AS PRIMARY PERSPECTIVE:
+🔐 USER B'S PRIVATE PERSPECTIVE (PERSISTENT CORE CONTEXT FOR ALL TURNS):
+"${hintFromB}"
+
+⚡ ABSOLUTELY CRITICAL - MANDATORY HINT INTEGRATION:
+- This hint is User B's TRUE PERSPECTIVE and MUST DEEPLY INFLUENCE EVERY SINGLE OPTION
+- Base ALL options on this hint - it reveals User B's genuine feelings and reasons
+- Help User B EXPLAIN their side using this perspective
 - Options should help User B articulate: "I felt X because Y" or "I acted that way because..."
+- Compare User B's hint with User A's original issue to bridge understanding
 - User B's reasons are VALID and should be clearly communicated
 - Both User A and User B need to understand each other's perspectives
+` : `
+⚠️ USER B HAS NO HINT - STRICT NO-PERSPECTIVE-MIXING RULES:
+
+🔴 CRITICAL: IGNORE finalRecipientSummary completely.
+- DO NOT use any summary rewritten into B's perspective
+- DO NOT assume User B's feelings or motives
+- DO NOT reuse any "I felt..." or emotional lines that belong to User A
+- DO NOT convert A's summary into B's feelings
+- DO NOT mix voices or repeat A's emotional narrative in B's "I"
+
+✅ THE ONLY CONTEXT YOU MAY USE:
+1. User A's latest message (HIGHEST PRIORITY): "${cleanCurrentMessage}"
+${neutralTopic ? `
+2. Neutral topic from conversation (factual only, not emotional): "${neutralTopic}"
 ` : ''}
+3. Relationship category tone: ${contactCategory === 'family' ? 'warm but respectful' : contactCategory === 'friend' ? 'casual and friendly' : contactCategory === 'romantic' ? 'intimate and caring' : contactCategory === 'work' ? 'professional but friendly' : 'balanced and respectful'}
+4. Neutral respectful baseline for User B
+
+✅ STRICT RULES FOR USER B OPTIONS (NO HINT):
+- User B uses "I / me / my" ONLY for User B's real actions (NOT assumed feelings)
+- User B responds in a calm, clear, open manner:
+  * "I didn't realize it felt that way."
+  * "I hear what you're saying."
+  * "I want to understand your side."
+  * "Can you help me understand what happened?"
+  * "I want to make sure I'm hearing you correctly."
+- The options must be 3 distinct directions:
+  * Soft: Gentle, empathetic, understanding
+  * Clarifying: Asking questions, seeking understanding
+  * Honest-direct: Clear, straightforward, authentic
+- ❗ NEVER assume User B's emotions - only use what User B actually said/did
+- ❗ NEVER mix User A's emotional statements with User B's responses
+`}
+
 - Help User B respond with empathy while being authentic
 - User B speaks about themselves with "I/me/my" and addresses User A with "you/your"
 - ❗ CRITICAL: When User B addresses User A, use "you/your" NOT "her/his/their"
 - When mentioning third parties from summary, use their names naturally or pronouns from entity_registry
 - Example: "I understand you felt hurt. I didn't mean to ignore you. Sarah might have misunderstood." (User B responding - using name without #)
 - ❗ NEVER generate options that sound like User A's original issue - these are User B's RESPONSES
-- ✅ CRITICAL: Options should help BOTH sides understand each other - User A needs to acknowledge User B's reasons
+- ✅ CRITICAL: Options should help BOTH sides understand each other
 ` : ''}
 - Don't let issues switch or merge - keep each person's perspective clear
 - Options for User A ≠ Options for User B (they have different perspectives and are responding differently)
@@ -1246,14 +1392,38 @@ ${isRecipientUserB ? `
   - NOT: "I understand you felt hurt" (too generic - not responding to their specific message)
 ` : ''}
 
+${isRecipientUserB && !shouldUseHint ? `
+⚠️ EXTERNAL CONTEXT ONLY (What User A said - IGNORE for User B's perspective):
+- User A's original issue (for reference only - NOT your perspective): "${(cleanOriginalIssueSummary || cleanSummary || 'Not specified').substring(0, 200)}${(cleanOriginalIssueSummary || cleanSummary || '').length > 200 ? '...' : ''}"
+- 🔴 CRITICAL: IGNORE this completely when generating User B's options
+- This is User A's perspective - you (User B) should respond from YOUR OWN perspective
+- ❗ DO NOT use this to assume User B's feelings or convert it into User B's perspective
+- ❗ DO NOT repeat User A's words or mix User A's perspective with yours
+${cleanRecipientThoughts && cleanRecipientThoughts.length > 100 ? `
+- Additional context from User A (IGNORE): ${cleanRecipientThoughts.substring(0, 150)}${cleanRecipientThoughts.length > 150 ? '...' : ''}
+` : cleanRecipientThoughts ? `
+- Additional context from User A (IGNORE): ${cleanRecipientThoughts}
+` : ''}
+` : isRecipientUserB && shouldUseHint ? `
+✅ CONTEXT FOR USER B (With Hint):
+- User A's original issue (for context - you're responding from YOUR hint perspective): "${(cleanOriginalIssueSummary || cleanSummary || 'Not specified').substring(0, 200)}${(cleanOriginalIssueSummary || cleanSummary || '').length > 200 ? '...' : ''}"
+- Your hint (YOUR actual perspective): See hint section above
+${cleanRecipientThoughts && cleanRecipientThoughts.length > 100 ? `
+- Additional context from User A: ${cleanRecipientThoughts.substring(0, 150)}${cleanRecipientThoughts.length > 150 ? '...' : ''}
+` : cleanRecipientThoughts ? `
+- Additional context from User A: ${cleanRecipientThoughts}
+` : ''}
+` : `
 Recipient's context:
-- Summary (cleaned): ${cleanRecipientSummary || cleanSummary || 'No summary provided'}
+- Core issue: ${(cleanRecipientSummary || cleanSummary || 'No summary provided').substring(0, 250)}${(cleanRecipientSummary || cleanSummary || '').length > 250 ? '...' : ''}
+${cleanRecipientThoughts && cleanRecipientThoughts.length > 100 ? `
+- Additional context: ${cleanRecipientThoughts.substring(0, 150)}${cleanRecipientThoughts.length > 150 ? '...' : ''}
+` : cleanRecipientThoughts ? `
+- Additional context: ${cleanRecipientThoughts}
+` : ''}
+`}
 
-  ⚠️ IMPORTANT: The summary has been cleaned for perspective:
-  - @ tags have been replaced with "you/your" (the listener you're speaking TO)
-  - # tags remain for third parties being discussed (use pronouns from entity_registry or their names)
-  - The listener is always addressed as "you/your", never by name
-- Thoughts (cleaned): ${cleanRecipientThoughts || cleanThoughts || cleanThoughtsB || 'No thoughts provided'}
+⚠️ IMPORTANT: Summary cleaned for perspective - @ tags = "you/your", # tags = third parties
 
 
 ${shouldUseHint ? `
@@ -1384,6 +1554,44 @@ Build trust and understanding before closure.
 
     const userPrompt = `Generate exactly ${isVeryFirstMessage ? '5' : '3'} options that sound like what this person would ACTUALLY SAY in this conversation.
 
+🔴 CRITICAL PRONOUN RULES - APPLY TO EVERY OPTION WITHOUT EXCEPTION:
+${isRecipientUserA ? `
+**YOU ARE USER A SPEAKING TO USER B:**
+- When talking about YOURSELF → ALWAYS use "I / me / my / mine / myself"
+  ✅ CORRECT: "I felt hurt", "my feelings", "that hurt me"
+  ❌ WRONG: "User A felt hurt", "her feelings", "that hurt him"
+  
+- When talking TO or ABOUT User B → ALWAYS use "you / your / yours / yourself"
+  ✅ CORRECT: "you didn't invite me", "your comment", "I appreciate you"
+  ❌ WRONG: "[User B's name] didn't invite me", "her comment", "I appreciate them"
+  
+- NEVER use User B's real name in any option
+- NEVER use "her/his/their" when referring to User B - ALWAYS "you/your"
+` : `
+**YOU ARE USER B SPEAKING TO USER A:**
+- When talking about YOURSELF → ALWAYS use "I / me / my / mine / myself"
+  ✅ CORRECT: "I felt upset", "my perspective", "that bothered me"
+  ❌ WRONG: "User B felt upset", "his perspective", "that bothered him"
+  
+- When talking TO or ABOUT User A → ALWAYS use "you / your / yours / yourself"
+  ✅ CORRECT: "you said that", "your words", "I hear you"
+  ❌ WRONG: "[User A's name] said that", "her words", "I hear them"
+  
+- NEVER use User A's real name in any option
+- NEVER use "her/his/their" when referring to User A - ALWAYS "you/your"
+`}
+
+**MANDATORY CHECK:** Before generating each option, verify:
+1. Does the speaker use "I/me/my" for themselves? ✅
+2. Does the speaker use "you/your" for the listener? ✅
+3. Are there any names of User A or User B? ❌ (Remove and use "you")
+4. Are there "her/his/their" referring to the listener? ❌ (Change to "you/your")
+
+**THIRD PARTIES (not User A or User B):**
+- Use their actual names (without # prefix): "Sarah", "Vikram"
+- Or use pronouns from entity registry: "she", "he", "they"
+- NEVER use "you/your" for third parties - only for the listener
+
     ${isVeryFirstMessage ? `
       🌱 WARMUP PHASE - FRIENDLY HELLOS ONLY:
       - Generate 5 warm, friendly openings someone would naturally text to ${contactCategory === 'family'
@@ -1413,20 +1621,73 @@ ${!isVeryFirstMessage && safeConversationHistory.length <= 2 ? `
 ` : ''}
 
 ${isRecipientUserA ? `
-🔑 CORE ISSUE REQUIREMENT (User A):
-- At least one option must clearly restate the main issue in your own words so they fully understand it (event + feeling + why it matters).
-- Other options should still stay grounded in the same issue, reacting to their latest reply while keeping your perspective front and center.
-- Balance tones: direct, reflective, compassionate — but every option should make the issue feel personal and specific.
+${needsClarification ? `
+🔴 USER A - CLARIFICATION REQUIRED (Specific Issue/Accusation Detected):
+- User B mentioned specific issue/accusation in their message: "${cleanCurrentMessage}"
+- Detected keywords/accusations: ${specificAccusationsInMessage.join(', ')}
+- ALL options MUST address these specific points while being empathetic, polite, and respectful
+- Generate options that:
+  1. Address the specific accusation/issue mentioned (use their exact words like "${specificAccusationsInMessage[0]}")
+  2. Clarify your position: "I'm not ${specificAccusationsInMessage[0]}, but I understand why you might feel that way"
+  3. Show empathy: Acknowledge their feelings while correcting misunderstanding
+  4. Move toward resolution: "Can we talk about what made you think that?" or "I'd like to clear this up"
+  5. Be respectful and calm, not defensive
+
+✅ GOOD EXAMPLES (if they said "jealous"):
+- "I'm not jealous about your life - I'm genuinely happy for you, but I can see why it might have seemed that way" (18 words)
+- "I understand why you might think I'm jealous, but I'd like to explain my actual feelings if you're open to hearing them" (19 words)
+- "I'm sorry that came across as jealousy - I'm genuinely happy for you and would love to clear up any misunderstanding" (18 words)
+
+❌ AVOID: Being defensive or dismissive - "That's not true" or "You're wrong"
+✅ FOCUS: Clarifying with empathy - "I understand why you might think that, but..."
+` : shouldFocusOnProgress ? `
+✅ USER A - PROGRESS MODE (Issue Explained & Acknowledged):
+- You already explained your concern and User B has acknowledged it
+- Focus on MOVING FORWARD with solutions, understanding, or next steps
+- ALL options must respond to their latest message: "${cleanCurrentMessage}"
+- Generate options that:
+  1. Address their response and move toward resolution
+  2. Offer solutions, clarify misunderstandings, or suggest next steps
+  3. Do NOT repeat your original issue - they already understand it
+  4. Examples: "How can we fix this?", "What would help us move forward?", "I appreciate you hearing me out"
+
+❌ AVOID: Restating "I felt hurt when..." (already explained)
+✅ FOCUS: "What can we do about it?", "How should we handle this going forward?"
+` : hasUserAExplainedIssue ? `
+🔵 USER A - CLARIFICATION MODE (Issue Mentioned, May Need Refinement):
+- You've mentioned your concern, but may need to clarify or expand based on their response
+- ALL options must respond to their latest message: "${cleanCurrentMessage}"
+- You can briefly reference the core issue IF their response shows misunderstanding
+- But prioritize responding to what they just said first
+` : `
+🔑 USER A - INITIAL MODE (Issue Not Yet Explained):
+- This is early in the conversation - you may need to explain your concern
+- ALL options must respond to their latest message: "${cleanCurrentMessage}"
+- Balance: Respond to them while introducing your concern if needed
+`}
+- ✅ CRITICAL: Stay on-topic - all options must relate to the conversation flow above
+- Do NOT introduce unrelated topics or deviate from the conversation history
 ` : ''}
 
 ${isFirstResponseForUserB ? `
 🚦 FIRST RESPONSE GUARDRAILS (User B):
-- You just received their opening message and have NOT heard the full story yet.
-- Do NOT mention specific events, names, or accusations from summaries or private hints unless the message you are replying to said them explicitly.
-- Stay curious and open. Ask what happened, invite them to share more, show you're ready to listen.
-- Focus on empathy, willingness to understand, and keeping the door open for them to explain.
-- Avoid guessing motives or jumping straight to apologies/confessions about details you haven't heard yet.
-- It's okay to acknowledge that you sensed something was wrong, but keep it high level until they explain.
+- You just received their opening message: "${cleanCurrentMessage}"
+- RESPOND DIRECTLY to what they said - don't ask generic questions like "can you tell me more" or "what do you want to talk about"
+- If they mentioned a specific issue/event/feeling, acknowledge it directly
+- Show empathy and willingness to understand: "I'm sorry you felt that way", "I want to understand what happened"
+- Ask SPECIFIC follow-up questions based on what they mentioned: "Can you tell me more about [specific thing they mentioned]?"
+- Do NOT mention specific events/names from summaries unless they explicitly said them in their message
+- Focus on acknowledging their message and showing you're ready to listen
+- Avoid generic questions that ignore what they just said
+` : isRecipientUserB ? `
+✅ USER B - RESPONDING MODE:
+- You are responding to User A's latest message: "${cleanCurrentMessage}"
+- ALL options must directly address what User A just said - use their words/phrases
+- Do NOT ask generic questions like "can you tell me more" or "what do you want to talk about"
+- Acknowledge their message: "I hear you", "I understand", "I'm sorry"
+- Address specific points they mentioned
+- Show your perspective: "I didn't realize...", "I thought...", "From my side..."
+- Focus on understanding each other, not asking for more information
 ` : ''}
 
 ${shouldUseHint && !isRecipientUserA ? `
@@ -1436,37 +1697,99 @@ ${shouldUseHint && !isRecipientUserA ? `
 - Make it crystal clear what you needed, what hurt, or what you were trying to protect — no vague responses.
 ` : ''}
 
+🎯 CRITICAL - ALL OPTIONS MUST BE RELEVANT TO LATEST MESSAGE:
+- Latest message: "${cleanCurrentMessage}"
+- ALL ${isVeryFirstMessage ? '5' : '3'} options MUST respond to THIS message
+- ❌ NEVER generate generic questions like:
+  * "can you tell me more"
+  * "what do you want to talk about"  
+  * "what's on your mind"
+  * "what would you like to discuss"
+- ✅ INSTEAD: Respond directly to what they said, acknowledge specific points, show your perspective
+- They should express the SAME response in different styles:
+  * Different formality levels (casual → formal)
+  * Different directness (subtle → straightforward)  
+  * Different emotional tones (reserved → warm)
+- They should NOT address different topics or concerns
+- They should NOT repeat old conversation points
+- They should NOT bring up unrelated issues
+- They should NOT ask generic questions that ignore the latest message
+- ✅ ON-TOPIC CHECK: All options must relate to the conversation above (${formattedHistory ? 'last 5 messages' : 'conversation start'})
+
+OPTION STRUCTURE (all address "${cleanCurrentMessage}"):
+- Option 1: Direct response style
+- Option 2: Empathetic response style  
+- Option 3: Casual response style
+${isVeryFirstMessage ? `
+- Option 4: Gentle response style
+- Option 5: Friendly response style
+` : ''}
+
 Each option must:
 1. Be EXACTLY what the person would say (direct quote, not description)
-2. Be COMPLETE and MEANINGFUL - 10-14 words, NO TRUNCATION or "..." needed
+2. Be COMPLETE and MEANINGFUL - Natural length (8-20 words preferred, but prioritize meaning over strict word count)
+   - Avoid lengthy/verbose sentences that lose impact
+   - Single sentence only - complete thoughts that make sense on their own
+   - NO TRUNCATION or "..." needed - each option should feel natural and complete
 ${isRecipientUserB ? `
 3. ✅ CRITICAL: Respond DIRECTLY to User A's latest message: "${cleanCurrentMessage}"
    - Use words/phrases from their message to show you heard them
-   - Address what User A just said, not their original issue
-   - Example: If User A said "I felt hurt", respond with "I'm sorry you felt that way" or "I didn't mean to hurt you"
-   - Do NOT generate options that sound like User A's original concern
+   - Address what User A just said SPECIFICALLY - don't ask generic questions
+   - ❌ NEVER generate generic questions like:
+     * "can you tell me more"
+     * "what do you want to talk about"
+     * "what's on your mind"
+   - ✅ INSTEAD, respond to what they said:
+     * If they said "I felt hurt" → "I'm sorry you felt that way, can we talk about what happened?"
+     * If they said "you ignored me" → "I didn't realize I was ignoring you, I want to understand"
+     * If they mentioned a specific event → acknowledge that event specifically
+   - Show empathy and your perspective, don't ask for more information
+   - ✅ STAY ON-TOPIC: Options must relate to the conversation above (${formattedHistory ? 'last 5 messages' : 'conversation start'}), not ask generic questions
+   - ✅ ALL 3 OPTIONS must address the SAME latest message, only differ in style/tone
 ` : `
-3. Respond to: "${cleanCurrentMessage}" - USE WORDS/PHRASES from their message to show you heard them
+3. ✅ CRITICAL: Respond DIRECTLY to: "${cleanCurrentMessage}"
+   - USE WORDS/PHRASES from their message to show you heard them
+   ${needsClarification ? `
+   - ✅ MANDATORY: Address the specific accusation/issue mentioned: "${specificAccusationsInMessage.join(', ')}"
+   - Clarify your position using their exact words (e.g., if they said "jealous", address "jealous" in your response)
+   - Be empathetic: "I understand why you might think that..." before clarifying
+   - Move toward resolution: "Can we talk about what led you to feel that way?"
+   ` : ''}
+   - Address what they just said in the conversation above
+   - ✅ STAY ON-TOPIC: All options must relate to the recent conversation flow (${formattedHistory ? 'last 5 messages' : 'conversation start'}), not deviate or introduce unrelated topics
+   - ${shouldFocusOnProgress ? 'Focus on progressing/solving, not restating your issue' : 'If needed, briefly reference core issue but prioritize their latest message'}
+   - ✅ ALL ${isVeryFirstMessage ? '5' : '3'} OPTIONS must address the SAME latest message, only differ in style/tone
 `}
 4. Sound like natural speech for a ${contactCategory} relationship
 5. Use contractions and casual language where appropriate ("you're" not "you are", "I'm" not "I am")
 6. Match the emotional tone of the conversation
-7. ✅ STRICT PRONOUN RULES (summary has been cleaned for perspective):
+7. ✅ ABSOLUTE PRONOUN RULES - NO EXCEPTIONS (MANDATORY FOR EVERY OPTION):
    ${isRecipientUserA ? `
-   - Speaker (User A) = "I / me / my / mine / myself"
-   - Listener (User B) = "you / your / yours / yourself" (NEVER use User B's name)
-   - Third parties = Use their natural names or pronouns from entity_registry (no # prefix in messages)
+   **YOU ARE USER A TALKING TO USER B:**
+   - For YOURSELF (User A) → Use ONLY: "I / me / my / mine / myself"
+   - For THEM (User B) → Use ONLY: "you / your / yours / yourself"
+   - NEVER: User B's name, "her/his/their" for User B, "they/them" for User B
+   - Example: "I felt hurt when you didn't invite me" ✅
+   - Wrong: "I felt hurt when Sarah didn't invite me" ❌ (if Sarah is User B)
+   - Wrong: "I felt hurt when she didn't invite me" ❌ (if referring to User B)
    ` : `
-   - Speaker (User B) = "I / me / my / mine / myself"
-   - Listener (User A) = "you / your / yours / yourself" (NEVER use User A's name)
-   - Third parties = Use their natural names or pronouns from entity_registry (no # prefix in messages)
+   **YOU ARE USER B TALKING TO USER A:**
+   - For YOURSELF (User B) → Use ONLY: "I / me / my / mine / myself"
+   - For THEM (User A) → Use ONLY: "you / your / yours / yourself"
+   - NEVER: User A's name, "her/his/their" for User A, "they/them" for User A
+   - Example: "I'm sorry you felt that way, I didn't mean to hurt you" ✅
+   - Wrong: "I'm sorry John felt that way" ❌ (if John is User A)
+   - Wrong: "I'm sorry he felt that way" ❌ (if referring to User A)
    `}
+   - Third parties: Use actual names or pronouns from entity registry (never "you")
 8. INCORPORATE specific details from the conversation context to make responses feel personal and relatable
 ${shouldUseHint ? `9. MANDATORY: Strongly incorporate User B's hint perspective in EVERY option - this is their core truth and authentic voice
 10. CRITICAL: Maintain absolute consistency with hint's emotional context and subject matter across ALL conversation turns
 11. PERSISTENT: The hint is active throughout the ENTIRE conversation - incorporate it in turn 1, turn 5, turn 10, etc.` : ''}
 
-CRITICAL: Each option must be a FULL, COMPLETE sentence that makes sense on its own. Keep options short, natural, and meaningful. Each option must be a single sentence.
+CRITICAL: Each option must be a FULL, COMPLETE sentence that makes sense on its own. 
+Keep options natural and meaningful - not lengthy or verbose, but complete enough to convey your message clearly. 
+Each option must be a single sentence.
 
 ${isRecipientUserB ? `
 ✅ DIFFERENTIATION RULE FOR USER B - CRITICAL (ROLE SAFETY):
@@ -1498,15 +1821,30 @@ CRITICAL - MAKE IT RELATABLE:
 
 ${naturalClosureDetected ? `
 🌈 GRADUAL CLOSURE GUIDANCE (Score: ${emotionalClosureScore.toFixed(2)}):
-${emotionalClosureScore >= 0.8 ? `
+${otherUserSentSmiley || otherUserRecentSmiley ? `
+💝 OTHER USER SENT SMILEY - RESPOND WITH SMILEY:
+- The other person already sent a smiley emoji
+- Generate ${isVeryFirstMessage ? '5' : '3'} options with ${isVeryFirstMessage ? '2-3' : '1-2'} smiley emojis
+- Mix: ${isVeryFirstMessage ? '2-3' : '1-2'} text options + ${isVeryFirstMessage ? '2' : '1'} smiley emoji
+- This allows both users to close the conversation naturally
+- Choose appropriate emojis: 🙂 🤝 ❤️ 💙 😊 🫂 ✨ 👍
+` : emotionalClosureScore >= 0.8 && safeConversationHistory.length >= 8 ? `
 ✨ VERY HIGH CLOSURE: Generate ALL ${isVeryFirstMessage ? '5' : '3'} options as SINGLE EMOJIS ONLY.
 Choose from: 🙂 🤝 ❤️ 💙 😊 🫂 ✨ 👍
 Match to relationship (${contactCategory}) and conversation tone.
 NO TEXT - just emojis.
 ` : emotionalClosureScore >= 0.5 ? `
-🌱 MODERATE CLOSURE: Mix ${isVeryFirstMessage ? '2-3' : '1-2'} brief text acknowledgments (8-12 words) with ${isVeryFirstMessage ? '2' : '1'} single emoji.
+🌱 MODERATE CLOSURE: Mix ${isVeryFirstMessage ? '2-3' : '1-2'} brief text acknowledgments (8-20 words) with ${isVeryFirstMessage ? '2' : '1'} single emoji.
 Text should acknowledge progress and express gratitude naturally.
 Build on what was discussed, show genuine appreciation.
+Example mix: "Thanks for working through this with me" + "I appreciate you" + 🙂
+` : emotionalClosureScore >= 0.3 ? `
+🌱 EARLY CLOSURE SIGNALS (Score: ${emotionalClosureScore.toFixed(2)}) - Start introducing smiley:
+- Some closure signals detected, conversation is progressing well
+- Generate ${isVeryFirstMessage ? '5' : '3'} options: ${isVeryFirstMessage ? '4' : '2'} text + ${isVeryFirstMessage ? '1' : '1'} smiley emoji
+- Include ONE smiley option (🙂 or 😊) along with text options
+- Text options should show appreciation: "Thanks for hearing me out", "I appreciate you being open"
+- This gradually introduces closure while keeping conversation natural
 ` : `
 💬 EARLY CLOSURE: NO smiley options yet. Focus on deepening understanding.
 Ask clarifying questions, validate feelings, explore concerns.
@@ -1520,54 +1858,70 @@ RELATIONSHIP-SPECIFIC TONE:
 - Coworker: professional but friendly, no overly casual slang
 - General: balanced, friendly but not too informal
 
-STRICT RULES - NO CROPPING ALLOWED:
-- Keep each option short and natural (single sentence only)
+STRICT RULES - NATURAL LENGTH, NO CROPPING ALLOWED:
+- Keep each option natural and meaningful (single sentence only)
 - Each option MUST be a COMPLETE, MEANINGFUL sentence that makes sense on its own
 - NEVER generate incomplete sentences, truncated thoughts, or sentences that need "..." at the end
-- Keep options short, natural, and meaningful (single sentence only)
+- Natural length: 8-20 words preferred, but meaning matters more than strict word count
+- Avoid lengthy/verbose sentences - keep it natural and impactful
 - CRITICAL: Generate options that are COMPLETE and MEANINGFUL - single sentence only
-- Use natural contractions ("you're" not "you are", "didn't" not "did not") to save words
+- Use natural contractions ("you're" not "you are", "didn't" not "did not") 
 - Remove unnecessary filler words ("like", "just", "really") but keep emotional words if they add meaning
 - NO AI/counselor language ("I acknowledge", "Let's work together", "I understand your perspective")
-- Sound like REAL human speech with natural warmth
+- Sound like REAL human speech with natural warmth - simple, friendly, and authentic
 - NO scheduling outside the app
 - Use lowercase for casual relationships if natural
-- Be RESPECTFUL, KIND, and POLITE even when addressing difficult topics
-- Focus on RESOLVING and UNDERSTANDING, not blaming or attacking
+- TONE: Calm, clear, and respectful - not too formal, not Gen-Z slang
+- Use simple, friendly language that's polite, empathetic, and understanding
+- Always acknowledge the other person's feelings and perspective
+- Avoid sharp, blaming, or accusatory wording - keep it steady and supportive
+- Use "I" statements and gentle phrasing throughout
+- Focus on RESOLVING and UNDERSTANDING together, not blaming or attacking
 - ${isVeryFirstMessage ? 'Generate 5 DISTINCT options' : 'Generate 3 DISTINCT options'}
 - Each option must have DIFFERENT tone, approach, or directness level
 
-🎯 EXAMPLES OF GOOD BREVITY (meaningful, complete, 10-14 words, NO CROPPING):
+🎯 PRONOUN VALIDATION - CHECK EACH OPTION:
+Before finalizing each option, verify:
+1. Speaker refers to themselves with "I/me/my" ✅
+2. Listener is addressed with "you/your" ✅  
+3. No names of User A or User B present ✅
+4. No "her/his/their" when referring to listener ✅
+
+🎯 EXAMPLES OF GOOD NATURAL LENGTH (meaningful, complete, NOT lengthy):
 ${isRecipientUserA ? `
 USER A EXAMPLES (speaking TO User B):
 - "hey, can we talk about what happened yesterday?" (8 words) ✅
 - "I felt hurt when you didn't invite me to the party" (10 words) ✅
+- "I'm not jealous about your life - I'm genuinely happy for you, but that accusation hurt my feelings" (18 words) ✅
+- "I understand why you might think I'm jealous, but I'd like to explain my actual feelings if you're open to hearing them" (19 words) ✅
 - "Sarah said something that really bothered me at work" (9 words) ✅ [third party - no # prefix]
 - "want to clear this up between us? I miss you" (10 words) ✅
-- "I need to talk about something that's been bothering me" (10 words) ✅
-- "can we find a time to discuss this? I value our friendship" (12 words) ✅
-- "she told me what happened, and I felt left out" (10 words) ✅ [third party pronoun]
-Note: User A uses "I" for themselves, "you" for User B, and natural names/pronouns for third parties (NO # in actual messages)
+- "I appreciate you sharing that with me, and I'd like to clear up any misunderstanding about how I feel" (17 words) ✅
+- "can we find a time to discuss this? I value our friendship and want to make sure we understand each other" (17 words) ✅
+Note: Natural length varies (8-20 words) - what matters is the message is complete and meaningful
 ` : `
 USER B EXAMPLES (responding TO User A):
 - "I'm sorry you felt that way, I didn't mean to hurt you" (12 words) ✅
-- "I hear what you're saying, can we talk about it?" (10 words) ✅
+- "I hear what you're saying about feeling left out, and I want to understand your perspective better" (16 words) ✅
 - "I understand, I should have been more considerate" (8 words) ✅
-- "I didn't realize it bothered you, I'm sorry" (9 words) ✅
+- "I didn't realize it bothered you that much - can we talk about what happened so I can make it right?" (18 words) ✅
 - "I want to make this right between us" (8 words) ✅
-- "I see your point, let's work through this together" (10 words) ✅
+- "I see your point, and I appreciate you bringing this up. Let's work through this together" (16 words) ✅
 - "Sarah mentioned you were upset, I should have reached out" (10 words) ✅ [third party - no # prefix]
-Note: User B uses "I" for themselves, "you" for User A, and natural names/pronouns for third parties (NO # in actual messages)
+Note: Natural length varies (8-20 words) - what matters is the message is complete and meaningful
 `}
 
 ❌ BAD EXAMPLES (too long, would be rejected):
 - "I wanted to talk to you about what happened yesterday because I felt really hurt and I think we need to discuss this" (22 words - TOO LONG) ❌
 
-TONE REQUIREMENTS:
-- Show empathy and care even when being direct
-- Acknowledge feelings without dismissing them
-- Speak from a place of wanting to fix things, not win an argument
-- Use gentle language: "I felt" instead of "you made me feel", "can we talk about" instead of "you need to explain"
+TONE REQUIREMENTS (MANDATORY):
+- Be calm, clear, and respectful - simple and friendly, not overly formal or Gen-Z slang
+- Show genuine empathy and care, acknowledging the other person's feelings and perspective
+- Use gentle, supportive language that keeps the conversation steady and understanding
+- Speak from a place of wanting to fix things together, not win an argument
+- Use "I" statements: "I felt" instead of "you made me feel"
+- Use gentle phrasing: "can we talk about" instead of "you need to explain", "I wonder if" instead of "you always/never"
+- Avoid sharp, blaming, or accusatory wording - frame concerns as invitations to understand, not complaints
 
 Format as JSON:
 {
@@ -1631,8 +1985,8 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       },
       body: JSON.stringify({
         model: "claude-3-5-haiku-20241022",
-        max_tokens: 200,
-        temperature: 0.7,
+        max_tokens: 2500,  // ✅ Increased from 200 to allow complete responses
+        temperature: 0.7,  // ✅ Increased from 0.5 for more natural responses
         system: `${systemPrompt}\n\n${compassionateSystemPrompt}`,
         messages: [
           {
@@ -1723,13 +2077,13 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     // Log received option count
     console.log(`📊 Received ${options.length} options from AI, expected ${expectedCount}`);
 
-    // ✅ SIMPLE FALLBACK OPTIONS: Short, single-sentence responses (defined once at top)
+    // ✅ SIMPLE FALLBACK OPTIONS: Short, single-sentence responses (NO generic questions)
     const simpleFallbackOptions = [
-      "Can you tell me more?",
-      "What do you think about this?",
-      "How did that make you feel?",
-      "Can we talk about this calmly?",
-      "I want to understand you better."
+      "I hear what you're saying.",
+      "I want to understand your perspective.",
+      "Can we work through this together?",
+      "I appreciate you sharing that with me.",
+      "Let's talk about what happened."
     ];
 
     // ✅ SIMPLIFIED: Only check for single sentence (no word count validation)
@@ -2212,20 +2566,54 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     const latestKeywords = extractKeywords(cleanCurrentMessage || '', 12);
 
     const addEmojiFallbacksIfNeeded = () => {
-      if (!finalClosureDetected || emotionalClosureScore < 0.5) return;
+      // ✅ ADJUSTED: Lower threshold for introducing smiley (was 0.5, now 0.3)
+      if (!naturalClosureDetected || emotionalClosureScore < 0.3) return;
+      
+      // ✅ If other user sent smiley, prioritize smiley options
+      if (otherUserSentSmiley || otherUserRecentSmiley) {
+        const emojiPool = ['🙂','🤝','❤️','💙','😊','🫂','✨','👍'];
+        const emojiCount = enhancedOptions.filter(opt => /^[\p{Emoji}]+$/u.test(opt.trim())).length;
+        const targetEmojiCount = isVeryFirstMessage ? 2 : 1; // 1-2 smiley options
+        
+        while (emojiCount < targetEmojiCount && emojiPool.length > 0) {
+          const emojiChoice = emojiPool[Math.floor(Math.random() * emojiPool.length)];
+          enhancedOptions.push(emojiChoice);
+          emojiPool.splice(emojiPool.indexOf(emojiChoice), 1);
+        }
+        
+        const hasGratitudeOption = enhancedOptions.some(opt => /thank|appreciate|glad/i.test(opt));
+        if (!hasGratitudeOption && emotionalClosureScore >= 0.5) {
+          const gratitudeFallback = isRecipientUserA
+            ? 'Thanks for hearing me out, it means a lot.'
+            : 'Thanks for being open with me, I really appreciate it.';
+          addOptionIfMissing(gratitudeFallback);
+        }
+        return;
+      }
 
       const emojiPoolHigh = ['🙂','🤝','❤️','💙','😊','🫂','✨','👍'];
       const emojiPoolModerate = ['🙂','🤝','😊','❤️'];
       const emojiPool = emotionalClosureScore >= 0.8 ? emojiPoolHigh : emojiPoolModerate;
 
       const hasEmojiOption = enhancedOptions.some(opt => /^[\p{Emoji}]+$/u.test(opt.trim()));
-      if (!hasEmojiOption && emojiPool.length > 0) {
-        const emojiChoice = emojiPool[Math.floor(Math.random() * emojiPool.length)];
+      // ✅ GRADUAL: Add 1 smiley if score >= 0.3, add more if score >= 0.5
+      if (!hasEmojiOption && emotionalClosureScore >= 0.3) {
+        const emojiChoice = emotionalClosureScore >= 0.5 
+          ? emojiPool[Math.floor(Math.random() * emojiPool.length)]
+          : '🙂'; // Start with simple smiley for early closure
         enhancedOptions.push(emojiChoice);
+      }
+      // ✅ Add second smiley if score >= 0.7 and conversation is long enough
+      if (emotionalClosureScore >= 0.7 && safeConversationHistory.length >= 8) {
+        const emojiCount = enhancedOptions.filter(opt => /^[\p{Emoji}]+$/u.test(opt.trim())).length;
+        if (emojiCount < 2 && emojiPool.length > 0) {
+          const emojiChoice = emojiPool[Math.floor(Math.random() * emojiPool.length)];
+          enhancedOptions.push(emojiChoice);
+        }
       }
 
       const hasGratitudeOption = enhancedOptions.some(opt => /thank|appreciate|glad/i.test(opt));
-      if (!hasGratitudeOption) {
+      if (!hasGratitudeOption && emotionalClosureScore >= 0.5) {
         const gratitudeFallback = isRecipientUserA
           ? 'Thanks for hearing me out, it means a lot.'
           : 'Thanks for being open with me, I really appreciate it.';
