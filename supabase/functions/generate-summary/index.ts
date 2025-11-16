@@ -50,7 +50,7 @@ Deno.serve(async (req) => {
     }
 
     const requestBody = await req.json();
-    const { initial_description, question_responses, tagged_persons } = requestBody;
+    const { initial_description, question_responses, tagged_persons, additional_context, structured_context } = requestBody;
 
     console.log('📥 Request received:', {
       hasDescription: !!initial_description,
@@ -74,30 +74,83 @@ Deno.serve(async (req) => {
       ? question_responses.map((qa: any) => `Q: ${qa.question}\nA: ${qa.answer}`).join('\n\n')
       : 'No additional responses provided.';
 
+    const additionalContextText = additional_context ? `\n\nAdditional Information:\n${additional_context}` : '';
+    const structuredContextText = structured_context ? `\n\nStructured Context:\n${structured_context}` : '';
+
     const personsText = tagged_persons && tagged_persons.length > 0
       ? `\n\nPeople involved:\n${tagged_persons.map((p: any) =>
           `- ${p.name}${p.is_user_b ? ' (person I need to talk to)' : ''}${p.relationship ? ` (${p.relationship})` : ''}`
         ).join('\n')}`
       : '';
 
+    // Build full context text including additional and structured context
+    const fullContextText = `${initial_description}\n\n${qaText}${additionalContextText}${structuredContextText}${personsText}`;
+
     const systemPrompt = `You are an empathetic AI assistant helping someone prepare for a difficult conversation.
 
 Your task is to:
 1. SYNTHESIZE ALL INFORMATION from initial description AND every Q&A response
-2. Create a comprehensive summary that includes details from EVERY answer provided
+2. Create TWO DIFFERENT summaries:
+   a) A-PERSPECTIVE SUMMARY: Emotional, first-person from User A's perspective (for User A only in Stage 3)
+   b) NEUTRAL SHARED SUMMARY: Factual, third-person neutral (for both User A and User B during chat)
 3. Extract 3-5 key points capturing the COMPLETE situation
 4. Identify relationship context and proper pronouns
 5. Build pronoun map for conversation flow
 
-CRITICAL: The summary MUST incorporate ALL Q&A responses, not just the initial description. Include:
-- What happened (initial issue + additional details from Q&A)
-- How the person feels (emotional context from all responses)
-- Relevant background (context revealed through Q&A)
-- What they want (desired outcome from responses)
+CRITICAL: The summaries MUST incorporate ALL Q&A responses, not just the initial description.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1) A-PERSPECTIVE SUMMARY (User A talking to AI - ONLY for User A in Stage 3):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• This is ONLY for User A.
+• This summary MUST preserve @ (you/your for User B) and # (third parties like #Mom, #Rachana).
+• This summary is EMOTIONAL and from A's point of view only.
+• Do NOT neutralize emotions here.
+• Do NOT rewrite anything into User B's feelings.
+• This is what A sees in Stage 3.
+
+Format:
+- Fully emotional
+- Includes @ to refer to User B ("you/your")
+- Includes # tags for other people ("#Mom", "#Rachana")
+- First-person voice: "I felt…", "I thought…", "I was hurt…"
+- Preserve ALL entity tags (@ and #) exactly as they appear
+
+Example:
+"I felt ignored at the family dinner when @you barely spoke to me. It seemed intentional and made me feel unwanted, especially when #Mom and others were talking normally."
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2) NEUTRAL SHARED SUMMARY (FACT for BOTH A & B during chat):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• This is NOT emotional.
+• This is NOT from A's voice.
+• This is NOT from B's voice.
+• This is a factual topic summary used for BOTH sides during the chat.
+• This summary must also preserve entity tags:
+   @ = directly involved person (User B)
+   # = third-party people/groups
+• DO NOT mix perspectives.
+• DO NOT guess User B's feelings.
+
+Format:
+- Third-person neutral
+- "The discussion is about…"
+- "User A felt…"
+- "User B said (if applicable)…"
+- No assumptions about B's emotions
+- No "I" or "you" perspective
+- Preserve ALL entity tags (@ and #) exactly as they appear
+
+Example:
+"The discussion is about the family dinner where User B (@you) spoke very little to User A. User A perceived this as intentional and felt excluded, especially compared to the interactions with #Mom and others."
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Return ONLY valid JSON with this structure:
 {
-  "summary": "3-4 sentence comprehensive summary incorporating ALL Q&A details",
+  "summary": "3-4 sentence A-PERSPECTIVE SUMMARY (emotional, first-person, preserves @ and #)",
+  "summary_a_perspective": "Same as summary above - emotional, first-person from User A's perspective",
+  "summary_shared_neutral": "3-4 sentence NEUTRAL SHARED SUMMARY (factual, third-person, preserves @ and #)",
   "key_points": [
     "Initial Issue: [what happened]",
     "Emotional Impact: [how they feel with specifics]",
@@ -105,7 +158,10 @@ Return ONLY valid JSON with this structure:
     "Desired Outcome: [what they want]"
   ],
   "context_data": {
-    "summary": "same as above summary",
+    "summary": "same as summary_a_perspective above",
+    "summary_a": "same as summary_a_perspective above (backward compatibility)",
+    "summary_a_perspective": "same as summary_a_perspective above",
+    "summary_shared_neutral": "NEUTRAL SHARED SUMMARY (factual, third-person)",
     "key_points": ["same as above"],
     "all_qa_pairs": "Include the full question_responses array for reference",
     "pronoun_map": {
@@ -122,14 +178,15 @@ Return ONLY valid JSON with this structure:
 }
 
 Guidelines:
-- MUST include information from ALL Q&A responses in summary
-- Summary should be 3-4 sentences capturing complete context
-- Key points should reflect insights from entire conversation
+- MUST include information from ALL Q&A responses in BOTH summaries
+- A-PERSPECTIVE SUMMARY: Emotional, first-person, preserves @ and # tags
+- NEUTRAL SHARED SUMMARY: Factual, third-person, preserves @ and # tags, NO assumptions about User B's feelings
 - Use empathetic, non-judgmental language
 - Identify user_b (person they're talking TO) vs third parties
 - Choose appropriate pronouns based on names and context
 - NEVER invent new person names. Only reference names that appear in the initial description, Q&A responses, or the tagged_persons list. If no name is provided, describe the person generically (e.g., "a coworker").
-- Preserve ALL important emotional context from responses`;
+- Preserve ALL important emotional context in A-PERSPECTIVE SUMMARY only
+- Keep NEUTRAL SHARED SUMMARY purely factual and neutral`;
 
     const claudePayload = {
       model: 'claude-3-5-haiku-20241022',
@@ -140,11 +197,7 @@ Guidelines:
           role: 'user',
           content: `Create a summary from this information:
 
-Initial Description:
-"${initial_description}"
-
-Follow-up Q&A:
-${qaText}${personsText}
+${fullContextText}
 
 Respond with ONLY the JSON structure specified in the system prompt.`
         }
@@ -198,11 +251,20 @@ Respond with ONLY the JSON structure specified in the system prompt.`
       const fallbackSummary = initial_description.substring(0, 200);
       const userB = tagged_persons?.find((p: any) => p.is_user_b);
 
+      // Create fallback summaries
+      const fallbackAPerspective = `I experienced: ${fallbackSummary}`;
+      const fallbackNeutral = `The discussion is about: ${fallbackSummary.substring(0, 150)}`;
+
       return new Response(JSON.stringify({
-        summary: fallbackSummary,
+        summary: fallbackAPerspective,
+        summary_a_perspective: fallbackAPerspective,
+        summary_shared_neutral: fallbackNeutral,
         key_points: ['Situation described', 'Needs resolution'],
         context_data: {
-          summary: fallbackSummary,
+          summary: fallbackAPerspective,
+          summary_a: fallbackAPerspective,  // backward compatibility
+          summary_a_perspective: fallbackAPerspective,
+          summary_shared_neutral: fallbackNeutral,
           key_points: ['Situation described', 'Needs resolution'],
           pronoun_map: userB ? { user_b: 'you/your', third_party: {} } : { third_party: {} },
           relationship_context: {
@@ -220,16 +282,25 @@ Respond with ONLY the JSON structure specified in the system prompt.`
     }
 
     if (!parsedResponse.summary || !parsedResponse.context_data) {
-      console.error('Invalid response format');
+      console.error('Invalid response format - creating fallback summaries');
 
       const fallbackSummary = initial_description.substring(0, 200);
       const userB = tagged_persons?.find((p: any) => p.is_user_b);
 
+      // Create fallback summaries
+      const fallbackAPerspective = `I experienced: ${fallbackSummary}`;
+      const fallbackNeutral = `The discussion is about: ${fallbackSummary.substring(0, 150)}`;
+
       return new Response(JSON.stringify({
-        summary: fallbackSummary,
+        summary: fallbackAPerspective,
+        summary_a_perspective: fallbackAPerspective,
+        summary_shared_neutral: fallbackNeutral,
         key_points: ['Situation described', 'Needs resolution'],
         context_data: {
-          summary: fallbackSummary,
+          summary: fallbackAPerspective,
+          summary_a: fallbackAPerspective,  // backward compatibility
+          summary_a_perspective: fallbackAPerspective,
+          summary_shared_neutral: fallbackNeutral,
           key_points: ['Situation described', 'Needs resolution'],
           pronoun_map: userB ? { user_b: 'you/your', third_party: {} } : { third_party: {} },
           relationship_context: {
@@ -244,6 +315,100 @@ Respond with ONLY the JSON structure specified in the system prompt.`
           'Content-Type': 'application/json'
         }
       });
+    }
+
+    // ✅ ENSURE BOTH SUMMARIES EXIST IN PARSED RESPONSE
+    if (!parsedResponse.summary_a_perspective && parsedResponse.summary) {
+      // Fallback: use summary as A-perspective if separate field missing
+      parsedResponse.summary_a_perspective = parsedResponse.summary;
+      if (parsedResponse.context_data) {
+        parsedResponse.context_data.summary_a_perspective = parsedResponse.summary;
+        parsedResponse.context_data.summary_a = parsedResponse.summary; // backward compatibility
+      }
+    }
+
+    if (!parsedResponse.summary_shared_neutral) {
+      console.warn('⚠️ Warning: Claude did not generate summary_shared_neutral. Creating fallback.');
+      // Create fallback neutral summary from A-perspective by converting to third-person
+      const aPerspectiveText = parsedResponse.summary_a_perspective || parsedResponse.summary || '';
+      const fallbackNeutral = aPerspectiveText
+        ? aPerspectiveText
+            .replace(/^I\s+/gi, 'User A ')
+            .replace(/\bmy\b/gi, 'their')
+            .replace(/\bme\b/gi, 'them')
+            .replace(/\bmyself\b/gi, 'themself')
+            .replace(/\bI\b/gi, 'User A')
+            .replace(/\bI'm\b/gi, 'User A is')
+            .replace(/\bI've\b/gi, 'User A has')
+            .replace(/\bI'd\b/gi, 'User A would')
+        : `The discussion is about: ${initial_description.substring(0, 150)}`;
+      
+      parsedResponse.summary_shared_neutral = fallbackNeutral;
+      
+      // Update context_data too
+      if (parsedResponse.context_data) {
+        parsedResponse.context_data.summary_shared_neutral = fallbackNeutral;
+      } else {
+        parsedResponse.context_data = {
+          summary_shared_neutral: fallbackNeutral,
+        };
+      }
+    }
+
+    // ✅ ENSURE context_data EXISTS and HAS BOTH SUMMARIES
+    if (!parsedResponse.context_data) {
+      parsedResponse.context_data = {};
+    }
+    
+    // ✅ CRITICAL: Ensure summary_a_perspective is ALWAYS in context_data
+    if (!parsedResponse.context_data.summary_a_perspective) {
+      // Use summary_a_perspective from root, or summary as fallback
+      parsedResponse.context_data.summary_a_perspective = parsedResponse.summary_a_perspective || parsedResponse.summary || '';
+    }
+    
+    // ✅ Backward compatibility fields (ALWAYS set from summary_a_perspective)
+    if (parsedResponse.context_data.summary_a_perspective) {
+      parsedResponse.context_data.summary_a = parsedResponse.context_data.summary_a_perspective; // backward compatibility
+      parsedResponse.context_data.summary = parsedResponse.context_data.summary_a_perspective; // backward compatibility
+    }
+    
+    // ✅ CRITICAL: Ensure summary_shared_neutral is set (use the fallback if it was created above)
+    if (!parsedResponse.context_data.summary_shared_neutral) {
+      parsedResponse.context_data.summary_shared_neutral = parsedResponse.summary_shared_neutral || '';
+      // If still empty, create fallback (should have been created above, but double-check)
+      if (!parsedResponse.context_data.summary_shared_neutral && parsedResponse.context_data.summary_a_perspective) {
+        const fallbackNeutral = parsedResponse.context_data.summary_a_perspective
+          .replace(/^I\s+/gi, 'User A ')
+          .replace(/\bmy\b/gi, 'their')
+          .replace(/\bme\b/gi, 'them')
+          .replace(/\bmyself\b/gi, 'themself')
+          .replace(/\bI\b/gi, 'User A')
+          .replace(/\bI'm\b/gi, 'User A is')
+          .replace(/\bI've\b/gi, 'User A has')
+          .replace(/\bI'd\b/gi, 'User A would');
+        parsedResponse.context_data.summary_shared_neutral = fallbackNeutral;
+        parsedResponse.summary_shared_neutral = fallbackNeutral;
+      }
+    }
+
+    // ✅ LOG BOTH SUMMARIES FOR DEBUGGING (confirm they exist and are different)
+    console.log('✅ Summary generation complete:', {
+      hasSummaryAPerspective: !!parsedResponse.summary_a_perspective,
+      hasSummarySharedNeutral: !!parsedResponse.summary_shared_neutral,
+      contextDataHasAPerspective: !!parsedResponse.context_data?.summary_a_perspective,
+      contextDataHasSharedNeutral: !!parsedResponse.context_data?.summary_shared_neutral,
+      summaryAPerspectiveLength: parsedResponse.summary_a_perspective?.length || 0,
+      summarySharedNeutralLength: parsedResponse.summary_shared_neutral?.length || 0,
+      summaryAPerspectivePreview: parsedResponse.summary_a_perspective?.substring(0, 100) || 'MISSING',
+      summarySharedNeutralPreview: parsedResponse.summary_shared_neutral?.substring(0, 100) || 'MISSING',
+      areSummariesDifferent: parsedResponse.summary_a_perspective !== parsedResponse.summary_shared_neutral,
+      contextDataAreDifferent: parsedResponse.context_data?.summary_a_perspective !== parsedResponse.context_data?.summary_shared_neutral,
+    });
+    
+    // ✅ VALIDATION: Warn if summaries are identical (should never happen)
+    if (parsedResponse.summary_a_perspective && parsedResponse.summary_shared_neutral &&
+        parsedResponse.summary_a_perspective.trim() === parsedResponse.summary_shared_neutral.trim()) {
+      console.warn('⚠️ WARNING: Claude returned identical summaries! This may cause issues.');
     }
 
     console.log('✅ Summary generated successfully');

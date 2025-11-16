@@ -46,6 +46,7 @@ Deno.serve(async (req) => {
       wordLimit = 14,
       originalIssueSummary,
       recipientSummary,
+      summary_shared_neutral,
       hint_from_b,
       originalIssue,
       hintFromB,
@@ -145,6 +146,19 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ✅ CRITICAL: Check if conversation is already closed/resolved
+    if (chatData?.is_resolved === true && chatData?.closure_state === 'closed') {
+      console.log("🛑 Conversation is already closed - no options should be generated");
+      return new Response(JSON.stringify({
+        success: false,
+        error: "Conversation is closed",
+        message: "This conversation has been completed. No further options will be generated."
+      }), {
+        status: 200,  // 200 because this is expected behavior, not an error
+        headers: { ...corsHeaders, "Content-Type": "application/json" }
+      });
+    }
+
     const isRecipientUserA = recipientId === chatData?.user_id;
     const isRecipientUserB = recipientId === chatData?.contact_id;
     const shouldUseHint = isRecipientUserB && hintFromB;
@@ -216,42 +230,39 @@ Deno.serve(async (req) => {
     // ✅ CODE-PATH SAFETY: Verify correct summary is passed before generating options
     // Note: contextData will be defined later, so we use chatData.context_data directly here
     const chatContextData = chatData?.context_data || {};
-    const expectedSummaryForRecipient = isRecipientUserA 
-      ? (chatContextData.summary_a || chatContextData.summary || '')
-      : (chatContextData.summary_b || '');
+    // ✅ CRITICAL: BOTH users now use summary_shared_neutral - summary_b removed
+    const expectedSummaryForRecipient = chatContextData.summary_shared_neutral || '';
 
     const receivedSummary = recipientSummary || summary || '';
 
-    // Validate that received summary matches expected (allow empty for User B if summary_b not set yet)
+    // Validate that received summary matches expected (summary_shared_neutral for both users)
+    if (!expectedSummaryForRecipient || expectedSummaryForRecipient.trim().length === 0) {
+      console.warn("⚠️ CODE-PATH SAFETY: Missing summary_shared_neutral (both users need this)");
+      // Don't error - will use empty string and generate options without summary context
+    }
     if (isRecipientUserA) {
-      // For User A, we MUST have summary_a
+      // For User A, we should have summary_shared_neutral
       if (!expectedSummaryForRecipient || expectedSummaryForRecipient.trim().length === 0) {
-        console.error("❌ CODE-PATH SAFETY: Missing summary_a for User A");
-        return new Response(JSON.stringify({
-          success: false,
-          error: "Missing required summary for User A",
-          details: {
-            recipientId,
-            isRecipientUserA,
-            hasSummaryA: !!expectedSummaryForRecipient,
-            receivedSummaryLength: receivedSummary.length
-          }
-        }), {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" }
-        });
+        console.warn("⚠️ CODE-PATH SAFETY: Missing summary_shared_neutral for User A");
+        // Don't error - will use empty string and generate options without summary context
       }
-      
-      // Verify received summary matches expected (allow for perspective swapping)
-      const summaryMatches = receivedSummary.includes(expectedSummaryForRecipient.substring(0, 50)) ||
-                            expectedSummaryForRecipient.includes(receivedSummary.substring(0, 50));
-      
-      if (!summaryMatches && receivedSummary.length > 0) {
-        console.warn("⚠️ CODE-PATH SAFETY: Received summary may not match expected for User A", {
-          expectedPreview: expectedSummaryForRecipient.substring(0, 100),
-          receivedPreview: receivedSummary.substring(0, 100)
-        });
+    } else {
+      // For User B, we should have summary_shared_neutral
+      if (!expectedSummaryForRecipient || expectedSummaryForRecipient.trim().length === 0) {
+        console.warn("⚠️ CODE-PATH SAFETY: Missing summary_shared_neutral for User B");
+        // Don't error - will use empty string and generate options without summary context
       }
+    }
+    
+    // Verify received summary matches expected (summary_shared_neutral for both users)
+    const summaryMatches = receivedSummary.includes(expectedSummaryForRecipient.substring(0, 50)) ||
+                          expectedSummaryForRecipient.includes(receivedSummary.substring(0, 50));
+    
+    if (!summaryMatches && receivedSummary.length > 0 && expectedSummaryForRecipient.length > 0) {
+      console.warn("⚠️ CODE-PATH SAFETY: Received summary may not match expected", {
+        expectedPreview: expectedSummaryForRecipient.substring(0, 100),
+        receivedPreview: receivedSummary.substring(0, 100)
+      });
     }
 
     console.log("✅ CODE-PATH SAFETY: Summary validation passed", {
@@ -373,9 +384,11 @@ const TALK_PATTERNS = [
 
 const containsTalkPhrase = (text: string): boolean => TALK_PATTERNS.some(pattern => pattern.test(text));
 
-// ✅ FIX: Extract summary_a from context_data and derive recipientSummary
+// ✅ FIX: Extract summary_a_perspective and summary_shared_neutral from context_data
 const contextData = chatData?.context_data || {};
-const summaryA = contextData.summary_a || contextData.summary || summary || originalIssueSummary || '';
+const summaryA = contextData.summary_a_perspective || contextData.summary_a || contextData.summary || summary || originalIssueSummary || '';
+// Use summary_shared_neutral from request body first, then from context_data, then fallback to empty
+const summarySharedNeutral = summary_shared_neutral || contextData.summary_shared_neutral || '';
 const thoughtsA = contextData.thoughts_a || contextData.thoughts || thoughts || '';
 const summaryBFromContext = contextData.summary_b || summaryB || '';
 const thoughtsBFromContext = contextData.thoughts_b || thoughtsB || '';
@@ -392,55 +405,68 @@ const filteredStructuredAnswers =
 
 console.log("📋 Context data extraction:", {
   hasSummaryA: !!summaryA,
+  hasSummarySharedNeutral: !!summarySharedNeutral,
   hasThoughtsA: !!thoughtsA,
-  hasSummaryB: !!summaryBFromContext,
   hasThoughtsB: !!thoughtsBFromContext,
   summaryALength: summaryA.length,
-  summaryBLength: summaryBFromContext.length,
+  summarySharedNeutralLength: summarySharedNeutral.length,
   recipientIsUserA: isRecipientUserA,
   recipientIsUserB: isRecipientUserB,
   userAName,
-  userBName
+  userBName,
+  note: "summary_b removed - both users now use summary_shared_neutral"
 });
 
 // ✅ FIX: Derive recipientSummary based on recipient
 // For User A: use summary_a (User A's original issue)
 // For User B: derive from summary_a by swapping perspectives or use summary_b if available
+// ✅ CRITICAL: BOTH User A and User B MUST ALWAYS use summary_shared_neutral for option generation
+// ❌ NEVER use summary_a_perspective for options - that's ONLY for Stage 3 UI
+// ❌ NEVER use summary_b for options - removed completely
 let derivedRecipientSummary = '';
 let derivedRecipientThoughts = '';
 
 if (isRecipientUserA) {
-  // User A: use their original summary
-  derivedRecipientSummary = summaryA || summary || '';
+  // ✅ User A: ONLY use summary_shared_neutral (factual, third-person)
+  derivedRecipientSummary = summarySharedNeutral || '';
   derivedRecipientThoughts = thoughtsA || thoughts || '';
-  console.log("✅ For User A: Using summary_a as recipientSummary");
-  } else if (isRecipientUserB) {
-    // User B: use summary_b if available, otherwise derive from summary_a
-    if (summaryBFromContext && summaryBFromContext.length > 0) {
-      derivedRecipientSummary = summaryBFromContext;
-      derivedRecipientThoughts = thoughtsBFromContext || '';
-      console.log("✅ For User B: Using existing summary_b from context_data");
-    } else if (summaryA && summaryA.length > 0) {
-      // ✅ FIX: For User B, DON'T swap summary_a - it creates perspective mixing
-      // If User B has no hint, we'll use latest message + topic + relationship tone + neutral baseline
-      // User A's summary will be shown separately as external context only (not as User B's perspective)
-      derivedRecipientSummary = ''; // Empty - prevents perspective mixing
-      derivedRecipientThoughts = '';
-      console.log("✅ For User B: NOT using swapped summary (prevents perspective mixing)");
-      console.log("   If no hint: Will use latest message + topic + relationship tone + neutral baseline");
-    } else {
-      derivedRecipientSummary = ''; // Empty for User B
-      derivedRecipientThoughts = '';
-      console.log("⚠️ For User B: No summary_a found - will use latest message + topic + relationship tone");
-    }
+  
+  if (!derivedRecipientSummary) {
+    console.warn('⚠️ WARNING: summary_shared_neutral missing for User A options! Using empty string.');
+  } else {
+    console.log("✅ For User A: Using summary_shared_neutral for option generation (factual, third-person)");
+    console.log(`   Summary preview: ${derivedRecipientSummary.substring(0, 100)}`);
+    console.log("   Note: summary_a_perspective is ONLY shown in Stage 3 UI, NEVER used for chat options");
   }
+} else if (isRecipientUserB) {
+  // ✅ User B: ONLY use summary_shared_neutral (factual, third-person)
+  // ❌ REMOVED: summary_b logic completely - both users now use summary_shared_neutral
+  derivedRecipientSummary = summarySharedNeutral || '';
+  derivedRecipientThoughts = thoughtsBFromContext || thoughtsB || '';
+  
+  if (!derivedRecipientSummary) {
+    console.warn('⚠️ WARNING: summary_shared_neutral missing for User B options! Using empty string.');
+  } else {
+    console.log("✅ For User B: Using summary_shared_neutral for option generation (factual, third-person)");
+    console.log(`   Summary preview: ${derivedRecipientSummary.substring(0, 100)}`);
+    console.log("   Note: summary_b removed - both users now use summary_shared_neutral");
+    console.log("   Note: summary_a_perspective is NEVER used for option generation");
+  }
+}
 
-// ✅ FIX: Ensure recipientSummary is always set (never empty)
-const finalRecipientSummary = recipientSummary || derivedRecipientSummary || summary || 
-  "General context unavailable — keep responses simple and friendly.";
+// ✅ FINAL: Ensure recipientSummary is always set (never empty)
+const finalRecipientSummary = recipientSummary || derivedRecipientSummary || '';
 const finalRecipientThoughts = thoughts || derivedRecipientThoughts || '';
 
+// ✅ LOG which summary is being used for option generation
 console.log("✅ Final recipientSummary determination:", {
+  recipient: isRecipientUserA ? "User A" : "User B",
+  usingSummary: finalRecipientSummary ? "summary_shared_neutral" : "EMPTY",
+  summaryPreview: finalRecipientSummary.substring(0, 100) || "EMPTY",
+  hasSummarySharedNeutral: !!summarySharedNeutral,
+  hasSummaryAPerspective: !!summaryA,
+  summaryAPerspectivePreview: summaryA?.substring(0, 100) || "MISSING",
+  warning: summaryA && !summarySharedNeutral ? "summary_shared_neutral missing, may cause issues" : "OK",
   recipientIsUserA: isRecipientUserA,
   recipientIsUserB: isRecipientUserB,
   finalRecipientSummaryLength: finalRecipientSummary.length,
@@ -598,12 +624,25 @@ const cleanPerspective = (text: string | undefined): string => {
 // ✅ FIX: Use finalRecipientSummary instead of recipientSummary
 const cleanSummary = cleanPerspective(summary);
 const cleanThoughts = cleanPerspective(thoughts);
-const cleanOriginalIssueSummary = cleanPerspective(originalIssueSummary || summaryA);
+// ✅ CRITICAL: For option generation context, use summary_shared_neutral (factual, third-person)
+// This is used for BOTH User A and User B option generation in all turns
+// summary_a_perspective (emotional, first-person) is only shown in Stage 3 UI, NEVER used here
+// ❌ NEVER use summary_a_perspective for option generation - it creates perspective mixing
+// ❌ summary_b removed - both users now use summary_shared_neutral
+const cleanOriginalIssueSummary = cleanPerspective(summarySharedNeutral || '');
 const cleanRecipientSummary = cleanPerspective(finalRecipientSummary);
 const cleanRecipientThoughts = cleanPerspective(finalRecipientThoughts);
-const cleanSummaryB = cleanPerspective(summaryBFromContext);
-const cleanThoughtsB = cleanPerspective(thoughtsBFromContext);
+const cleanSummarySharedNeutral = cleanPerspective(summarySharedNeutral);
 const cleanCurrentMessage = cleanPerspective(currentMessage);
+
+// ✅ LOG which summaries are being used
+console.log("🧹 Cleaned summaries for option generation:", {
+  cleanOriginalIssueSummary: cleanOriginalIssueSummary.substring(0, 100) || "EMPTY",
+  cleanRecipientSummary: cleanRecipientSummary.substring(0, 100) || "EMPTY",
+  cleanSummarySharedNeutral: cleanSummarySharedNeutral.substring(0, 100) || "EMPTY",
+  warning: summaryA && !summarySharedNeutral ? "Using empty - summary_shared_neutral missing!" : "OK",
+  note: "Both users use summary_shared_neutral only - summary_b removed",
+});
 
 // ✅ Clean conversation history
 const cleanConversationHistory = safeConversationHistory.map((msg) =>
@@ -794,10 +833,11 @@ const extractThirdPartyNamesFromSummary = (summaryText: string): string[] => {
 };
 
 // Extract from all possible summary sources
+// ✅ CRITICAL: summary_b removed - both users now use summary_shared_neutral
 const rawSummaryText = summary || recipientSummary || originalIssueSummary || '';
-const rawContextSummaryA = chatContextData.summary_a || chatContextData.summary || '';
-const rawContextSummaryB = chatContextData.summary_b || '';
-const allRawSummaries = [rawSummaryText, rawContextSummaryA, rawContextSummaryB].filter(Boolean).join(' ');
+const rawContextSummaryA = chatContextData.summary_a_perspective || chatContextData.summary_a || chatContextData.summary || '';
+const rawContextSummarySharedNeutral = chatContextData.summary_shared_neutral || '';
+const allRawSummaries = [rawSummaryText, rawContextSummaryA, rawContextSummarySharedNeutral].filter(Boolean).join(' ');
 const thirdPartyNamesInSummary = extractThirdPartyNamesFromSummary(allRawSummaries);
 
 
@@ -890,7 +930,7 @@ if (recipientEntity && recipientEntity.entity_name) {
       });
     }
 
-    // ✅ ENHANCED: Emotionally-aware gradual closure detection
+    // ✅ ENHANCED: Emotionally-aware gradual closure detection (includes thoughts and general view)
     const recentMessages = safeConversationHistory.slice(-4).map(m => {
       if (typeof m === 'object' && m.content) {
         return String(m.content).toLowerCase();
@@ -898,6 +938,16 @@ if (recipientEntity && recipientEntity.entity_name) {
       return String(m).toLowerCase();
     }).join(' ');
 
+    // ✅ ENHANCED: Analyze thoughts and general view towards conversation
+    const contextDataForThoughts = chatData?.context_data || {};
+    const thoughtsAForClosure = contextDataForThoughts.thoughts_a || thoughtsA || thoughts || '';
+    const thoughtsBForClosure = contextDataForThoughts.thoughts_b || thoughtsB || '';
+    const allThoughts = [thoughtsAForClosure, thoughtsBForClosure].filter(Boolean).join(' ').toLowerCase();
+    
+    // Detect closure signals in thoughts
+    const thoughtsIndicateClosure = /(feel better|resolved|peace|closure|understood|grateful|appreciate|happy|satisfied|content|relieved|at peace|good place|moved on|worked through)/i.test(allThoughts);
+    const thoughtsIndicatePositiveView = /(positive|hopeful|optimistic|better|improved|healing|progress|growth|forward|together|closer)/i.test(allThoughts);
+    
     // Detect smiley emojis in conversation
     const hasSmileyInMessages = /🙂|😊|❤️|🤝|💙|🫂|✨|👍/.test(recentMessages) || 
                                  safeConversationHistory.some(m => {
@@ -920,9 +970,15 @@ if (recipientEntity && recipientEntity.entity_name) {
     if (hasUnderstanding) emotionalClosureScore += 0.2;
     if (hasClosure) emotionalClosureScore += 0.15;
     if (hasPositiveAffirmation) emotionalClosureScore += 0.15;
+    // ✅ ENHANCED: Add score boost from thoughts and general view
+    if (thoughtsIndicateClosure) emotionalClosureScore += 0.2; // Thoughts indicate closure
+    if (thoughtsIndicatePositiveView) emotionalClosureScore += 0.15; // Positive view towards conversation
     // ✅ NEW: Add score boost if smiley detected or other user sent smiley
     if (hasSmileyInMessages || otherUserSentSmiley) emotionalClosureScore += 0.2;
     if (otherUserRecentSmiley) emotionalClosureScore += 0.15; // Recent smiley from other user
+    
+    // Cap score at 1.0
+    emotionalClosureScore = Math.min(emotionalClosureScore, 1.0);
 
     // Detect if conversation has mutual exchange (both sides have spoken)
     const mutualExchange = safeConversationHistory.length >= 4 &&
@@ -952,6 +1008,8 @@ if (recipientEntity && recipientEntity.entity_name) {
       hasSmileyInMessages,
       otherUserSentSmiley,
       otherUserRecentSmiley,
+      thoughtsIndicateClosure,
+      thoughtsIndicatePositiveView,
       mutualExchange,
       naturalClosureDetected,
       messageCount: safeConversationHistory.length
@@ -1204,48 +1262,69 @@ Your task is to generate ${isVeryFirstMessage ? '5' : '3'} options of what the p
 5. Match the relationship type (casual with friends, respectful with family, professional with coworkers)
 6. Use contractions, natural speech patterns, and appropriate informality
 7. Choose pronouns based on WHO/WHAT is being discussed (you vs she/he/they)
-${shouldUseHint ? `7. SUBTLY reflect the person's private feelings without exposing them` : ''}
+${shouldUseHint && isRecipientUserB ? `7. SUBTLY reflect the person's private feelings without exposing them (User B only)` : ''}
 
 ${isVeryFirstMessage ? `
-🌱 VERY FIRST MESSAGE - CONTEXT-AWARE OPENING:
+🌱 VERY FIRST MESSAGE - SUMMARY-AWARE OPENING:
+
+Topic context (what this conversation is about): "${(cleanSummarySharedNeutral || cleanOriginalIssueSummary || cleanSummary || 'Not specified').substring(0, 200)}${(cleanSummarySharedNeutral || cleanOriginalIssueSummary || cleanSummary || '').length > 200 ? '...' : ''}"
+
+CRITICAL: Generate 5 DISTINCT options that:
+1. INCORPORATE THE SUMMARY TOPIC in different styles (reference the core issue naturally)
+2. Each option mentions or hints at the purpose (don't just say "hey, how are you?")
+3. Vary in directness, formality, and emotional tone
+4. Are COMPLETE and MEANINGFUL (8-20 words) - not generic greetings
+5. Users should be confused which to pick because ALL options are good
+
+❌ NEVER generate generic greetings without context like:
+- "hey, how are you?" (no reference to issue)
+- "hi, hope you're doing well" (no hint at purpose)
+- "hey stranger" (completely generic)
+
+✅ INSTEAD, generate options that incorporate the summary like:
+- "hey, can we talk about what happened at the party?" (references summary)
+- "hi, I wanted to bring up something that's been on my mind" (implies issue)
+- "hey, got a sec? there's something I'd like to discuss with you" (acknowledges purpose)
 
 Timing Context: ${conversationTimingContext}
 
 ${conversationTimingContext === 'recent_argument' ? `
-⚡ RECENT ARGUMENT - Skip pleasantries, go straight to resolution:
-Generate 5 DIFFERENT approaches (single sentence, complete and meaningful):
-1. Direct and urgent: "we need to talk about what just happened"
-2. Calm and conciliatory: "can we talk about earlier?"
-3. Honest and open: "I want to clear this up with you"
-4. Questioning: "hey can we figure out what happened?"
-5. Acknowledging difficulty: "that didn't go well, can we talk?"
+⚡ RECENT ARGUMENT - Direct resolution focus incorporating summary:
+Generate 5 DIFFERENT approaches referencing the core issue from summary (single sentence, complete and meaningful):
+1. Direct: "we need to talk about what just happened"
+2. Calm: "can we talk about what happened earlier?"
+3. Open: "I want to clear this up with you about what happened"
+4. Questioning: "hey, can we figure out what happened?"
+5. Acknowledging: "that didn't go well, can we talk about it?"
 DO NOT use casual greetings - they want resolution NOW.
+Reference the summary topic naturally in each option.
 ` : conversationTimingContext === 'long_gap' ? `
-🕰 LONG GAP - Warm reconnection first, then gentle purpose:
-Generate 5 DIFFERENT reconnection styles (single sentence, complete and meaningful):
-1. Warm and nostalgic: "hey! it's been a while, how have you been?"
-2. Caring and thoughtful: "hi! been thinking about you, how are things?"
-3. Friendly and casual: "hey stranger! how's life treating you?"
-4. Gentle with purpose: "hey, miss chatting with you - can we talk?"
-5. Warm check-in: "hi! hope you're doing well, wanted to reach out"
-Balance warmth with genuine interest - reconnection comes first.
+🕰 LONG GAP - Warm reconnection + gentle issue mention incorporating summary:
+Generate 5 DIFFERENT styles that reconnect AND hint at the issue from summary (single sentence, complete):
+1. Warm with purpose: "hey! it's been a while - can we talk about something?"
+2. Caring check-in: "hi! been thinking about you and something I wanted to discuss"
+3. Friendly but purposeful: "hey stranger! how's life? got something on my mind"
+4. Gentle opening: "hey, miss chatting with you - can we talk about something?"
+5. Warm but direct: "hi! hope you're doing well - wanted to bring something up"
+Balance warmth with purpose - reconnect but acknowledge there's something to discuss from the summary.
 ` : conversationTimingContext === 'same_day' ? `
-⏱ SAME DAY - Friendly but purposeful:
-Generate 5 DIFFERENT check-in approaches (single sentence, complete and meaningful):
-1. Casual and direct: "hey, how's your day? got a minute?"
-2. Warm with purpose: "hi! hope you're good, wanted to bring something up"
-3. Simple check-in: "hey, how are you? something on my mind"
+⏱ SAME DAY - Friendly but issue-aware incorporating summary:
+Generate 5 DIFFERENT approaches that acknowledge the day AND hint at purpose from summary (single sentence):
+1. Casual with purpose: "hey, how's your day? got something I wanted to talk about"
+2. Warm but purposeful: "hi! hope you're good - wanted to bring something up"
+3. Simple check-in: "hey, how are you? something on my mind I'd like to discuss"
 4. Friendly opening: "hey there, how's everything? need to chat about something"
 5. Straightforward: "hi, can we talk about something that's been bothering me?"
+Reference the summary topic naturally in each option.
 ` : `
-💬 NORMAL TIMING - Gentle opening with wellness check:
-Generate 5 DIFFERENT greeting styles (single sentence, complete and meaningful):
-1. Simple and warm: "hey, how are you?"
-2. Caring tone: "hi, hope you're doing well - can we chat?"
-3. Friendly check-in: "hey there, how's everything going with you?"
-4. Direct but warm: "hi, how have you been? wanted to talk"
-5. Gentle approach: "hey, got a sec? something I'd like to discuss"
-Friendly and caring - show genuine interest before concerns.
+💬 NORMAL TIMING - Issue-aware gentle opening incorporating summary:
+Generate 5 DIFFERENT styles that are friendly AND hint at purpose from summary (single sentence, complete):
+1. Warm with purpose: "hey, how are you? can we talk about something?"
+2. Caring tone: "hi, hope you're doing well - got something I wanted to discuss"
+3. Friendly check-in: "hey there, how's everything going? need to chat about something"
+4. Direct but warm: "hi, how have you been? wanted to bring something up"
+5. Gentle approach: "hey, got a sec? something I'd like to talk about with you"
+Friendly and caring - show genuine interest but acknowledge there's a purpose from the summary.
 `}
 
 Relationship tone (${contactCategory}):
@@ -1254,12 +1333,14 @@ Relationship tone (${contactCategory}):
 - Coworkers: professional but friendly
 - General: balanced and respectful
 
-CRITICAL: Generate 5 TRULY DISTINCT options that vary in:
-- Directness (subtle vs straightforward)
-- Formality (casual vs respectful)
-- Emotional tone (worried vs calm)
-- Length (short vs fuller)
-- Approach (question vs statement)
+CRITICAL: Generate 5 TRULY DISTINCT options that:
+- ALL reference the core issue/topic from the summary (in different ways - direct mention, subtle hint, or implied purpose)
+- Vary in directness (subtle hint vs explicit mention)
+- Vary in formality (casual vs respectful)
+- Vary in emotional tone (calm vs worried)
+- Vary in length (short vs fuller, but all 8-20 words)
+- Vary in approach (question vs statement)
+- Are COMPLETE and MEANINGFUL - users should be confused which to pick because all are good
 ` : ''}
 
 SPEECH STYLE PRINCIPLES (use naturally, never label):
@@ -1284,19 +1365,16 @@ STAY WITHIN THE APP - CRITICAL RULES:
 CRITICAL: MAINTAIN PERSPECTIVE - EACH USER HAS DIFFERENT OPTIONS
 ${isRecipientUserA ? `
 🔵 GENERATING FOR USER A (Original Issue Owner - Speaking TO User B):
-- User A initiated with their concern: "${cleanOriginalIssueSummary || cleanSummary}"
-- User A's options should express THEIR feelings about THEIR issue
+- ⚠️ CRITICAL: User B's private hint is NOT available to User A
+- User A only knows what User B actually said in the conversation history
+- User A should respond based on User B's messages in the chat, NOT on User B's private hint
+- ✅ CRITICAL: Option generation uses NEUTRAL shared summary (factual, third-person) for context
+- Topic context (neutral, factual): "${cleanOriginalIssueSummary || cleanSummary || 'Not specified'}"
+- User A's options should express THEIR feelings about the topic (use "I/me/my" in options)
 - User A is trying to communicate their perspective and feelings TO User B
-${shouldUseHint ? `
-- ✅ CRITICAL: User B has provided their perspective: "${hintFromB}"
-- User A should acknowledge and understand User B's reasons
-- Options should help User A acknowledge User B's perspective and show understanding
-- User A needs to recognize that User B has valid reasons for their behavior
-- Help User A respond in a way that acknowledges BOTH perspectives
-- Options should bridge understanding: "I understand why you felt that way" or "I see your perspective now"
-- Both sides need to understand each other - not just User A's original issue
-` : ''}
-- Keep User A's voice authentic to their original concern
+- User A should acknowledge User B's perspective based on what User B communicated in the conversation
+- Options should help User A respond to what User B actually said in their messages
+- Keep User A's voice authentic - use first-person in options but understand context from neutral summary
 - User A speaks about themselves with "I/me/my" and addresses User B with "you/your"
 - ❗ CRITICAL: When User A addresses User B, use "you/your" NOT "her/his/their"
 - When mentioning third parties from summary, use EXACT names as written
@@ -1312,10 +1390,12 @@ ${isRecipientUserB ? `
 - User B is NOT continuing User A's original issue - they are RESPONDING to what User A just said
 - User B's options should be DIRECT RESPONSES to: "${cleanCurrentMessage}"
 
-${shouldUseHint ? `
-✅ USER B HAS HINT - USE HINT AS PRIMARY PERSPECTIVE:
+${shouldUseHint && isRecipientUserB ? `
+✅ USER B HAS HINT - USE HINT AS PRIMARY PERSPECTIVE (PRIVATE TO USER B ONLY):
 🔐 USER B'S PRIVATE PERSPECTIVE (PERSISTENT CORE CONTEXT FOR ALL TURNS):
 "${hintFromB}"
+
+⚠️ CRITICAL: This hint is PRIVATE to User B and MUST NEVER be shown to User A.
 
 ⚡ ABSOLUTELY CRITICAL - MANDATORY HINT INTEGRATION:
 - This hint is User B's TRUE PERSPECTIVE and MUST DEEPLY INFLUENCE EVERY SINGLE OPTION
@@ -1372,7 +1452,8 @@ ${neutralTopic ? `
 
 Context:
 - Contact category: ${contactCategory || 'General'}
-- Original issue (User A): ${cleanOriginalIssueSummary || cleanSummary || 'Not specified'}
+- Topic context (neutral, factual): ${cleanSummarySharedNeutral || cleanOriginalIssueSummary || cleanSummary || 'Not specified'}
+- ✅ Note: Both User A and User B use neutral shared summary for option generation (factual, third-person)
 
 
 Recent conversation:
@@ -1394,7 +1475,11 @@ ${isRecipientUserB ? `
 
 ${isRecipientUserB && !shouldUseHint ? `
 ⚠️ EXTERNAL CONTEXT ONLY (What User A said - IGNORE for User B's perspective):
+${summarySharedNeutral ? `
+- Neutral shared context (factual only): "${cleanPerspective(summarySharedNeutral).substring(0, 200)}${summarySharedNeutral.length > 200 ? '...' : ''}"
+` : `
 - User A's original issue (for reference only - NOT your perspective): "${(cleanOriginalIssueSummary || cleanSummary || 'Not specified').substring(0, 200)}${(cleanOriginalIssueSummary || cleanSummary || '').length > 200 ? '...' : ''}"
+`}
 - 🔴 CRITICAL: IGNORE this completely when generating User B's options
 - This is User A's perspective - you (User B) should respond from YOUR OWN perspective
 - ❗ DO NOT use this to assume User B's feelings or convert it into User B's perspective
@@ -1406,7 +1491,11 @@ ${cleanRecipientThoughts && cleanRecipientThoughts.length > 100 ? `
 ` : ''}
 ` : isRecipientUserB && shouldUseHint ? `
 ✅ CONTEXT FOR USER B (With Hint):
+${summarySharedNeutral ? `
+- Neutral shared context (factual reference): "${cleanPerspective(summarySharedNeutral).substring(0, 200)}${summarySharedNeutral.length > 200 ? '...' : ''}"
+` : `
 - User A's original issue (for context - you're responding from YOUR hint perspective): "${(cleanOriginalIssueSummary || cleanSummary || 'Not specified').substring(0, 200)}${(cleanOriginalIssueSummary || cleanSummary || '').length > 200 ? '...' : ''}"
+`}
 - Your hint (YOUR actual perspective): See hint section above
 ${cleanRecipientThoughts && cleanRecipientThoughts.length > 100 ? `
 - Additional context from User A: ${cleanRecipientThoughts.substring(0, 150)}${cleanRecipientThoughts.length > 150 ? '...' : ''}
@@ -1415,7 +1504,13 @@ ${cleanRecipientThoughts && cleanRecipientThoughts.length > 100 ? `
 ` : ''}
 ` : `
 Recipient's context:
-- Core issue: ${(cleanRecipientSummary || cleanSummary || 'No summary provided').substring(0, 250)}${(cleanRecipientSummary || cleanSummary || '').length > 250 ? '...' : ''}
+${isRecipientUserA ? `
+- Topic context (neutral, factual): "${(summarySharedNeutral || cleanRecipientSummary || cleanSummary || 'No summary provided').substring(0, 250)}${(summarySharedNeutral || cleanRecipientSummary || cleanSummary || '').length > 250 ? '...' : ''}"
+- ✅ Note: This is the neutral shared summary used for option generation (factual, third-person)
+- Your options should express YOUR feelings (use "I/me/my") but understand the topic from this neutral context
+` : `
+- Core issue: "${(cleanRecipientSummary || cleanSummary || 'No summary provided').substring(0, 250)}${(cleanRecipientSummary || cleanSummary || '').length > 250 ? '...' : ''}"
+`}
 ${cleanRecipientThoughts && cleanRecipientThoughts.length > 100 ? `
 - Additional context: ${cleanRecipientThoughts.substring(0, 150)}${cleanRecipientThoughts.length > 150 ? '...' : ''}
 ` : cleanRecipientThoughts ? `
@@ -1426,9 +1521,11 @@ ${cleanRecipientThoughts && cleanRecipientThoughts.length > 100 ? `
 ⚠️ IMPORTANT: Summary cleaned for perspective - @ tags = "you/your", # tags = third parties
 
 
-${shouldUseHint ? `
+${shouldUseHint && isRecipientUserB ? `
 🔐 USER B'S PRIVATE PERSPECTIVE (PERSISTENT CORE CONTEXT FOR ALL TURNS):
 "${hintFromB}"
+
+⚠️ CRITICAL: This hint is PRIVATE to User B and MUST NEVER be shown to User A.
 
 ⚡ ABSOLUTELY CRITICAL - MANDATORY HINT INTEGRATION:
 This hint is User B's TRUE PERSPECTIVE and MUST DEEPLY INFLUENCE EVERY SINGLE OPTION generated throughout THE ENTIRE CONVERSATION.
@@ -1443,8 +1540,8 @@ The hint reveals:
 - User B's reasons for their feelings and reactions
 - Opportunities to help both sides understand each other fairly
 
-🎯 CRITICAL: COMPARE HINT WITH ORIGINAL ISSUE SUMMARY:
-Original Issue (User A's perspective): "${cleanOriginalIssueSummary || cleanSummary}"
+🎯 CRITICAL: COMPARE HINT WITH NEUTRAL TOPIC SUMMARY:
+Topic context (neutral, factual): "${cleanSummarySharedNeutral || cleanOriginalIssueSummary || cleanSummary}"
 User B's Hint (User B's perspective): "${hintFromB}"
 
 The AI must understand:
@@ -1497,9 +1594,9 @@ ${finalClosureDetected ? `
 🌈 EMOTIONALLY-AWARE GRADUAL CLOSURE:
 Emotional closure score: ${emotionalClosureScore.toFixed(2)} | Turn ${safeConversationHistory.length}
 
-${emotionalClosureScore >= 0.8 && safeConversationHistory.length >= 8 ? `
-✨ VERY HIGH CLOSURE (Score: ${emotionalClosureScore.toFixed(2)}) - Ready for smiley-only options:
-Both sides have expressed gratitude, forgiveness, and understanding. Time for gentle, warm closure.
+${emotionalClosureScore >= 0.6 && safeConversationHistory.length >= 6 ? `
+✨ HIGH CLOSURE DETECTED (Score: ${emotionalClosureScore.toFixed(2)}) - Ready for smiley-only options:
+Both sides have expressed gratitude, forgiveness, and understanding. Thoughts and conversation history indicate closure. Time for gentle, warm closure.
 
 Generate ALL ${isVeryFirstMessage ? '5' : '3'} options as SINGLE EMOJI responses:
 - 🙂 (peaceful, content closure)
@@ -1516,20 +1613,29 @@ Choose the ${isVeryFirstMessage ? '5' : '3'} most appropriate emojis based on:
 - Cultural appropriateness
 
 CRITICAL: ONLY single emojis - no text, no combinations, no explanations.
-` : emotionalClosureScore >= 0.5 ? `
-🌱 MODERATE CLOSURE (Score: ${emotionalClosureScore.toFixed(2)}) - Gradual transition phase:
-Resolution is emerging. Focus on appreciation while staying grounded in what was discussed.
+` : emotionalClosureScore >= 0.5 && safeConversationHistory.length >= 5 ? `
+🌱 MODERATE CLOSURE (Score: ${emotionalClosureScore.toFixed(2)}) - Start introducing smiley options:
+Resolution is emerging. Mix appreciation with smiley options to naturally guide toward closure.
 
-Generate ${isVeryFirstMessage ? '5' : '3'} options:
-- Share gratitude or relief (short, single sentence) tied to something they said.
-- Reinforce mutual understanding: "thanks for explaining why you felt that way".
-- Reinforce continued openness: "I want us to keep being honest like this".
+Generate ${isVeryFirstMessage ? '5' : '3'} options with MIXED format:
+- ${isVeryFirstMessage ? '2-3' : '1-2'} brief text options showing gratitude/appreciation (short, single sentence)
+- ${isVeryFirstMessage ? '2-3' : '1-2'} SINGLE EMOJI options from: 🙂 🤝 ❤️ 😊 🫂 ✨ 💙
+
+Text options should:
+- Share gratitude or relief tied to something they said
+- Reinforce mutual understanding: "thanks for explaining why you felt that way"
+- Express appreciation naturally: "I appreciate you being open with me"
+
+Emoji options should match relationship and tone:
+- Family: ❤️ 🫂 (warm, supportive)
+- Friends: 😊 🤝 (happy, friendly)
+- Work: 🤝 👍 (professional, respectful)
+- Romantic: ❤️ 💙 😊 (intimate, caring)
 
 TONE GUIDANCE:
-- Acknowledge the specific progress that was made in this conversation.
-- Express gratitude naturally: "thanks for being open with me".
-- Show positive forward energy while staying concrete: "feel better about us working through this".
-- Match relationship tone (casual vs warm vs professional).
+- Acknowledge the specific progress that was made
+- Show positive forward energy
+- Match relationship tone (casual vs warm vs professional)
 
 CRITICAL: Build on specific topics discussed. Reference what was resolved. Show genuine appreciation.
 ` : `
@@ -1592,9 +1698,56 @@ ${isRecipientUserA ? `
 - Or use pronouns from entity registry: "she", "he", "they"
 - NEVER use "you/your" for third parties - only for the listener
 
+🎯 MANDATORY TONE REQUIREMENTS - ALL OPTIONS MUST BE POLITE, EMPATHETIC, HUMAN, NATURAL, AND FRIENDLY:
+
+**POLITE & RESPECTFUL:**
+- Always use courteous, respectful language
+- ✅ GOOD: "I'd appreciate if you could help me understand", "I'd love to hear your side", "Could you help me see your perspective?"
+- ❌ BAD: "I need you to", "You should", "Tell me", "What do you want"
+
+**EMPATHETIC & CARING:**
+- Show genuine care and understanding for the other person's feelings
+- ✅ GOOD: "I can see why that would feel that way", "I care about how you're feeling", "I want to make sure you feel heard"
+- ❌ BAD: "I understand" (too cold), "I see" (dismissive), "Okay" (unfeeling)
+
+**HUMAN & NATURAL:**
+- Sound like a real person talking, not a robot or therapist
+- ✅ GOOD: "I've been thinking about what you said", "I want us to work through this together", "I appreciate you sharing that with me"
+- ❌ BAD: "I acknowledge your perspective", "We should resolve our conflict", "I experienced exclusion"
+
+**FRIENDLY & WARM:**
+- Be warm, approachable, and kind - like talking to someone you care about
+- ✅ GOOD: "Hey, I'd love to understand your side", "I'm here to listen", "Thanks for being open with me", "I want us to stay close"
+- ❌ BAD: "We need to talk", "This is a problem", "What's the issue", "Can you tell me more" (too generic)
+
+**GENTLE & SUPPORTIVE:**
+- Use soft, non-confrontational phrasing that shows you're on their side
+- ✅ GOOD: "I wonder if we could explore this together", "Would you be open to talking about this?", "I'm here to understand, not to judge"
+- ❌ BAD: "We need to discuss this", "You need to explain", "This needs to be resolved"
+
+**SPECIFIC EXAMPLES OF GOOD OPTIONS:**
+- "I'd love to understand what's been on your mind - can you help me see things from your perspective?"
+- "I care about how you're feeling, and I want to make sure you feel heard"
+- "I appreciate you sharing that with me - it helps me understand where you're coming from"
+- "I'm here to listen and work through this together with you"
+- "Thanks for being open with me - I want us to stay connected"
+
+**SPECIFIC EXAMPLES OF BAD OPTIONS (NEVER GENERATE THESE):**
+- "Can you tell me more?" (too generic, not friendly)
+- "What do you want to talk about?" (rude, dismissive)
+- "I understand" (cold, unfeeling)
+- "We need to resolve this" (demanding, confrontational)
+- "You should explain" (demanding, not polite)
+
+CRITICAL: Every option must pass this test: "Would a caring friend say this to someone they care about?" If the answer is no, rewrite it to be warmer, more empathetic, and more friendly.
+
     ${isVeryFirstMessage ? `
-      🌱 WARMUP PHASE - FRIENDLY HELLOS ONLY:
-      - Generate 5 warm, friendly openings someone would naturally text to ${contactCategory === 'family'
+      🌱 FIRST MESSAGE - SUMMARY-AWARE OPENINGS:
+      - Generate 5 warm, meaningful openings that incorporate the summary topic naturally
+      - Reference the core issue in different styles (direct mention, subtle hint, or implied purpose)
+      - Each option should be COMPLETE and MEANINGFUL (8-20 words) - not just "hey, how are you?"
+      - Vary in approach (direct, warm, gentle, casual, friendly) but ALL should hint at or mention the purpose
+      - Use natural texting style appropriate for ${contactCategory === 'family'
           ? 'a family member'
           : contactCategory === 'friend'
           ? 'a close friend'
@@ -1602,13 +1755,9 @@ ${isRecipientUserA ? `
           ? 'a partner'
           : contactCategory === 'work'
           ? 'a teammate'
-          : 'someone they know'}.
-      - Tones: gentle, upbeat, curious, playful — no tension or conflict.
-      - Keep each message SHORT (single sentence only).
-      - NEVER mention any issue, event, emotion, or third person.
-      - NEVER use or imply any @name, real name, or #tag — only say "you", "hey", or similar.
-      - Use natural texting style: lowercase fine, small emoji ok ("hey you 😊", "yo", "hi there", "hey hey", etc.).
-      - All 5 options must be distinct styles (soft / playful / curious / simple / kind).
+          : 'someone they know'}
+      - Users should have trouble choosing because ALL options are good and relevant
+      - All 5 options must be distinct styles but equally strong
       ` : ''}
       
 ${!isVeryFirstMessage && safeConversationHistory.length <= 2 ? `
@@ -1697,24 +1846,35 @@ ${shouldUseHint && !isRecipientUserA ? `
 - Make it crystal clear what you needed, what hurt, or what you were trying to protect — no vague responses.
 ` : ''}
 
-🎯 CRITICAL - ALL OPTIONS MUST BE RELEVANT TO LATEST MESSAGE:
+🎯 CRITICAL - ALL OPTIONS MUST BE RELEVANT, COMPLETE, AND MEANINGFUL:
 - Latest message: "${cleanCurrentMessage}"
-- ALL ${isVeryFirstMessage ? '5' : '3'} options MUST respond to THIS message
-- ❌ NEVER generate generic questions like:
-  * "can you tell me more"
-  * "what do you want to talk about"  
-  * "what's on your mind"
-  * "what would you like to discuss"
-- ✅ INSTEAD: Respond directly to what they said, acknowledge specific points, show your perspective
+- ALL ${isVeryFirstMessage ? '5' : '3'} options MUST respond to THIS message OR the summary topic (for first message)
+- ❌ NEVER generate generic, weak, or incomplete options like:
+  * "can you tell me more" (too generic, no substance)
+  * "what do you want to talk about" (ignores context)
+  * "what's on your mind" (too vague)
+  * "I hear what you're saying" (too simple, no substance)
+  * "hey, how are you?" (no reference to issue - for first message)
+- ✅ INSTEAD: Each option must be:
+  * COMPLETE and MEANINGFUL (8-20 words preferred, but prioritize meaning)
+  * SPECIFIC to the conversation context (summary topic or latest message)
+  * Show engagement and understanding
+  * Make sense as a choice - users should want to pick it
 - They should express the SAME response in different styles:
   * Different formality levels (casual → formal)
   * Different directness (subtle → straightforward)  
   * Different emotional tones (reserved → warm)
+- ✅ ALL ${isVeryFirstMessage ? '5' : '3'} OPTIONS IN A SET MUST BE:
+  * EQUALLY GOOD - users should be confused which to pick
+  * RELATED to the same core message/topic
+  * DIFFERENT only in style/tone/approach
+  * NOT a mix of 1-2 good options and 1 weak option
 - They should NOT address different topics or concerns
 - They should NOT repeat old conversation points
 - They should NOT bring up unrelated issues
 - They should NOT ask generic questions that ignore the latest message
 - ✅ ON-TOPIC CHECK: All options must relate to the conversation above (${formattedHistory ? 'last 5 messages' : 'conversation start'})
+- ✅ QUALITY CHECK: If you generate 1 weak option, regenerate ALL options until ALL are strong
 
 OPTION STRUCTURE (all address "${cleanCurrentMessage}"):
 - Option 1: Direct response style
@@ -1783,9 +1943,10 @@ ${isRecipientUserB ? `
    `}
    - Third parties: Use actual names or pronouns from entity registry (never "you")
 8. INCORPORATE specific details from the conversation context to make responses feel personal and relatable
-${shouldUseHint ? `9. MANDATORY: Strongly incorporate User B's hint perspective in EVERY option - this is their core truth and authentic voice
-10. CRITICAL: Maintain absolute consistency with hint's emotional context and subject matter across ALL conversation turns
-11. PERSISTENT: The hint is active throughout the ENTIRE conversation - incorporate it in turn 1, turn 5, turn 10, etc.` : ''}
+${shouldUseHint && isRecipientUserB ? `9. MANDATORY (USER B ONLY): Strongly incorporate User B's hint perspective in EVERY option - this is their core truth and authentic voice
+10. CRITICAL (USER B ONLY): Maintain absolute consistency with hint's emotional context and subject matter across ALL conversation turns
+11. PERSISTENT (USER B ONLY): The hint is active throughout the ENTIRE conversation - incorporate it in turn 1, turn 5, turn 10, etc.
+⚠️ REMEMBER: This hint is PRIVATE to User B and NEVER shown to User A` : ''}
 
 CRITICAL: Each option must be a FULL, COMPLETE sentence that makes sense on its own. 
 Keep options natural and meaningful - not lengthy or verbose, but complete enough to convey your message clearly. 
@@ -1925,8 +2086,8 @@ TONE REQUIREMENTS (MANDATORY):
 
 Format as JSON:
 {
-  "options": [${isVeryFirstMessage ? '"Option 1", "Option 2", "Option 3", "Option 4", "Option 5"' : '"Exact words they\'d say 1", "Exact words they\'d say 2", "Exact words they\'d say 3"'}]${shouldUseHint ? `,
-  "reasoning": "How hint shaped these responses"` : ''}
+  "options": [${isVeryFirstMessage ? '"Option 1", "Option 2", "Option 3", "Option 4", "Option 5"' : '"Exact words they\'d say 1", "Exact words they\'d say 2", "Exact words they\'d say 3"'}]${shouldUseHint && isRecipientUserB ? `,
+  "reasoning": "How hint shaped these responses (User B only)"` : ''}
 }`;
 console.log("🧹 ============ CLEANED DATA CHECK BEFORE CLAUDE ============");
 console.log("📍 Perspective:", {
@@ -2077,14 +2238,37 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     // Log received option count
     console.log(`📊 Received ${options.length} options from AI, expected ${expectedCount}`);
 
-    // ✅ SIMPLE FALLBACK OPTIONS: Short, single-sentence responses (NO generic questions)
-    const simpleFallbackOptions = [
-      "I hear what you're saying.",
-      "I want to understand your perspective.",
-      "Can we work through this together?",
-      "I appreciate you sharing that with me.",
-      "Let's talk about what happened."
-    ];
+    // ✅ CONTEXT-AWARE FALLBACK OPTIONS: Meaningful, complete responses that reference summary
+    const simpleFallbackOptions = (() => {
+      // Try to create context-aware fallbacks if we have summary
+      const topicSummary = cleanSummarySharedNeutral || cleanOriginalIssueSummary || cleanSummary || '';
+      if (topicSummary && topicSummary.length > 20) {
+        // Extract key topic words from summary (first 5-8 meaningful words)
+        const topicWords = topicSummary
+          .split(/\s+/)
+          .filter(word => word.length > 3 && !/^(the|and|but|was|were|that|this|with|from|have|has|had|been|said|they|them|their|were|when|where|what|which|who|how|can|could|should|would|will|been|being|been)$/i.test(word))
+          .slice(0, 5)
+          .join(' ');
+        
+        if (topicWords && topicWords.length > 5) {
+          return [
+            `Can we talk about ${topicWords}?`,
+            `I wanted to discuss ${topicWords} with you.`,
+            `I'd like to bring up something that's been on my mind about ${topicWords}.`,
+            `Can we chat about this? I want to make sure we're on the same page.`,
+            `I'd appreciate if we could discuss this together.`
+          ];
+        }
+      }
+      // Context-aware fallback (still meaningful, not generic)
+      return [
+        "Can we talk about what happened?",
+        "I'd like to discuss this with you.",
+        "Can we work through this together?",
+        "I want to make sure we understand each other.",
+        "Let's talk about this - I want to hear your side."
+      ];
+    })();
 
     // ✅ SIMPLIFIED: Only check for single sentence (no word count validation)
     const meetsOptionConstraints = (text: string): boolean => {
@@ -2603,10 +2787,12 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
           : '🙂'; // Start with simple smiley for early closure
         enhancedOptions.push(emojiChoice);
       }
-      // ✅ Add second smiley if score >= 0.7 and conversation is long enough
-      if (emotionalClosureScore >= 0.7 && safeConversationHistory.length >= 8) {
+      // ✅ ENHANCED: Add second smiley if score >= 0.6 and conversation is moderate length
+      if (emotionalClosureScore >= 0.6 && safeConversationHistory.length >= 6) {
         const emojiCount = enhancedOptions.filter(opt => /^[\p{Emoji}]+$/u.test(opt.trim())).length;
-        if (emojiCount < 2 && emojiPool.length > 0) {
+        // For high closure (0.6+), ensure at least 1-2 smiley options
+        const minSmileys = emotionalClosureScore >= 0.7 ? 2 : 1;
+        if (emojiCount < minSmileys && emojiPool.length > 0) {
           const emojiChoice = emojiPool[Math.floor(Math.random() * emojiPool.length)];
           enhancedOptions.push(emojiChoice);
         }
@@ -2623,11 +2809,41 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
 
     addEmojiFallbacksIfNeeded();
 
-    type ScoredOption = { opt: string; score: number; index: number; hasTalk: boolean; latestMatches: number };
+    // ✅ Extract summary keywords for quality validation
+    const summaryKeywords = (() => {
+      const summarySource = cleanSummarySharedNeutral || cleanOriginalIssueSummary || cleanSummary || '';
+      if (!summarySource || summarySource.length < 10) return [];
+      return extractKeywords(summarySource, 10);
+    })();
+
+    type ScoredOption = { opt: string; score: number; index: number; hasTalk: boolean; latestMatches: number; wordCount: number; isWeak: boolean; hasSummaryReference: boolean };
     const scoredOptions: ScoredOption[] = enhancedOptions.map((opt, index) => {
       const lower = opt.toLowerCase();
       let score = 0;
       let latestMatches = 0;
+
+      // ✅ NEW: Detect weak/generic options
+      const isWeak = /^(I hear|can you tell me more|what do you want|what's on your mind|hey how are you|hi hope you're doing well|hey stranger|what would you like to discuss)$/i.test(opt.trim());
+      if (isWeak) {
+        score -= 10; // Heavy penalty for weak options
+      }
+
+      // ✅ NEW: Calculate word count and reward good length
+      const wordCount = opt.trim().split(/\s+/).length;
+      let wordCountScore = 0;
+      if (wordCount >= 8 && wordCount <= 25) {
+        wordCountScore = 2; // Reward good length
+      } else if (wordCount < 5) {
+        wordCountScore = -3; // Penalize too short
+      } else if (wordCount > 25) {
+        wordCountScore = -1; // Slight penalty for too long
+      }
+      score += wordCountScore;
+
+      // ✅ NEW: Check if option references summary or latest message
+      const hasSummaryReference = summaryKeywords.length > 0 && summaryKeywords.some(kw => lower.includes(kw.toLowerCase()));
+      if (hasSummaryReference) score += 1.5;
+      if (isVeryFirstMessage && hasSummaryReference) score += 2; // Extra bonus for first message referencing summary
 
       latestKeywords.forEach(keyword => {
         if (lower.includes(keyword)) {
@@ -2657,7 +2873,10 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
         score,
         index,
         hasTalk: containsTalkPhrase(opt),
-        latestMatches
+        latestMatches,
+        wordCount,
+        isWeak,
+        hasSummaryReference
       };
     });
 
@@ -2693,6 +2912,49 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
         if (selected.length >= expectedCount) break;
         if (selected.includes(candidate.opt)) continue;
         selected.push(candidate.opt);
+      }
+    }
+
+    // ✅ NEW: Check quality of selected options - reject if too many weak options
+    const weakOptionsCount = selected.filter(opt => {
+      const lower = opt.toLowerCase();
+      const isWeak = /^(I hear|can you tell me more|what do you want|what's on your mind|hey how are you|hi hope you're doing well|hey stranger|what would you like to discuss)$/i.test(opt.trim());
+      const wordCount = opt.trim().split(/\s+/).length;
+      return isWeak || wordCount < 5;
+    }).length;
+
+    // ✅ NEW: If more than 1 weak option in set, try to replace with better options
+    if (weakOptionsCount > 1 && selected.length >= expectedCount) {
+      console.warn(`⚠️ Warning: Found ${weakOptionsCount} weak options in selected set. Attempting to improve...`);
+      // Try to replace weak options with better ones from scored options
+      const weakSelectedIndices: number[] = [];
+      selected.forEach((opt, idx) => {
+        const lower = opt.toLowerCase();
+        const isWeak = /^(I hear|can you tell me more|what do you want|what's on your mind|hey how are you|hi hope you're doing well|hey stranger|what would you like to discuss)$/i.test(opt.trim());
+        const wordCount = opt.trim().split(/\s+/).length;
+        if (isWeak || wordCount < 5) {
+          weakSelectedIndices.push(idx);
+        }
+      });
+
+      // Try to find better alternatives
+      if (weakSelectedIndices.length > 0) {
+        const betterAlternatives = scoredOptions
+          .filter(candidate => 
+            !selected.includes(candidate.opt) && 
+            candidate.score > 0 && 
+            !candidate.isWeak &&
+            candidate.wordCount >= 5
+          )
+          .sort((a, b) => b.score - a.score)
+          .slice(0, weakSelectedIndices.length);
+
+        betterAlternatives.forEach((better, idx) => {
+          if (weakSelectedIndices[idx] !== undefined) {
+            selected[weakSelectedIndices[idx]] = better.opt;
+            console.log(`✅ Replaced weak option with better one: "${better.opt.substring(0, 50)}..."`);
+          }
+        });
       }
     }
 

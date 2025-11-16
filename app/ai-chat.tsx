@@ -1843,10 +1843,73 @@ const inferEntityCategory = (name: string): string => {
 
       if (chatData.context_data) {
         const ctx = chatData.context_data;
+        
+        // ✅ LOG context_data for debugging
+        console.log('📥 Loading session context_data:', {
+          hasSummaryAPerspective: !!ctx.summary_a_perspective,
+          hasSummarySharedNeutral: !!ctx.summary_shared_neutral,
+          summaryAPerspectivePreview: ctx.summary_a_perspective?.substring(0, 100) || 'MISSING',
+          summarySharedNeutralPreview: ctx.summary_shared_neutral?.substring(0, 100) || 'MISSING',
+        });
+        
         if (ctx.initial_description) setInitialDescription(ctx.initial_description);
         if (ctx.qa_pairs) setQAPairs(ctx.qa_pairs);
-        if (ctx.summary) setSummary(ctx.summary);
-        if (ctx.thoughts) setThoughts(ctx.thoughts);
+        
+        // ✅ CRITICAL: ONLY use summary_a_perspective for Stage 3 (emotional, first-person)
+        // ❌ NEVER fallback to summary_a or summary - they may contain neutral summary
+        // ❌ NEVER use summary_shared_neutral for Stage 3
+        const summaryAPerspective = ctx.summary_a_perspective || '';
+        
+        if (summaryAPerspective) {
+          console.log('✅ Found summary_a_perspective for Stage 3:', summaryAPerspective.substring(0, 100));
+          setSummary(summaryAPerspective);
+        } else {
+          console.error('❌ ERROR: summary_a_perspective missing from database context_data!');
+          console.error('This session may have old data structure. Using fallback for Stage 3.');
+          // Fallback: Create A-perspective fallback (emotional, first-person, talking to AI)
+          const fallbackAPerspective = "I shared my thoughts about the situation with the assistant.";
+          setSummary(fallbackAPerspective);
+          // Store in contextDataRef
+          contextDataRef.current = {
+            ...contextDataRef.current,
+            summary_a_perspective: fallbackAPerspective,
+          };
+        }
+        
+        // ✅ Store in contextDataRef for later use
+        // ✅ CRITICAL: If neutral summary is missing, create it from A-perspective (convert to third-person)
+        // NEVER store A-perspective as neutral summary directly - that causes mixing
+        let summarySharedNeutral = ctx.summary_shared_neutral;
+        if (!summarySharedNeutral && summaryAPerspective) {
+          console.warn('⚠️ Warning: summary_shared_neutral missing from database. Creating from A-perspective.');
+          // Convert A-perspective to neutral (third-person)
+          summarySharedNeutral = summaryAPerspective
+            .replace(/^I\s+/gi, 'User A ')
+            .replace(/\bmy\b/gi, 'their')
+            .replace(/\bme\b/gi, 'them')
+            .replace(/\bmyself\b/gi, 'themself')
+            .replace(/\bI\b/gi, 'User A')
+            .replace(/\bI'm\b/gi, 'User A is')
+            .replace(/\bI've\b/gi, 'User A has')
+            .replace(/\bI'd\b/gi, 'User A would');
+        } else if (!summarySharedNeutral && !summaryAPerspective) {
+          // If both are missing, create neutral fallback
+          summarySharedNeutral = "The discussion is about a situation that needs to be addressed.";
+        }
+        
+        contextDataRef.current = {
+          ...contextDataRef.current,
+          summary_a_perspective: summaryAPerspective || contextDataRef.current?.summary_a_perspective || "I shared my thoughts about the situation with the assistant.",
+          summary_shared_neutral: summarySharedNeutral, // ✅ Neutral for option generation
+        };
+        
+        console.log('✅ Stored summaries in contextDataRef:', {
+          summaryAPerspectiveLength: contextDataRef.current.summary_a_perspective?.length || 0,
+          summarySharedNeutralLength: contextDataRef.current.summary_shared_neutral?.length || 0,
+          areDifferent: contextDataRef.current.summary_a_perspective !== contextDataRef.current.summary_shared_neutral,
+        });
+        
+        if (ctx.thoughts || ctx.thoughts_a) setThoughts(ctx.thoughts || ctx.thoughts_a || '');
         if (ctx.questionCount !== undefined) setQuestionCount(ctx.questionCount);
         if (ctx.currentQuestion) setCurrentQuestion(ctx.currentQuestion);
         if (ctx.currentQuestionType) setCurrentQuestionType(ctx.currentQuestionType);
@@ -1856,7 +1919,7 @@ const inferEntityCategory = (name: string): string => {
           setFlowStage(mappedStage as FlowStage);
         } else if (chatData.is_resolved) {
           setFlowStage('ready');
-        } else if (ctx.summary) {
+        } else if (summaryAPerspective) {
           setFlowStage('summary');
         } else if (ctx.qa_pairs && ctx.qa_pairs.length > 0) {
           setFlowStage('qa');
@@ -2814,418 +2877,174 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
             })
           : structuredRows;
 
-      // Identify User A, User B, and other entities
-      const userAEntity = entitiesFromRegistry?.find((e: any) => e.role_in_conversation === 'User A' || e.is_participant && e.participant_slot === 'A');
-      const userBEntity = entitiesFromRegistry?.find((e: any) => e.role_in_conversation === 'User B' || e.is_participant && e.participant_slot === 'B');
-      const otherEntities = entitiesFromRegistry?.filter((e: any) => 
-        e.role_in_conversation !== 'User A' && 
-        e.role_in_conversation !== 'User B' &&
-        !e.is_participant
-      ) || [];
-
-      // Build conversation history with structured context
-      const conversationHistory = pairs.map((p, idx) => `Q${idx + 1}: ${p.question}\nA${idx + 1}: ${p.answer}`).join("\n\n");
-
-      // Add structured context data to conversation history
+      // Build structured context text
       let structuredAnswersText = '';
       if (filteredStructuredContextData.length > 0) {
-        structuredAnswersText = '\n\nAdditional Context:\n' + filteredStructuredContextData.map((sc: any) => 
+        structuredAnswersText = filteredStructuredContextData.map((sc: any) => 
           `${sc.question_text}: ${typeof sc.answer_value === 'object' ? JSON.stringify(sc.answer_value.value || sc.answer_value) : sc.answer_value}`
         ).join('\n');
       }
 
-      const tagRegex = /@[A-Za-z0-9_\-]+|#[A-Za-z0-9_\-]+(?=[\s,.!?;:]|$)/g;
+      // Build tagged_persons array for edge function
+      const tagged_persons = (entitiesFromRegistry || []).map((e: any) => ({
+        name: e.entity_name,
+        is_user_b: e.role_in_conversation === 'User B' || (e.is_participant && e.participant_slot === 'B'),
+        relationship: e.relationship_category || 'General'
+      }));
 
-      const mentionedTags = new Set<string>();
-      const recordMention = (tag?: string | null) => {
-        if (!tag) return;
-        mentionedTags.add(tag);
-        mentionedTags.add(tag.toLowerCase());
-      };
-      const collectTagsFromText = (text?: string | null) => {
-        if (!text) return;
-        const matches = text.match(tagRegex);
-        matches?.forEach(recordMention);
-      };
+      // ✅ CALL THE GENERATE-SUMMARY EDGE FUNCTION
+      const { data: supabaseData } = await supabase.auth.getSession();
+      const sessionToken = supabaseData?.session?.access_token;
 
-      collectTagsFromText(initialDescription);
-      pairs.forEach((pair) => {
-        collectTagsFromText(pair.question);
-        collectTagsFromText(pair.answer);
-      });
-      collectTagsFromText(additionalInfo);
-      collectTagsFromText(structuredAnswersText);
-
-      const getEntityTag = (entity: any): string | null => {
-        const fullName = entity?.entity_name;
-        if (!fullName) return null;
-        const isUserBEntity =
-          entity.role_in_conversation === 'User B' ||
-          (entity.is_participant && entity.participant_slot === 'B');
-        const tagSymbol = isUserBEntity ? '@' : entity.is_registered ? '@' : '#';
-        return `${tagSymbol}${fullName}`;
-      };
-
-      const isUserAEntity = (entity: any) =>
-        entity.role_in_conversation === 'User A' ||
-        (entity.is_participant && entity.participant_slot === 'A');
-      const isUserBEntity = (entity: any) =>
-        entity.role_in_conversation === 'User B' ||
-        (entity.is_participant && entity.participant_slot === 'B');
-      const entityMatchesCurrentInput = (entity: any) => {
-        const tag = getEntityTag(entity);
-        if (!tag) return false;
-        return mentionedTags.has(tag) || mentionedTags.has(tag.toLowerCase());
-      };
-
-      const sanitizableEntities = (entitiesFromRegistry || []).filter((entity: any) => {
-        if (isUserAEntity(entity) || isUserBEntity(entity)) {
-          return true;
-        }
-        return entityMatchesCurrentInput(entity);
-      });
-
-      const promptEntities = sanitizableEntities.filter((entity: any) => !isUserAEntity(entity));
-      const allTaggedEntitiesList = promptEntities.length
-        ? promptEntities
-            .map((entity: any) => {
-              const tag = getEntityTag(entity);
-              if (!tag) return null;
-              const roleDesc = isUserBEntity(entity)
-                ? ' (User B - the person they\'re talking to, use "you/your")'
-                : ` (third party, use "${entity.preferred_pronouns || 'they/them'}")`;
-              return `${tag}${roleDesc}`;
-            })
-            .filter(Boolean)
-            .join(', ')
-        : '';
-
-      const entityContextText = allTaggedEntitiesList
-        ? `\n\nTagged Participants and Pronouns:\n${allTaggedEntitiesList}`
-        : '';
-
-      // ✅ FIX: Include additionalInfo in the context (Stage 3 Additional Information)
-      const additionalContext = additionalInfo.trim() ? `\n\nAdditional Information (Stage 3):\n${additionalInfo}` : '';
-
-      // Accumulate ALL information: Stage 1 description + Stage 2 answers + Stage 3 additional info + structured context + tags
-      const allContextText = `Initial Description (Stage 1):\n${initialDescription}\n\nQuestion & Answer History (Stage 2):\n${conversationHistory}${additionalContext}${structuredAnswersText ? `\n\nStructured Context Data:\n${structuredAnswersText}` : ''}${entityContextText}`;
-
-      const systemPrompt = `You are helping User A craft a crisp recap for their AI assistant. Read ALL of the context below and produce two short, polished sections that sound like User A speaking directly to the assistant.
-
-CRITICAL RULES
-1. Perspective • Always write from User A's first-person voice ("I…", "my…"). They are talking to the AI assistant about the situation.
-2. Pronouns • Refer to User B with their @tag (e.g., "@aradhya") or third-person pronouns—never "you/your". Do not invent titles. Keep User A in first person only.
-3. Tags • Reuse any @ or # tags exactly as given. Only mention third parties with a #tag if the tag already appears in the inputs. If no # tags were shared, do not create any. Never repeat contact names more than once per section.
-4. Brevity & Completeness • Aim for 2–3 complete sentences (~50-55 words for summary, ~35-40 words for thoughts).
-   - CRITICAL: Use efficient word choices ("accused" not "said that I was accused", "jealous" not "being jealous about")
-   - CRITICAL: ALWAYS include ALL emotional words (jealous, hurt, accused, upset, frustrated, etc.) and action words (accused, said, told, ignored, etc.)
-   - If including all important words brings summary to 55-60 words, that's acceptable — completeness over brevity
-   - Maximum: ~70 words for summary, ~50 words for thoughts (safety cap)
-   - Never drop emotional/action words to save space — these are essential
-5. Content • Capture ALL key points User A shared with the assistant, including:
-   - CRITICAL: Preserve ALL emotional words (jealous, hurt, angry, accused, upset, frustrated, etc.) - these are essential
-   - CRITICAL: Preserve ALL action words (accused, said, told, ignored, etc.) - these describe what happened
-   - CRITICAL: Preserve ALL key details that explain WHY User A is concerned (e.g., "jealous about accomplishments", "ignored at party", "accused of being rude")
-   - NEVER drop emotional context or action words to save space - these are the core of the issue
-   - If User A said "accused me of being jealous", the summary MUST include both "accused" and "jealous"
-   - Make the "Thoughts" section a concise next-step reflection from User A's point of view describing what they hope, plan, or feel.
-6. COMPLETE SENTENCES • Every sentence must be complete and end with proper punctuation (. ! ?). Never end with incomplete phrases like "as", "because", "that", "which", "but", etc. Always finish your thoughts completely. Never produce partial text like "me as" or "I think she…" without finishing.
-7. POLISHED OUTPUT • Ensure every sentence is grammatically correct and makes complete sense on its own. No unfinished thoughts or cut-off sentences.
-8. REQUIRED SECTIONS • ALWAYS generate BOTH sections. Never leave "My Thoughts" empty. Even with very short user input, generate meaningful content for both sections.
-9. FORMATTING • NEVER add prefixes like "Here is the summary:", "I :", "Here is the discussion summary and my thoughts", "Okay, here is a concise recap", "Summary:", etc. Start directly with the emoji headers (📌 or 💡).
-10. NO INTRODUCTORY TEXT • Do not add any introductory sentences or explanations. Do not write as the assistant speaking. Start immediately with "📌 Discussion Summary" or "💡 My Thoughts".
-11. NO DOUBLE PUNCTUATION • Never use "::" or ": :". Use single punctuation only.
-12. NO NAME CHANGES • Use only names and tags that User A explicitly typed. Do not invent or change names.
-
-Complete Context:
-${allContextText}
-
-Generate exactly two sections in this exact format (start directly with emoji headers, no prefixes):
-📌 Discussion Summary
-<2–3 complete sentences summarizing what User A discussed with the AI assistant. MUST include all emotional words (jealous, hurt, accused, etc.) and action words (accused, said, told, etc.) from the original context. Example: If User A said "User B accused me of being jealous", include both "accused" and "jealous". Use efficient word choices to keep concise (~50-55 words, max 70). Must be 2–3 full sentences that tell a complete story. Must end with proper punctuation. Never repeat contact names more than once.>
-
-💡 My Thoughts
-<1–2 complete sentences describing what User A hopes, plans, or feels about the situation. This section is REQUIRED and must never be empty. Must end with proper punctuation.>
-
-CRITICAL: 
-- ALWAYS generate BOTH sections. Never leave "My Thoughts" empty.
-- Start directly with emoji headers (📌 or 💡). No prefixes, no "Here is:", no "I :", no introductory text.
-- Discussion Summary must be 2–3 complete sentences.
-- My Thoughts must be 1–2 complete sentences.
-- Never end any sentence with incomplete clauses like "as", "because", "that", "but", etc.
-- Never repeat contact names more than once per section.
-- Never produce partial text like "me as" or "I think she…" without finishing.
-- Every sentence must be complete and polished.
-- Always end with proper punctuation.
-- Return nothing else—no extra commentary, numbering, or bullet points.`;
-
-
-
-      const response = await fetch(CLAUDE_EDGE_FUNCTION_URL, {
+      const response = await fetch(`${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/generate-summary`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY}`,
+          Authorization: `Bearer ${sessionToken || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY}`,
         },
         body: JSON.stringify({
-          model: "claude-3-haiku-20240307",
-          max_tokens: 300,
-          system: systemPrompt,
-          messages: [
-            { role: "user", content: "Generate the summary now." },
-          ],
+          initial_description: initialDescription,
+          question_responses: pairs.map((p) => ({
+            question: p.question,
+            answer: p.answer
+          })),
+          additional_context: additionalInfo || undefined,
+          structured_context: structuredAnswersText || undefined,
+          tagged_persons: tagged_persons,
         }),
       });
 
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('❌ Edge function error:', errorText);
+        throw new Error('Failed to generate summary');
+      }
+
       const result = await response.json();
 
-      if (result?.content) {
-        const userAEntity =
-          sanitizableEntities.find((entity: any) => isUserAEntity(entity)) ?? null;
-        const userBEntity =
-          sanitizableEntities.find((entity: any) => isUserBEntity(entity)) ?? null;
-        const escapeRegex = (value: string) =>
-          value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-        let rawContent = result.content;
-  
-  // First, protect existing tags to avoid partial replacements (e.g., #S should not become #Sneha if #S exists)
-  const existingTags = new Set<string>();
-  const tagProtectionMap: Record<string, string> = {};
-  let protectionIndex = 0;
-  
-  // Extract and protect all existing @ and # tags
-  rawContent = rawContent.replace(/(@[\w]+|#[\w]+)/g, (match: string): string => {
-    const placeholder = `<<TAG_PROTECT_${protectionIndex}>>`;
-    const legacyPlaceholder = `__TAG_PROTECT_${protectionIndex}__`;
-    tagProtectionMap[placeholder] = match;
-    tagProtectionMap[legacyPlaceholder] = match;
-    existingTags.add(match);
-    existingTags.add(match.toLowerCase());
-    protectionIndex++;
-    return placeholder;
-  });
-  
-  // Post-process summary to replace ALL pronouns with tags (except "I/me/my" for User A)
-  // Process entities in reverse length order to match longer names first (e.g., "Sneha" before "S")
-  const sortedEntities = [...sanitizableEntities].sort((a: any, b: any) => 
-    (b.entity_name?.length || 0) - (a.entity_name?.length || 0)
-  );
-  
-  sortedEntities.forEach((e: any) => {
-    const name = e.entity_name?.toLowerCase().trim();
-    const fullName = e.entity_name;
-    if (!name || !fullName) {
-      return;
-    }
-
-          const tagSymbol = isUserBEntity(e) ? '@' : e.is_registered ? '@' : '#';
-    const tag = `${tagSymbol}${fullName}`;
-    const tagLower = tag.toLowerCase();
-    const isUserA = e.role_in_conversation === 'User A' || (e.is_participant && e.participant_slot === 'A');
-    const isUserB = e.role_in_conversation === 'User B' || (e.is_participant && e.participant_slot === 'B');
-          const isMentioned = isUserA || isUserB || mentionedTags.has(tag) || mentionedTags.has(tagLower);
-
-    if (!isUserA && !isUserB && !isMentioned) {
-      return;
-    }
-
-    if (existingTags.has(tag) || existingTags.has(tagLower)) {
-      return;
-    }
-
-    if (isUserA) {
-      const patterns = [
-        new RegExp(`\\bthe user\\b`, 'gi'),
-        new RegExp(`\\buser a\\b`, 'gi'),
-        new RegExp(`\\bthe person preparing\\b`, 'gi'),
-        new RegExp(`\\bthe person writing\\b`, 'gi'),
-        new RegExp(`\\b${escapeRegex(fullName)}\\b(?!\\s*(?:__TAG_PROTECT|said|told|asked))`, 'gi'),
-      ];
-      patterns.forEach((pattern) => {
-        rawContent = rawContent.replace(pattern, (match: string, offset: number, original: string): string => {
-          const before = original.substring(Math.max(0, offset - 10), offset);
-          const after = original.substring(offset + match.length, Math.min(original.length, offset + match.length + 10));
-          if (before.includes('__TAG_PROTECT') || after.includes('__TAG_PROTECT')) {
-            return match;
-          }
-          return 'I';
-        });
-      });
-      return;
-    }
-
-    if (isUserB) {
-      const escapedName = escapeRegex(fullName);
-      const userBTag = `@${fullName}`;
-      rawContent = rawContent.replace(new RegExp(`\\buser b\\b`, 'gi'), userBTag);
-      rawContent = rawContent.replace(new RegExp(`\\bthe contact\\b`, 'gi'), userBTag);
-      rawContent = rawContent.replace(new RegExp(`\\bthe recipient\\b`, 'gi'), userBTag);
-      rawContent = rawContent.replace(new RegExp(`(?!__TAG_PROTECT|@|#)\\b${escapedName}\\b`, 'gi'), userBTag);
-      rawContent = rawContent.replace(/\byourselves?\b/gi, userBTag);
-      rawContent = rawContent.replace(/\byourself\b/gi, userBTag);
-      rawContent = rawContent.replace(/\byour\b/gi, `${userBTag}'s`);
-      rawContent = rawContent.replace(/\byou\b/gi, userBTag);
-      return;
-    }
-
-    const escapedName = escapeRegex(fullName);
-    const pronouns = e.preferred_pronouns || 'they/them';
-    if (pronouns.toLowerCase().includes('he/him')) {
-      rawContent = rawContent.replace(new RegExp(`\\bhe\\b(?!\\s*${escapedName})`, 'gi'), tag);
-      rawContent = rawContent.replace(new RegExp(`\\bhim\\b(?!\\s*${escapedName})`, 'gi'), tag);
-      rawContent = rawContent.replace(new RegExp(`\\bhis\\b(?!\\s*${escapedName})`, 'gi'), `${tag}'s`);
-      rawContent = rawContent.replace(new RegExp(`\\bhimself\\b(?!\\s*${escapedName})`, 'gi'), tag);
-    } else if (pronouns.toLowerCase().includes('she/her')) {
-      rawContent = rawContent.replace(new RegExp(`\\bshe\\b(?!\\s*${escapedName})`, 'gi'), tag);
-      rawContent = rawContent.replace(new RegExp(`\\bher\\b(?!\\s*${escapedName})`, 'gi'), tag);
-      rawContent = rawContent.replace(new RegExp(`\\bhers\\b(?!\\s*${escapedName})`, 'gi'), `${tag}'s`);
-      rawContent = rawContent.replace(new RegExp(`\\bherself\\b(?!\\s*${escapedName})`, 'gi'), tag);
-    } else {
-      rawContent = rawContent.replace(new RegExp(`\\bthey\\b(?!\\s*${escapedName})`, 'gi'), tag);
-      rawContent = rawContent.replace(new RegExp(`\\bthem\\b(?!\\s*${escapedName})`, 'gi'), tag);
-      rawContent = rawContent.replace(new RegExp(`\\btheir\\b(?!\\s*${escapedName})`, 'gi'), `${tag}'s`);
-      rawContent = rawContent.replace(new RegExp(`\\btheirs\\b(?!\\s*${escapedName})`, 'gi'), `${tag}'s`);
-      rawContent = rawContent.replace(new RegExp(`\\bthemselves\\b(?!\\s*${escapedName})`, 'gi'), tag);
-    }
-
-    rawContent = rawContent.replace(new RegExp(`(?!__TAG_PROTECT|@|#)\\b${escapedName}\\b(?!\\s*(?:__TAG_PROTECT|@|#))`, 'gi'), tag);
-  });
-  
-  // Restore protected tags
-  rawContent = rawContent.replace(/<<TAG_PROTECT_\d+>>|__TAG_PROTECT_\d+__/g, (placeholder: string) => {
-    return tagProtectionMap[placeholder] ?? placeholder;
-  });
-  
-  rawContent = rawContent.replace(/(@[A-Za-z0-9_\-]+|#[A-Za-z0-9_\-]+)/g, (tag: string) => {
-          const lower = tag.toLowerCase();
-    const userBTagLower = userBEntity?.entity_name
-      ? `@${userBEntity.entity_name.toLowerCase()}`
-      : null;
-    if (
-      mentionedTags.has(tag) ||
-      mentionedTags.has(lower) ||
-      (userBTagLower && lower === userBTagLower)
-    ) {
-            return tag;
-          }
-          return 'someone';
-        });
-
-  if (userAEntity?.entity_name) {
-    const escapedUserA = escapeRegex(userAEntity.entity_name);
-    rawContent = rawContent.replace(new RegExp(`@${escapedUserA}'s`, 'gi'), 'my');
-    rawContent = rawContent.replace(new RegExp(`@${escapedUserA}`, 'gi'), 'I');
-  }
-
-  if (userBEntity?.entity_name) {
-    const escapedUserB = escapeRegex(userBEntity.entity_name);
-    rawContent = rawContent.replace(new RegExp(`\\byour\\b`, 'gi'), `@${userBEntity.entity_name}'s`);
-    rawContent = rawContent.replace(new RegExp(`\\byou\\b`, 'gi'), `@${userBEntity.entity_name}`);
-  }
-  
-  // Final cleanup: remove any remaining double @ or # patterns
-  rawContent = rawContent.replace(/@@+/g, '@');
-  rawContent = rawContent.replace(/##+/g, '#');
-  
-  // Fix grammar: adjust verb forms if needed after tag replacement
-  // e.g., "@aradhya were" → "@aradhya was", "#Team are" → "#Team is" (if singular entity)
-  rawContent = rawContent.replace(new RegExp(`(@[\\w]+|#[\\w]+)\\s+were\\b`, 'gi'), "$1 was");
-  rawContent = rawContent.replace(new RegExp(`(@[\\w]+|#[\\w]+)\\s+are\\b`, 'gi'), "$1 is");
-
-  // 🧠 Detect unclear or irrelevant summaries
-  const isUnclear =
-  !rawContent ||
-  rawContent.length < 40 || // too short = likely meaningless
-  /unclear|unsure|not enough|don't understand|cannot determine|meaningless|irrelevant|incomplete|confused|random|no context/i.test(rawContent) ||
-  !rawContent.includes("📌 Discussion Summary") ||
-  !rawContent.includes("💡 My Thoughts");
-
-
-  // Extract and clean summary text
-  let summaryTextRaw = rawContent
-    .split("💡 My Thoughts")[0]
-    .replace("📌 Discussion Summary", "")
-    .replace(/^📌\s*/, '')  // ✅ FIX: Remove emoji if at start
-    .trim();
-
-  // Clean up unwanted prefixes and formatting
-  summaryTextRaw = cleanSummaryText(summaryTextRaw)
-    .replace("📌 Discussion Summary", "")
-    .replace(/^📌\s*/, '')  // ✅ FIX: Remove emoji if at start
-    .replace(/📌/g, '')  // ✅ FIX: Remove any remaining emojis
-    .replace(/^:\s*/, '')
-    .replace(/::+/g, ':')
-    .trim();
-
-  let thoughtsTextRaw = rawContent.split("💡 My Thoughts")[1]?.trim() || "";
-  let thoughtsTextRawCleaned = cleanSummaryText(thoughtsTextRaw)
-    .replace("💡 My Thoughts", "")
-    .replace(/^💡\s*/, '')  // ✅ FIX: Remove emoji if at start
-    .replace(/💡/g, '')  // ✅ FIX: Remove any remaining emojis
-    .replace(/^:\s*/, '')
-    .replace(/::+/g, ':')
-    .replace(/^I\s*:\s*/i, '')
-    .trim();
-
-  let summaryText = enforceSummaryConstraints(summaryTextRaw);
-  let thoughtsText = enforceThoughtsConstraints(thoughtsTextRawCleaned);
-  
-  // Apply contact name deduplication
-  if (userBEntity?.entity_name) {
-    summaryText = deduplicateContactNames(summaryText, userBEntity.entity_name);
-    thoughtsText = deduplicateContactNames(thoughtsText, userBEntity.entity_name);
-  }
-  
-  // 🚫 NEVER allow empty thoughts - generate fallback if empty
-  if (!thoughtsText || thoughtsText.trim().length === 0) {
-    // Generate meaningful fallback based on summary
-    const userBName = userBEntity?.entity_name || "them";
-    const userBTag = userBEntity ? `@${userBName}` : "them";
-    thoughtsText = `I want to approach ${userBTag} calmly and clear any misunderstanding so we can stay comfortable with each other.`;
-  }
-  
-  // Ensure summary is never empty
-  if (!summaryText || summaryText.trim().length === 0) {
-    summaryText = "I shared my thoughts about the situation with the assistant.";
-  }
-
-  if (isUnclear && !hasAggregateClarity()) {
-    setSummary(summaryText || "I shared my thoughts about the situation with the assistant.");
-    setThoughts(
-      thoughtsText || "I want to approach them calmly and clear any misunderstanding so we can stay comfortable with each other."
-    );
-    setIsSummaryUnclear(true);
-    setFlowStage("summary");
-    return;
-  } else {
-    setIsSummaryUnclear(false);
-  }
-
-
-        setSummary(summaryText);
-        setThoughts(thoughtsText);
-
-        const normalizedTitle = chatTitle.trim() || contextDataRef.current.chat_title || '';
-        await updateChatRecord(
-          {},
-          {
-            summary: summaryText,
-            thoughts: thoughtsText,
-            qa_pairs: pairs,
-            initial_description: initialDescription,
-            flowStage: 'summary',
-            questionCount: pairs.length,
-            taggedEntities,
-            chat_title: normalizedTitle,
-          }
-        );
-
-        setFlowStage("summary");
+      if (result.error) {
+        console.error('❌ Edge function returned error:', result.error);
+        throw new Error(result.error);
       }
+
+      // ✅ LOG RESPONSE FOR DEBUGGING
+      console.log('📥 Edge function response received:', {
+        hasSummaryAPerspective: !!result.summary_a_perspective,
+        hasSummarySharedNeutral: !!result.summary_shared_neutral,
+        hasContextData: !!result.context_data,
+        contextDataHasAPerspective: !!result.context_data?.summary_a_perspective,
+        contextDataHasSharedNeutral: !!result.context_data?.summary_shared_neutral,
+        summaryAPerspectivePreview: result.summary_a_perspective?.substring(0, 100) || 'MISSING',
+        summarySharedNeutralPreview: result.summary_shared_neutral?.substring(0, 100) || 'MISSING',
+      });
+
+      // ✅ EXTRACT BOTH SUMMARIES FROM RESPONSE
+      const summaryAPerspective = result.summary_a_perspective || result.summary || result.context_data?.summary_a_perspective || result.context_data?.summary || '';
+      const summarySharedNeutral = result.summary_shared_neutral || result.context_data?.summary_shared_neutral || '';
+      const thoughtsA = result.context_data?.thoughts_a || result.context_data?.thoughts || '';
+      const keyPoints = result.key_points || result.context_data?.key_points || [];
+
+      // ✅ LOG EXTRACTED SUMMARIES
+      console.log('📊 Extracted summaries:', {
+        summaryAPerspectiveLength: summaryAPerspective.length,
+        summarySharedNeutralLength: summarySharedNeutral.length,
+        summaryAPerspectivePreview: summaryAPerspective.substring(0, 100) || 'EMPTY',
+        summarySharedNeutralPreview: summarySharedNeutral.substring(0, 100) || 'EMPTY',
+      });
+
+      // ✅ VALIDATE BOTH SUMMARIES EXIST
+      if (!summaryAPerspective) {
+        console.warn('⚠️ Warning: Edge function did not return summary_a_perspective. Using fallback.');
+        const fallbackSummary = "I shared my thoughts about the situation with the assistant.";
+        // ✅ CRITICAL: Set summary state with A-perspective fallback (for Stage 3 UI)
+        setSummary(fallbackSummary);
+        setThoughts(thoughtsA || "I want to approach them calmly and clear any misunderstanding so we can stay comfortable with each other.");
+        setIsSummaryUnclear(true);
+        setFlowStage("summary");
+        return;
+      }
+
+      // ✅ DEFENSIVE: If neutral summary is missing but A-perspective exists, create fallback
+      let finalSummarySharedNeutral = summarySharedNeutral;
+      if (!summarySharedNeutral) {
+        console.warn('⚠️ Warning: Edge function did not return summary_shared_neutral. Creating fallback from A-perspective.');
+        // Convert A-perspective to neutral (third-person) as fallback
+        finalSummarySharedNeutral = summaryAPerspective
+          .replace(/^I\s+/gi, 'User A ')
+          .replace(/\bmy\b/gi, 'their')
+          .replace(/\bme\b/gi, 'them')
+          .replace(/\bmyself\b/gi, 'themself')
+          .replace(/\bI\b/gi, 'User A')
+          .replace(/\bI'm\b/gi, 'User A is')
+          .replace(/\bI've\b/gi, 'User A has')
+          .replace(/\bI'd\b/gi, 'User A would');
+      }
+
+      // ✅ CRITICAL: Set summary state with A-PERSPECTIVE ONLY (for Stage 3 UI)
+      // NEVER use summary_shared_neutral for Stage 3 - that's only for chat option generation
+      // summaryAPerspective is the emotional, first-person summary (User A talking to AI)
+      setSummary(summaryAPerspective);
+      setThoughts(thoughtsA || "I want to approach them calmly and clear any misunderstanding so we can stay comfortable with each other.");
+
+      // ✅ STORE BOTH SUMMARIES IN contextDataRef FOR LATER USE
+      // CRITICAL: Store them separately - NEVER mix them up
+      // summary_a_perspective = emotional, first-person (for Stage 3 UI)
+      // summary_shared_neutral = factual, third-person (for option generation)
+      
+      // First, merge context_data from edge function (but don't trust it completely)
+      const mergedContextData = {
+        ...contextDataRef.current,
+        ...(result.context_data || {}),
+      };
+      
+      // ✅ CRITICAL: Overwrite with our correctly extracted summaries to prevent mixing
+      // These MUST be set AFTER the spread to ensure they take priority
+      contextDataRef.current = {
+        ...mergedContextData,
+        // A-perspective summary (emotional, first-person) - for Stage 3 UI
+        summary: summaryAPerspective, // backward compatibility
+        summary_a: summaryAPerspective, // backward compatibility
+        summary_a_perspective: summaryAPerspective, // ✅ A-perspective (emotional, first-person, User A talking to AI)
+        // Neutral summary (factual, third-person) - for option generation
+        summary_shared_neutral: finalSummarySharedNeutral, // ✅ Neutral (factual, third-person) - NEVER use A-perspective as fallback here
+        thoughts_a: thoughtsA,
+        key_points: keyPoints,
+      };
+
+      // ✅ LOG STORED SUMMARIES FOR DEBUGGING
+      console.log('💾 Stored summaries in contextDataRef:', {
+        summaryAPerspectiveLength: contextDataRef.current.summary_a_perspective?.length || 0,
+        summarySharedNeutralLength: contextDataRef.current.summary_shared_neutral?.length || 0,
+        summaryAPerspectivePreview: contextDataRef.current.summary_a_perspective?.substring(0, 100) || 'MISSING',
+        summarySharedNeutralPreview: contextDataRef.current.summary_shared_neutral?.substring(0, 100) || 'MISSING',
+        areSummariesDifferent: contextDataRef.current.summary_a_perspective !== contextDataRef.current.summary_shared_neutral,
+      });
+
+      const normalizedTitle = chatTitle.trim() || contextDataRef.current.chat_title || '';
+      
+      // ✅ UPDATE CHAT RECORD WITH BOTH SUMMARIES
+      await updateChatRecord(
+        {},
+        {
+          summary: summaryAPerspective, // For backward compatibility (A-perspective)
+          summary_a_perspective: summaryAPerspective, // ✅ A-perspective summary (emotional, first-person, User A talking to AI)
+          summary_shared_neutral: finalSummarySharedNeutral, // ✅ Neutral shared summary (factual, third-person) - NEVER use A-perspective as fallback
+          thoughts: thoughtsA,
+          thoughts_a: thoughtsA,
+          qa_pairs: pairs,
+          initial_description: initialDescription,
+          flowStage: 'summary',
+          questionCount: pairs.length,
+          taggedEntities,
+          chat_title: normalizedTitle,
+          key_points: keyPoints,
+        }
+      );
+
+      setFlowStage("summary");
     } catch (err) {
       console.error("Failed to generate summary:", err);
-      Alert.alert("Error", "Failed to generate summary.");
+      Alert.alert("Error", "Failed to generate summary. Please try again.");
     } finally {
       setLoading(false);
       setIsGeneratingSummary(false);
@@ -3701,8 +3520,31 @@ CRITICAL:
     setIsSummaryUnclear(false);
   }
 
+  // ✅ CRITICAL: Set summary state with A-PERSPECTIVE ONLY (for Stage 3 UI)
+  // summaryText from handleRegenerateSummary is already A-perspective (emotional, first-person)
   setSummary(summaryText);
   setThoughts(thoughtsText);
+
+        // ✅ STORE A-PERSPECTIVE IN contextDataRef (summaryText is already A-perspective)
+        // Note: handleRegenerateSummary should ideally use edge function for both summaries
+        // For now, we use summaryText as A-perspective and create fallback neutral
+        const fallbackNeutral = summaryText
+          .replace(/^I\s+/gi, 'User A ')
+          .replace(/\bmy\b/gi, 'their')
+          .replace(/\bme\b/gi, 'them')
+          .replace(/\bmyself\b/gi, 'themself')
+          .replace(/\bI\b/gi, 'User A')
+          .replace(/\bI'm\b/gi, 'User A is')
+          .replace(/\bI've\b/gi, 'User A has')
+          .replace(/\bI'd\b/gi, 'User A would');
+        
+        contextDataRef.current = {
+          ...contextDataRef.current,
+          summary: summaryText, // backward compatibility
+          summary_a: summaryText, // backward compatibility
+          summary_a_perspective: summaryText, // A-perspective (emotional, first-person)
+          summary_shared_neutral: contextDataRef.current?.summary_shared_neutral || fallbackNeutral, // Keep existing or create fallback
+        };
 
         setQAPairs(editedQAPairs);
 
@@ -3713,8 +3555,11 @@ CRITICAL:
         await updateChatRecord(
           {},
           {
-            summary: summaryText,
+            summary: summaryText, // A-perspective (backward compatibility)
+            summary_a_perspective: summaryText, // ✅ A-perspective summary (emotional, first-person)
+            summary_shared_neutral: contextDataRef.current?.summary_shared_neutral || fallbackNeutral, // ✅ Neutral shared summary
             thoughts: thoughtsText,
+            thoughts_a: thoughtsText,
             qa_pairs: editedQAPairs,
             initial_description: initialDescription,
             initial_description_tags: taggedEntities,
@@ -3863,9 +3708,29 @@ Respond ONLY with valid JSON:
         if (existingChat?.id && existingChat.context_data?.initial_pending) {
           contactChatId = existingChat.id;
           reusedContactChat = true;
+          // ✅ Get both summaries from contextDataRef (set by generateSummary)
+          const summaryAPerspective = contextDataRef.current?.summary_a_perspective || summary;
+          // ✅ CRITICAL: Never use 'summary' state as fallback for summarySharedNeutral
+          // 'summary' state should ALWAYS be A-perspective (emotional, first-person)
+          // If neutral summary is missing, create it from A-perspective (convert to third-person)
+          let summarySharedNeutral = contextDataRef.current?.summary_shared_neutral || existingChat.context_data?.summary_shared_neutral;
+          if (!summarySharedNeutral && summaryAPerspective) {
+            // Convert A-perspective to neutral (third-person)
+            summarySharedNeutral = summaryAPerspective
+              .replace(/^I\s+/gi, 'User A ')
+              .replace(/\bmy\b/gi, 'their')
+              .replace(/\bme\b/gi, 'them')
+              .replace(/\bmyself\b/gi, 'themself')
+              .replace(/\bI\b/gi, 'User A')
+              .replace(/\bI'm\b/gi, 'User A is')
+              .replace(/\bI've\b/gi, 'User A has')
+              .replace(/\bI'd\b/gi, 'User A would');
+          }
           const updatedContext = {
             ...(existingChat.context_data ?? {}),
-            summary_a: summary,
+            summary_a: summaryAPerspective,  // backward compatibility
+            summary_a_perspective: summaryAPerspective,  // A-perspective summary (emotional, first-person)
+            summary_shared_neutral: summarySharedNeutral,  // ✅ Neutral shared summary (factual, third-person)
             thoughts_a: thoughts,
             hint_to_contact: hintToContact,
             contact_category: contactCategory,
@@ -3891,6 +3756,24 @@ Respond ONLY with valid JSON:
       }
 
       if (!contactChatId) {
+        // ✅ Get both summaries from contextDataRef (set by generateSummary)
+        const summaryAPerspective = contextDataRef.current?.summary_a_perspective || summary;
+        // ✅ CRITICAL: Never use 'summary' state as fallback for summarySharedNeutral
+        // 'summary' state should ALWAYS be A-perspective (emotional, first-person)
+        // If neutral summary is missing, create it from A-perspective (convert to third-person)
+        let summarySharedNeutral = contextDataRef.current?.summary_shared_neutral;
+        if (!summarySharedNeutral && summaryAPerspective) {
+          // Convert A-perspective to neutral (third-person)
+          summarySharedNeutral = summaryAPerspective
+            .replace(/^I\s+/gi, 'User A ')
+            .replace(/\bmy\b/gi, 'their')
+            .replace(/\bme\b/gi, 'them')
+            .replace(/\bmyself\b/gi, 'themself')
+            .replace(/\bI\b/gi, 'User A')
+            .replace(/\bI'm\b/gi, 'User A is')
+            .replace(/\bI've\b/gi, 'User A has')
+            .replace(/\bI'd\b/gi, 'User A would');
+        }
         const { data: newChat } = await supabase
           .from("chats")
           .insert({
@@ -3908,7 +3791,9 @@ Respond ONLY with valid JSON:
             resolution_detected: false,
             title: normalizedTitle,
             context_data: {
-              summary_a: summary,
+              summary_a: summaryAPerspective,  // backward compatibility
+              summary_a_perspective: summaryAPerspective,  // ✅ A-perspective summary (emotional, first-person)
+              summary_shared_neutral: summarySharedNeutral,  // ✅ Neutral shared summary (factual, third-person)
               thoughts_a: thoughts,
               hint_to_contact: hintToContact,
               contact_category: contactCategory,
@@ -4666,6 +4551,85 @@ Respond ONLY with valid JSON:
   );
 
   const renderSummaryStage = () => {
+    // ✅ CRITICAL: ALWAYS use summary_a_perspective for Stage 3 UI (emotional, first-person, User A talking to AI)
+    // This is the summary from User A's perspective talking to the AI assistant about their issue
+    // NEVER use summary_shared_neutral here - that's only for chat option generation
+    
+    // ✅ LOG what's available before determining summary
+    console.log('🎯 Stage 3 - Checking summaries:', {
+      contextDataHasAPerspective: !!contextDataRef.current?.summary_a_perspective,
+      contextDataHasSharedNeutral: !!contextDataRef.current?.summary_shared_neutral,
+      summaryStateLength: summary?.length || 0,
+      summaryStatePreview: summary?.substring(0, 100) || 'EMPTY',
+      summaryAPerspectivePreview: contextDataRef.current?.summary_a_perspective?.substring(0, 100) || 'MISSING',
+      summarySharedNeutralPreview: contextDataRef.current?.summary_shared_neutral?.substring(0, 100) || 'MISSING',
+    });
+    
+    // ✅ CRITICAL: ONLY use summary_a_perspective - NO fallback chain
+    // ❌ NEVER fallback to summary_a or summary - they may contain neutral summary
+    // ❌ NEVER use summary_shared_neutral for Stage 3
+    let summaryForDisplay = contextDataRef.current?.summary_a_perspective || '';
+    
+    // ✅ FALLBACK: Only use summary state if summary_a_perspective is missing
+    // This should only happen if contextDataRef wasn't set properly
+    if (!summaryForDisplay && summary) {
+      // ✅ VALIDATE: Ensure summary state is NOT the neutral summary
+      if (contextDataRef.current?.summary_shared_neutral && 
+          contextDataRef.current.summary_shared_neutral === summary) {
+        console.error('❌ ERROR: summary state equals summary_shared_neutral! This should NEVER happen.');
+        summaryForDisplay = ''; // Force fallback
+      } else {
+        console.warn('⚠️ Warning: Using summary state as fallback (summary_a_perspective missing from contextDataRef)');
+        summaryForDisplay = summary;
+        // Update contextDataRef to ensure consistency
+        contextDataRef.current = {
+          ...contextDataRef.current,
+          summary_a_perspective: summary,
+        };
+      }
+    }
+    
+    // ✅ FINAL FALLBACK: Create A-perspective fallback if still empty
+    if (!summaryForDisplay || summaryForDisplay.trim().length === 0) {
+      console.error('❌ ERROR: summaryForDisplay is empty in Stage 3! Using A-perspective fallback.');
+      // Fallback: Create A-perspective fallback (emotional, first-person, talking to AI)
+      const fallbackAPerspective = "I shared my thoughts about the situation with the assistant.";
+      summaryForDisplay = fallbackAPerspective;
+      // Update contextDataRef and state
+      contextDataRef.current = {
+        ...contextDataRef.current,
+        summary_a_perspective: fallbackAPerspective,
+      };
+      setSummary(fallbackAPerspective);
+    }
+    
+    // ✅ CRITICAL FINAL CHECK: Ensure finalSummaryForDisplay is NOT the neutral summary
+    let finalSummaryForDisplay = summaryForDisplay;
+    if (contextDataRef.current?.summary_shared_neutral && 
+        contextDataRef.current.summary_shared_neutral === finalSummaryForDisplay) {
+      console.error('❌ CRITICAL ERROR: finalSummaryForDisplay equals summary_shared_neutral!');
+      console.error('This means Stage 3 is about to display the neutral summary instead of A-perspective!');
+      console.error('Forcing A-perspective fallback...');
+      // Force A-perspective fallback
+      finalSummaryForDisplay = "I shared my thoughts about the situation with the assistant.";
+      // Update contextDataRef and state
+      contextDataRef.current = {
+        ...contextDataRef.current,
+        summary_a_perspective: finalSummaryForDisplay,
+      };
+      setSummary(finalSummaryForDisplay);
+    }
+    
+    // ✅ LOG FINAL SUMMARY FOR DEBUGGING
+    console.log('🎯 Stage 3 final summary:', {
+      finalSummaryForDisplayLength: finalSummaryForDisplay.length,
+      finalSummaryForDisplayPreview: finalSummaryForDisplay.substring(0, 100),
+      isAPerspective: contextDataRef.current?.summary_a_perspective === finalSummaryForDisplay,
+      isNeutral: contextDataRef.current?.summary_shared_neutral === finalSummaryForDisplay,
+      contextDataHasAPerspective: !!contextDataRef.current?.summary_a_perspective,
+      contextDataHasSharedNeutral: !!contextDataRef.current?.summary_shared_neutral,
+    });
+
     const quickTipContent = isSummaryUnclear ? (
       <View style={styles.quickTipBox}>
         <Text style={styles.quickTipTitle}>Let's tighten a couple things</Text>
@@ -4689,7 +4653,8 @@ Respond ONLY with valid JSON:
     const summaryCardContent = (
       <View style={styles.summaryCard}>
         <Text style={styles.summaryLabel}>📌 Discussion Summary</Text>
-        <Text style={styles.summaryText}>{summary}</Text>
+        {/* ✅ CRITICAL: This is ALWAYS summary_a_perspective (emotional, first-person, User A talking to AI) */}
+        <Text style={styles.summaryText}>{finalSummaryForDisplay}</Text>
   
         <Text style={styles.summaryLabel}>💡 My Thoughts</Text>
         <Text style={styles.summaryText}>{thoughts}</Text>

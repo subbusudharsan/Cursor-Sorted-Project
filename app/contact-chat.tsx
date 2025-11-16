@@ -618,6 +618,19 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
   ) => {
     const { force = false } = options;
     console.log("🔍 FETCHING INITIAL OPTIONS", { chatId, userId, forced: force });
+    
+    // ✅ CRITICAL: Check if conversation is closed before fetching options
+    const { data: closureCheck } = await supabase
+      .from("chats")
+      .select("is_resolved, closure_state")
+      .eq("id", chatId)
+      .single();
+
+    if (closureCheck?.is_resolved === true && closureCheck?.closure_state === 'closed') {
+      console.log("🛑 Conversation is closed - no initial options needed");
+      resolveWaitingForOptions(userId);
+      return;
+    }
     if (!force) {
       const { data: messagesData } = await supabase
         .from("messages")
@@ -1164,6 +1177,19 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           console.log(" Matches?", newMsg.sender_id === contactId);
           console.log(" Matches (string)?", String(newMsg.sender_id) === String(contactId));
           if (String(newMsg.sender_id) === String(contactId)) {
+            // ✅ CRITICAL: Check if conversation is closed before generating options
+            const { data: closureCheck } = await supabase
+              .from("chats")
+              .select("is_resolved, closure_state")
+              .eq("id", currentChatId)
+              .single();
+
+            if (closureCheck?.is_resolved === true && closureCheck?.closure_state === 'closed') {
+              console.log("🛑 Conversation is closed - skipping option generation");
+              resolveWaitingForOptions(currentUserId);
+              return;
+            }
+            
             console.log("\n" + "=".repeat(60));
             console.log("📤 CONTACT REPLIED - GENERATING OPTIONS FOR CURRENT USER");
             console.log("=".repeat(60));
@@ -1433,7 +1459,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           if (userASent && userBSent) {
             try {
               const contextData = (chatData as any)?.context_data ?? {};
-              const summaryA = contextData.summary_a || contextData.summary || '';
+              const summaryA = contextData.summary_a_perspective || contextData.summary_a || contextData.summary || '';
               const thoughtsA = contextData.thoughts_a || contextData.thoughts || '';
               const hintFromB = contextData.hint_from_b || contextData.hintToContact || null;
               const perspectiveLines: string[] = [];
@@ -1546,20 +1572,38 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       const isCurrentUserA = user?.id === chatData.user_id;
       // ✅ FIX: Use fresh context from database, not stale component state
       // Send User A's context when generating options for User B
-      // ✅ CRITICAL: Always include User A's original issue context in all generations
-      const summaryA = chatData.context_data?.summary_a || chatData.context_data?.summary || "";
+      // ✅ CRITICAL: For option generation, BOTH users MUST use summary_shared_neutral (factual, third-person)
+      // ❌ NEVER use summary_a_perspective for options - that's ONLY for Stage 3 UI
+      // ❌ NEVER use summary_b for options - removed completely
+      const summarySharedNeutral = chatData.context_data?.summary_shared_neutral || "";
       const thoughtsA = chatData.context_data?.thoughts_a || chatData.context_data?.thoughts || "";
-      const summaryB = chatData.context_data?.summary_b || "";
       const thoughtsB = chatData.context_data?.thoughts_b || "";
+      
       // Determine recipient's context
       const isRecipientUserA = recipientId === chatData.user_id;
-      const recipientSummary = isRecipientUserA ? summaryA : summaryB;
+      
+      // ✅ CRITICAL: BOTH User A and User B MUST use summary_shared_neutral for option generation
+      // ❌ User A should NEVER use summary_a_perspective (emotional) for option generation
+      // ❌ summary_b removed - both users now use summary_shared_neutral
+      // summary_a_perspective is ONLY shown in Stage 3 UI, NEVER used for chat options
+      const recipientSummary = summarySharedNeutral; // ✅ BOTH users use summary_shared_neutral
       const recipientThoughts = isRecipientUserA ? thoughtsA : thoughtsB;
+      
+      if (!recipientSummary) {
+        console.warn(`⚠️ WARNING: summary_shared_neutral missing for ${isRecipientUserA ? "User A" : "User B"} options!`);
+      } else {
+        console.log(`✅ For ${isRecipientUserA ? "User A" : "User B"}: Using summary_shared_neutral for option generation (factual, third-person)`);
+        console.log(`   Summary preview: ${recipientSummary.substring(0, 100)}`);
+        console.log("   Note: summary_a_perspective is NEVER used for option generation");
+        console.log("   Note: summary_b removed - both users now use summary_shared_neutral");
+      }
+      
       console.log("💾 Context data being sent to edge function:", {
         currentUserRole: isCurrentUserA ? "User A" : "User B",
         recipientRole: isRecipientUserA ? "User A" : "User B",
-        originalIssueSummary: summaryA.substring(0, 60) || "❌ MISSING",
+        recipientSummaryType: "summary_shared_neutral (BOTH users)",
         recipientSummary: recipientSummary?.substring(0, 50) || "❌ MISSING",
+        hasSummarySharedNeutral: !!summarySharedNeutral,
         hint_from_b: chatData.context_data?.hint_from_b?.substring(0, 50) || "⚠️ Not provided",
         conversationHistoryLength: conversationHistory.length,
         contactCategory: contact?.category || "General",
@@ -1578,7 +1622,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               currentMessage: content,
               summary: recipientSummary,
               thoughts: recipientThoughts,
-              summaryB: summaryB,
+              summary_shared_neutral: summarySharedNeutral || "",
               thoughtsB: thoughtsB,
               hintFromB: chatData.context_data?.hint_from_b || "",
               conversationHistory,
@@ -1610,17 +1654,16 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             currentMessage: String(content || ""), // ✅ CRITICAL: User's latest message for recipient to respond to
             summary: recipientSummary || "",
             thoughts: recipientThoughts || "",
-            originalIssueSummary: summaryA || "",
+            summary_shared_neutral: summarySharedNeutral || "",
             recipientSummary: recipientSummary || "",
             hint_from_b: chatData.context_data?.hint_from_b || '',
-            // ✅ CRITICAL: Always pass User A's original issue context
+            // ✅ CRITICAL: Always pass User A's original issue context (for backward compatibility only)
             originalIssue: {
-              summary: summaryA,
+              summary: chatData.context_data?.summary_a_perspective || chatData.context_data?.summary_a || chatData.context_data?.summary || "",
               thoughts: thoughtsA,
             },
             hintFromB: chatData.context_data?.hint_from_b || "",
             hintToContact: chatData.context_data?.hint_to_contact || null,
-            summaryB: summaryB || "",
             thoughtsB: thoughtsB || "",
             conversationHistory: Array.isArray(conversationHistory) ? conversationHistory : [],
             isInitial: false,
