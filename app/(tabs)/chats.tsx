@@ -70,12 +70,21 @@ function ChatsScreen() {
     || userProfile?.first_name
     || (userProfile?.full_name ? userProfile.full_name.split(' ')[0] : '');
 
+  const welcomeAnim = React.useRef(new Animated.Value(0)).current;
+
   useEffect(() => {
     Animated.timing(fadeAnim, {
       toValue: 1,
       duration: 600,
       useNativeDriver: true,
     }).start();
+    // Gentle looping animation for the welcome banner background/scale
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(welcomeAnim, { toValue: 1, duration: 2200, useNativeDriver: false }),
+        Animated.timing(welcomeAnim, { toValue: 0, duration: 2200, useNativeDriver: false }),
+      ])
+    ).start();
   }, []);
 
   const fetchUserProfile = useCallback(async () => {
@@ -132,6 +141,7 @@ const chatIds = (contactChatsData || [])
   .filter((id: string | null | undefined): id is string => Boolean(id));
 
 const latestMsgMap = new Map<string, { content: string; created_at: string; sender_id: string | null }>();
+const lastReceivedMsgMap = new Map<string, { content: string; created_at: string }>();
 const messagePresenceMap = new Map<string, { hasAny: boolean; hasUserMessage: boolean }>();
 
 if (chatIds.length > 0) {
@@ -162,6 +172,13 @@ if (chatIds.length > 0) {
           content: row.content ?? 'New conversation started',
           created_at: row.created_at ?? new Date().toISOString(),
           sender_id: row.sender_id ?? null,
+        });
+      }
+      // Capture the most recent message RECEIVED from the other user
+      if (row.sender_id !== user?.id && !lastReceivedMsgMap.has(row.chat_id)) {
+        lastReceivedMsgMap.set(row.chat_id, {
+          content: row.content ?? '',
+          created_at: row.created_at ?? new Date().toISOString(),
         });
       }
     });
@@ -225,6 +242,9 @@ validContactChats.forEach((chat: any) => {
     context_data: chat.context_data || {},
     participants: chat.participants,
     is_resolved: chat.is_resolved,
+    // Derived fields for received preview
+    last_received: lastReceivedMsgMap.get(chat.id)?.content || '',
+    last_received_at: lastReceivedMsgMap.get(chat.id)?.created_at || null,
   };
 
   const existingContact = contactChatMap.get(contactId);
@@ -436,6 +456,21 @@ setContactChats(finalChats);
     }
   };
 
+  // Recent timestamp (< 7 days) show time, else show MM/DD/YYYY
+  const formatRecentOrDate = (timestamp: string | null) => {
+    if (!timestamp) return '';
+    const d = new Date(timestamp);
+    const now = new Date();
+    const diffDays = (now.getTime() - d.getTime()) / (1000 * 60 * 60 * 24);
+    if (diffDays < 7) {
+      return d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    }
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    const yyyy = d.getFullYear();
+    return `${mm}/${dd}/${yyyy}`;
+  };
+
   const handleContactPress = (contactChat: ContactChat) => {
     if (multiSelectMode) {
       setSelectedContactIds(prev => prev.includes(contactChat.contact_id)
@@ -495,11 +530,27 @@ setContactChats(finalChats);
           </View>
 
           {/* Welcome Section */}
-          <View style={styles.welcomeSection}>
-            <Text style={styles.welcomeText}>
-              {`Welcome back${welcomeName ? `, ${welcomeName}` : ''}!`}
-            </Text>
-          </View>
+          {(() => {
+            const scale = welcomeAnim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [1, 1.02],
+            });
+            const haloOpacity = welcomeAnim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [0.06, 0.12],
+            });
+            const textValue = `Welcome back${welcomeName ? `, ${welcomeName}` : ''}!`;
+            return (
+              <Animated.View style={[styles.welcomeCard, { transform: [{ scale }] }]}>
+                {/* Soft backlight behind the text (no border, no button feel) */}
+                <Animated.View style={[styles.welcomeHalo, { opacity: haloOpacity }]} />
+                {/* Double-color “border” around text using layered shadows */}
+                <Text style={styles.welcomeTextBorder2}>{textValue}</Text>
+                <Text style={styles.welcomeTextBorder1}>{textValue}</Text>
+                <Text style={styles.welcomeText}>{textValue}</Text>
+              </Animated.View>
+            );
+          })()}
 
           {/* AI Assistant Button */}
           <TouchableOpacity style={styles.aiAssistantButton} onPress={handleAIAssistantPress}>
@@ -548,19 +599,19 @@ setContactChats(finalChats);
               >
               {filteredContacts.map((contactChat) => {
                 const isContactTalk = !!contactChat.isUserB;
-                const generatedFallback =
-                  (contactChat.issueSummary && contactChat.issueSummary.split(/[.!?]/)[0]) ||
-                  (contactChat.lastMsg || contactChat.last_message || '').split(/[.!?]/)[0] ||
-                  'Conversation';
-                const displayTitle = contactChat.chatTitle?.trim()
-                  ? contactChat.chatTitle.trim()
-                  : generatedFallback.trim();
+                // Prefer session start if available for the Started label
+                const startedAt =
+                  contactChat?.context_data?.session_started_at ||
+                  contactChat?.context_data?.started_at ||
+                  contactChat?.context_data?.created_at ||
+                  contactChat.last_message_at ||
+                  '';
 
-                const latestMessage = contactChat.lastMsg || contactChat.last_message || 'No messages yet';
-                const annotatedMessage =
-                  contactChat.context_data?.last_sender_id === user?.id
-                    ? { label: 'New', text: latestMessage }
-                    : null;
+                // Subtitle rule for home: ALWAYS show last RECEIVED message (from the other user) if available,
+                // otherwise fall back to the latest message
+                const latestMessage = (contactChat.lastMsg || contactChat.last_message || '').trim();
+                const lastReceived = (contactChat as any).last_received ? String((contactChat as any).last_received).trim() : '';
+                const displaySubtitle = lastReceived || latestMessage || 'No messages yet';
 
                 return (
                   <TouchableOpacity
@@ -596,27 +647,11 @@ setContactChats(finalChats);
                           <Text style={styles.chatName} numberOfLines={1}>
                             {contactChat.contact_name}
                           </Text>
-                          <Text style={styles.chatTime}>{formatTime(contactChat.last_message_at || '')}</Text>
+                          <Text style={styles.chatTime}>{formatRecentOrDate(contactChat.last_received_at || contactChat.last_message_at || '')}</Text>
                         </View>
 
-                        <Text style={styles.chatSubtitle} numberOfLines={1}>{displayTitle}</Text>
-
-                        <View style={styles.messageRow}>
-                          {annotatedMessage ? (
-                            <View style={styles.newBadge}>
-                              <Text style={styles.newBadgeText}>New</Text>
-                            </View>
-                          ) : null}
-                          <Text
-                            style={[
-                              styles.lastMsgText,
-                              annotatedMessage ? styles.lastMsgTextEmphasis : null,
-                            ]}
-                            numberOfLines={1}
-                          >
-                            {annotatedMessage ? annotatedMessage.text : latestMessage}
-                          </Text>
-                        </View>
+                        <Text style={styles.chatSubtitle} numberOfLines={1}>{displaySubtitle}</Text>
+                        {/* message preview row removed to keep rows thin */}
 
                         {(contactChat.ongoing_count > 0 || (contactChat.total_ongoing_count || 0) > 0 || contactChat.context_data?.is_resolved || contactChat.is_resolved) && (
                           <View style={styles.metaRow}>
@@ -737,11 +772,52 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: Spacing.xl,
   },
+  welcomeCard: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 0,
+    paddingHorizontal: 0,
+    borderRadius: BorderRadius.lg,
+    // fully remove any button feel (no border/background/gloss)
+    marginBottom: Spacing.xl,
+  },
+  welcomeHalo: {
+    position: 'absolute',
+    left: '5%',
+    right: '5%',
+    height: 28,
+    borderRadius: 20,
+    backgroundColor: 'rgba(2, 136, 209, 0.22)', // subtle cyan backlight
+  },
   welcomeText: {
-    fontSize: Typography.fontSize.lg,
-    fontWeight: Typography.fontWeight.semibold,
-    color: '#0288D1',
+    fontSize: Typography.fontSize.xl,
+    fontWeight: Typography.fontWeight.bold,
+    color: Colors.text.primary,
     textAlign: 'center',
+    // subtle outline/glow to make text pop without a button feel
+    textShadowColor: 'rgba(0,0,0,0.08)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
+  },
+  // Layer 1 (inner) shadow color
+  welcomeTextBorder1: {
+    position: 'absolute',
+    fontSize: Typography.fontSize.xl,
+    fontWeight: Typography.fontWeight.bold,
+    color: 'transparent',
+    textShadowColor: Colors.secondary[500],
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 2.5,
+  },
+  // Layer 2 (outer) shadow color
+  welcomeTextBorder2: {
+    position: 'absolute',
+    fontSize: Typography.fontSize.xl,
+    fontWeight: Typography.fontWeight.bold,
+    color: 'transparent',
+    textShadowColor: Colors.primary[400],
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 5,
   },
   headerButton: {
     width: 40,
@@ -811,7 +887,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: Spacing.xl,
     paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md,
+    // even thinner search
+    paddingVertical: 2,
     backgroundColor: Colors.surface,
     borderRadius: BorderRadius.lg,
     borderBottomWidth: 1,
@@ -908,22 +985,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   chatName: {
-    fontSize: Typography.fontSize.lg,
+    fontSize: Typography.fontSize.md,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.text.primary,
     flex: 1,
     marginRight: Spacing.sm,
-    marginBottom: 2,
+    marginBottom: 1,
   },
   chatTime: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.success[600],
     fontWeight: Typography.fontWeight.medium,
   },
   chatSubtitle: {
     fontSize: Typography.fontSize.sm,
-    fontWeight: Typography.fontWeight.medium,
-    color: Colors.secondary[700],
+    fontWeight: Typography.fontWeight.regular,
+    color: Colors.text.secondary,
   },
   messageRow: {
     flexDirection: 'row',

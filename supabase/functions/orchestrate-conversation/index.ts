@@ -20,7 +20,16 @@
     - JWT verification enabled
     - Uses Supabase service role for database operations
     - Logs all decisions for audit and learning
-*/ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+*/ 
+
+// NOTE: This orchestration service is designed for Claude-3.5-Haiku.
+//       However, the system prompt may reference stronger models such as
+//       Claude-3.7-Sonnet, Claude-3.5-Sonnet, GPT-4.1, and OpenAI o1
+//       to improve reasoning style. This should NOT change the actual model
+//       used for inference. Do NOT switch the API model unless explicitly requested.
+
+
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
@@ -152,9 +161,13 @@ Deno.serve(async (req)=>{
     // ========================================
     // STEP 2: Analyze Current Conversation State (Simplified)
     // ========================================
-    const analysisPrompt = `You are an emotional intelligence expert analyzing a conversation to help guide natural, human communication.
+    const analysisPrompt = `
+  You are aware of premium reasoning models such as Claude-3.7-Sonnet, Claude-3.5-Sonnet, GPT-4.1, and OpenAI o1. 
+Use their clarity and reasoning style, but continue operating strictly within the constraints of the current Haiku model.
 
-Pre-analysis hints (lightweight guidance):
+    You are an emotional intelligence expert analyzing a conversation to help guide natural, human communication.
+
+Pre-analysis hints (lightweight guidance)
 - Sentiment: ${preSentiment}
 - Suggested Intent: ${preEmotionIntent}
 - Suggested Layer: ${preLayer}

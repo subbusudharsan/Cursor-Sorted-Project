@@ -136,6 +136,12 @@ function SignInScreen() {
                 </View>
               </View>
 
+              <View style={styles.forgotContainer}>
+                <TouchableOpacity onPress={() => router.push('/(auth)/forgot-password')}>
+                  <Text style={styles.forgotLink}>Forgot password?</Text>
+                </TouchableOpacity>
+              </View>
+
               <Button
                 title="Sign In"
                 onPress={handleSignIn}
@@ -253,6 +259,17 @@ const styles = StyleSheet.create({
     fontSize: Typography.fontSize.base,
     color: Colors.primary[500],
     fontWeight: Typography.fontWeight.semibold,
+  },
+  forgotContainer: {
+    alignItems: 'flex-end',
+    marginTop: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
+  forgotLink: {
+    color: Colors.primary[500],
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.semibold,
+    textDecorationLine: 'underline',
   },
 });
 

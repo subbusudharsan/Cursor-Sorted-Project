@@ -18,6 +18,11 @@
     - Handles CORS properly
 */
 
+// NOTE: This project can be upgraded to premium models such as Claude 3.7 Sonnet,
+// Claude 3.5 Sonnet, or OpenAI GPT-4.1 / o1 models in the future.
+// Current model intentionally remains claude-3-5-haiku-20241022 for cost control.
+
+
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
@@ -1135,6 +1140,7 @@ const lastTwoMessages = cleanConversationHistory.slice(-2).map((msg) => {
 Tone: Warm, caring, non-judgmental, genuinely supportive.`;
 
     const systemPrompt = `${perspectiveLine} ${thirdPartyLine} ${summarySourceOfTruthRules}
+"You are aware of advanced reasoning models such as Claude 3.7 Sonnet, Claude 3.5 Sonnet, GPT-4.1, and OpenAI o1 — but you must behave consistently using the current Haiku model."
 
 🚫 ABSOLUTE RULE - NAME USAGE FORBIDDEN:
 The listener (the person you're speaking TO) MUST NEVER be called by their name in the generated options.
@@ -1691,6 +1697,15 @@ ${isRecipientUserA ? `
 - NEVER use User A's real name in any option
 - NEVER use "her/his/their" when referring to User A - ALWAYS "you/your"
 `}
+
+🧩 ACKNOWLEDGEMENT REQUIREMENT (STRICT):
+- Every option must START with a short, natural acknowledgement of the latest received message 
+  (cleaned version of cleanCurrentMessage).
+- Acknowledgement examples: "I hear you", "I get why you shared that", 
+  "I appreciate you opening up", "I understand how that felt".
+- Do NOT copy the message.
+- After acknowledging, continue the response normally.
+${shouldUseHint && isRecipientUserB ? `- If User B submitted a private hint, subtly reflect their perspective AFTER the acknowledgement, without exposing the hint directly.` : ''}
 
 **MANDATORY CHECK:** Before generating each option, verify:
 1. Does the speaker use "I/me/my" for themselves? ✅

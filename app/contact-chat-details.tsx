@@ -629,14 +629,22 @@ function ContactChatDetailsScreen() {
 
   const renderChatCard = (chat: ContactChat, showOwnerTag: boolean = false) => {
     const isSelected = selectedChats.includes(chat.id);
-    const ownerLabel = chat.user_id === user?.id ? 'My talk' : `${contact?.full_name || 'Contact'}'s talk`;
-    const summaryText = chat.context_data?.summary_a
-      || chat.context_data?.summary
-      || chat.last_message
-      || 'No messages yet';
+    const isMyTalk = chat.user_id === user?.id;
+    // NOTE: Owner label no longer displayed inline per spec; leaving var for future reference if needed
+    const ownerLabel = isMyTalk ? 'My talk' : `${contact?.full_name || 'Contact'}'s talk`;
+    // My Talks → one-line A-summary (with …); Contact Talks → latest message/notification (one line)
+    const baseSummary = isMyTalk
+      ? (chat.context_data?.summary_a || chat.context_data?.summary || '')
+      : (chat.last_message || '');
+    const summaryOneLine = (baseSummary || 'No messages yet').replace(/\s+/g, ' ').trim();
+    // Shrink User A summary further to keep rows thin; allow a bit more room for contact messages
+    const maxSummaryLength = isMyTalk ? 90 : 140;
+    const summaryText = summaryOneLine.length > maxSummaryLength
+      ? `${summaryOneLine.slice(0, maxSummaryLength)}…`
+      : summaryOneLine;
     const lastTouched = chat.last_message_at || chat.created_at;
     const statusLabel = chat.is_resolved ? 'Resolved' : 'Active';
-    const categoryLabel = chat.context_data?.contact_category;
+    const categoryLabel = chat.context_data?.contact_category; // kept for backward compatibility (not shown)
     
     return (
       <TouchableOpacity
@@ -651,31 +659,26 @@ function ContactChatDetailsScreen() {
         <View style={styles.chatContent}>
           <View style={styles.chatHeaderRow}>
             <View style={styles.chatHeaderLeft}>
-              <Text style={styles.chatTitle} numberOfLines={1}>
+              {/* Keep full title (allow wrap up to 2 lines) */}
+              <Text style={styles.chatTitle} numberOfLines={2}>
                 {chat.title || 'Untitled Chat'}
               </Text>
+            </View>
+            {/* Show recent time at header; add small ownership label near timestamp */}
+            <View style={styles.chatHeaderRight}>
+              <Text style={styles.chatTime}>{formatTime(lastTouched)}</Text>
               {showOwnerTag && (
-                <View
-                  style={[
-                    styles.ownerTag,
-                    chat.user_id === user?.id ? styles.ownerTagYou : styles.ownerTagContact,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.ownerTagText,
-                      chat.user_id === user?.id ? styles.ownerTagYouText : styles.ownerTagContactText,
-                    ]}
-                  >
-                    {ownerLabel}
+                <View style={styles.ownerHeaderTag}>
+                  <Text style={styles.ownerHeaderTagText}>
+                    {isMyTalk ? 'My talk' : `${contact?.full_name || 'Contact'}'s talk`}
                   </Text>
                 </View>
               )}
             </View>
-            <Text style={styles.chatTime}>{formatTime(lastTouched)}</Text>
           </View>
 
-          <Text style={styles.chatSummary} numberOfLines={2}>
+          {/* One-line thin summary per spec */}
+          <Text style={styles.chatSummary} numberOfLines={1}>
             {summaryText}
           </Text>
 
@@ -684,15 +687,16 @@ function ContactChatDetailsScreen() {
               <Clock size={12} color={Colors.text.secondary} />
               <Text style={styles.metaPillText}>Started {formatDateLabel(chat.created_at)}</Text>
             </View>
-            <View style={styles.metaPill}>
-              <History size={12} color={Colors.text.secondary} />
-              <Text style={styles.metaPillText}>Updated {formatDateLabel(lastTouched)}</Text>
-            </View>
-            {categoryLabel && (
+            {/* Ended date for resolved chats (History) after Started */}
+            {chat.is_resolved && (chat.context_data?.closure_achieved_at || chat.last_message_at) && (
               <View style={styles.metaPill}>
-                <Text style={styles.metaPillText}>{categoryLabel}</Text>
+                <History size={12} color={Colors.text.secondary} />
+                <Text style={styles.metaPillText}>
+                  Ended {formatDateLabel(chat.context_data?.closure_achieved_at || chat.last_message_at)}
+                </Text>
               </View>
             )}
+            {/* Removed Updated + Category chips to keep row thin */}
             <View
               style={[styles.statusPill, chat.is_resolved ? styles.resolvedPill : styles.activePill]}
             >
@@ -1320,14 +1324,16 @@ const styles = StyleSheet.create({
     ...Shadows.small,
   },
   myTalkHighlight: {
-    backgroundColor: '#F3E8FF', // light purple
-    borderWidth: 1,
-    borderColor: '#E0C3FF',
-  },
-  contactTalkHighlight: {
+    // Switch: My Talks now use the secondary light style (was purple)
     backgroundColor: Colors.secondary[50],
     borderWidth: 1,
     borderColor: Colors.secondary[200],
+  },
+  contactTalkHighlight: {
+    // Switch: Contact Talks now use purple highlight
+    backgroundColor: '#F3E8FF', // light purple
+    borderWidth: 1,
+    borderColor: '#E0C3FF',
   },
   sectionHeaderRow: {
     flexDirection: 'row',
@@ -1882,6 +1888,25 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: Spacing.sm,
   },
+  chatHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  ownerHeaderTag: {
+    backgroundColor: Colors.background,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+    borderRadius: BorderRadius.sm,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    marginLeft: Spacing.xs,
+  },
+  ownerHeaderTagText: {
+    fontSize: 10,
+    color: Colors.text.secondary,
+    fontWeight: Typography.fontWeight.semibold,
+  },
   ownerTag: {
     paddingHorizontal: 6,
     paddingVertical: 1,
@@ -1962,7 +1987,8 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.success[100],
   },
   resolvedPill: {
-    backgroundColor: Colors.neutral ? Colors.neutral[200] : '#e5e7eb',
+    // Keep resolved pill green (matches success palette)
+    backgroundColor: Colors.success[100],
   },
   statusPillText: {
     fontSize: 11,
@@ -1972,7 +1998,8 @@ const styles = StyleSheet.create({
     color: Colors.success[700],
   },
   resolvedPillText: {
-    color: Colors.text.secondary,
+    // Green text for resolved as well
+    color: Colors.success[700],
   },
   metaIconButton: {
     width: 26,

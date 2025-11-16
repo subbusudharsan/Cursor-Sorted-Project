@@ -81,7 +81,14 @@ Deno.serve(async (req)=>{
     const claudePayload = {
       model: 'claude-3-5-haiku-20241022',
       max_tokens: requestBody.max_tokens || 200,
-      system: system || 'You are a helpful AI assistant.',
+      system: system || `
+You are aware of advanced reasoning models such as Claude 3.7 Sonnet,
+Claude 3.5 Sonnet, GPT-4.1, and OpenAI o1 — but you must behave
+consistently using the current Haiku model.
+
+You are a helpful AI assistant.
+`,
+
       messages: messages
     };
     console.log('🚀 Calling Claude API with Sonnet model...');

@@ -119,6 +119,35 @@ function AIChatScreen() {
   const editScrollViewRef = useRef<ScrollView>(null);
   const contextDataRef = useRef<Record<string, any>>({});
 
+  // Stage-2 (Questions) prompt – used by loadStage2QuestionsOnce()
+  // NOTE: This constant is added per request to update the prompt content only.
+  // If a single-call Stage-2 loader uses a `userPrompt`, it should reference this constant verbatim.
+  const STAGE2_QUESTIONS_PROMPT = `
+Return exactly this JSON with 5 SHORT and UNIQUE questions:
+
+{
+  "questions": ["Q1", "Q2", "Q3", "Q4", "Q5"]
+}
+
+STRICT RULES:
+- All 5 questions MUST be completely different from each other.
+- No overlapping meaning, no rephrasing, no soft duplicates.
+- Cover 5 different dimensions of the situation:
+  1) What happened (specific incident)
+  2) What matters to them (values/priorities)
+  3) Their feelings (brief, natural)
+  4) What they want the other person to understand
+  5) What outcome they hope for
+- Each question must be warm, simple, short, and non-therapeutic (human, friendly).
+- No instructions, no extra wording, no explanations in output.
+- If any two questions are partially similar, regenerate until all 5 are clearly unique.
+- Output ONLY valid JSON with the exact structure above.
+
+Context (brief):
+- These questions help a user prepare before chatting with their contact.
+- Keep them broadly applicable, not tailored to any specific topic.
+`.trim();
+
   const [chatTitle, setChatTitle] = useState("");
 
   const hasCommittedStage1Ref = useRef(false);
@@ -531,6 +560,7 @@ function AIChatScreen() {
 
 
   const scrollViewRef = useRef<ScrollView>(null);
+  const scrollToEnd = () => scrollViewRef.current?.scrollToEnd({ animated: true });
 
   const CLAUDE_EDGE_FUNCTION_URL = `${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/invoke-claude`;
 
@@ -2217,12 +2247,14 @@ for (const [idx, pair] of qaPairs.entries()) {
     if (updatedPairs.length >= 5) {
       setShowGenerateSummaryButton(true);
       setCurrentQuestion(""); // stop showing new question
+      scrollToEnd();
       return;
     }
 
     // If summary button already shown, do not generate more questions
     if (showGenerateSummaryButton) {
       setCurrentQuestion("");
+      scrollToEnd();
       return;
     }
 
@@ -2231,6 +2263,8 @@ for (const [idx, pair] of qaPairs.entries()) {
     } else {
       await generateNextQuestion(updatedPairs);
     }
+    // Ensure the newest content is visible
+    scrollToEnd();
   };
 
 
@@ -3599,6 +3633,7 @@ CRITICAL:
     if (!user || !currentChatId || !contactIdValue) return;
 
     setLoading(true);
+    scrollToEnd();
     try {
       const { data: contactData } = await supabase
         .from("contacts")
@@ -3950,6 +3985,7 @@ Respond ONLY with valid JSON:
   const renderWelcomeStage = () => (
     <View style={styles.stageContainer}>
       <ScrollView
+        ref={scrollViewRef}
         style={styles.stageScroll}
         contentContainerStyle={styles.stageContent}
         keyboardShouldPersistTaps="handled"
@@ -4150,6 +4186,7 @@ Respond ONLY with valid JSON:
       </View>
 
       <ScrollView
+        ref={scrollViewRef}
         style={styles.qaPairsContainer}
         contentContainerStyle={styles.qaPairsContent}
         keyboardShouldPersistTaps="handled"
@@ -4314,7 +4351,6 @@ Respond ONLY with valid JSON:
           <View style={styles.generatingContainer}>
             <ActivityIndicator size="large" color={Colors.primary[500]} />
             <Text style={styles.generatingText}>Piecing things together…</Text>
-            <Text style={styles.generatingSubtext}>Sitting with everything you shared</Text>
           </View>
         ) : currentQuestion ? (
           <View style={styles.qaCardVertical}>
@@ -4473,7 +4509,11 @@ Respond ONLY with valid JSON:
     <TouchableOpacity
       style={[styles.secondaryButton, styles.halfButton]}
       onPress={() => {
-        if (qaPairs.length >= 2) {
+        // Show the notice as soon as the SECOND answer is being submitted.
+        // At this point, qaPairs contains answers already saved.
+        // When the user is on Q2, qaPairs.length === 1 before submitting the current answer.
+        // So trigger the notice when length >= 1 (i.e., about to become 2).
+        if (qaPairs.length >= 1) {
           Alert.alert(
             "Feeling good?",
             "If you feel good, click Generate Summary.",
@@ -4537,6 +4577,7 @@ Respond ONLY with valid JSON:
     }
     setIsGeneratingSummary(true);
     setCurrentQuestion("");
+    scrollToEnd();
     await generateSummary(qaPairs);
   }}
   disabled={loading || qaPairs.length < 2}
@@ -5375,18 +5416,14 @@ summaryText: {
   generatingContainer: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: Spacing.xxl,
-    gap: Spacing.md,
+    paddingVertical: Spacing.md,   // tightened
+    gap: Spacing.sm,               // tightened
   },
   generatingText: {
     fontSize: Typography.fontSize.lg,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.primary[600],
-    marginTop: Spacing.md,
-  },
-  generatingSubtext: {
-    fontSize: Typography.fontSize.sm,
-    color: Colors.text.tertiary,
+    marginTop: Spacing.xs,         // tightened
   },
 tagDropdownContainer: {
   position: "absolute",

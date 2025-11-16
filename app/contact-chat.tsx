@@ -1387,15 +1387,25 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       console.log(" Message ID:", data.id);
       if (recipientId) {
         try {
+          // Fetch current chat to check initial_pending flag (first delivery after Stage-4)
+          const { data: chatRow } = await supabase
+            .from("chats")
+            .select("id, context_data")
+            .eq("id", currentChatId)
+            .single();
+
+          const wasInitialPending = !!chatRow?.context_data?.initial_pending;
+
           const senderDisplay =
             (user?.user_metadata as any)?.full_name ||
             user?.email?.split("@")[0] ||
             "Someone";
           const preview =
             content.length > 120 ? `${content.slice(0, 117)}…` : content;
+
           await supabase.from("notifications").insert({
             user_id: recipientId,
-            type: "chat_request",
+            type: wasInitialPending ? "chat_request" : "message",
             title: `${senderDisplay} sent you a message`,
             message: preview || "New message waiting for you.",
             data: {
@@ -1408,6 +1418,20 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                 chatContext?.context_data?.hint_to_contact?.timeline || null,
             },
           });
+
+          // Flip initial_pending=false after first delivery
+          if (wasInitialPending) {
+            await supabase
+              .from("chats")
+              .update({
+                context_data: {
+                  ...(chatRow?.context_data || {}),
+                  initial_pending: false,
+                },
+              })
+              .eq("id", currentChatId);
+            console.log("✅ initial_pending=false after first delivered message");
+          }
         } catch (notifyError) {
           console.error(
             "⚠️ Failed to enqueue notification for contact message:",
@@ -1624,7 +1648,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               thoughts: recipientThoughts,
               summary_shared_neutral: summarySharedNeutral || "",
               thoughtsB: thoughtsB,
-              hintFromB: chatData.context_data?.hint_from_b || "",
+              hintFromB: isRecipientUserA ? "" : (chatData.context_data?.hint_from_b || ""),
               conversationHistory,
               contactCategory: contact?.category || "General",
               isInitial: false,
@@ -1656,13 +1680,13 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             thoughts: recipientThoughts || "",
             summary_shared_neutral: summarySharedNeutral || "",
             recipientSummary: recipientSummary || "",
-            hint_from_b: chatData.context_data?.hint_from_b || '',
+            hint_from_b: isRecipientUserA ? '' : (chatData.context_data?.hint_from_b || ''),
             // ✅ CRITICAL: Always pass User A's original issue context (for backward compatibility only)
             originalIssue: {
               summary: chatData.context_data?.summary_a_perspective || chatData.context_data?.summary_a || chatData.context_data?.summary || "",
               thoughts: thoughtsA,
             },
-            hintFromB: chatData.context_data?.hint_from_b || "",
+            hintFromB: isRecipientUserA ? "" : (chatData.context_data?.hint_from_b || ""),
             hintToContact: chatData.context_data?.hint_to_contact || null,
             thoughtsB: thoughtsB || "",
             conversationHistory: Array.isArray(conversationHistory) ? conversationHistory : [],
