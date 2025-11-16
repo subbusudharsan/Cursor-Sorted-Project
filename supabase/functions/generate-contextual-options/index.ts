@@ -227,10 +227,9 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ✅ CODE-PATH SAFETY: Verify correct summary is passed before generating options
-    // Note: contextData will be defined later, so we use chatData.context_data directly here
+    // ✅ CODE-PATH SAFETY: Verify correct neutral summary is present before generating options
+    // Note: detailed context extraction happens below; here we only guard on summary_shared_neutral
     const chatContextData = chatData?.context_data || {};
-    // ✅ CRITICAL: BOTH users now use summary_shared_neutral - summary_b removed
     const expectedSummaryForRecipient = chatContextData.summary_shared_neutral || '';
 
     const receivedSummary = recipientSummary || summary || '';
@@ -238,25 +237,22 @@ Deno.serve(async (req) => {
     // Validate that received summary matches expected (summary_shared_neutral for both users)
     if (!expectedSummaryForRecipient || expectedSummaryForRecipient.trim().length === 0) {
       console.warn("⚠️ CODE-PATH SAFETY: Missing summary_shared_neutral (both users need this)");
-      // Don't error - will use empty string and generate options without summary context
+      // We'll fail hard later if we still don't have a neutral summary after full extraction
     }
     if (isRecipientUserA) {
-      // For User A, we should have summary_shared_neutral
       if (!expectedSummaryForRecipient || expectedSummaryForRecipient.trim().length === 0) {
         console.warn("⚠️ CODE-PATH SAFETY: Missing summary_shared_neutral for User A");
-        // Don't error - will use empty string and generate options without summary context
       }
     } else {
-      // For User B, we should have summary_shared_neutral
       if (!expectedSummaryForRecipient || expectedSummaryForRecipient.trim().length === 0) {
         console.warn("⚠️ CODE-PATH SAFETY: Missing summary_shared_neutral for User B");
-        // Don't error - will use empty string and generate options without summary context
       }
     }
     
-    // Verify received summary matches expected (summary_shared_neutral for both users)
-    const summaryMatches = receivedSummary.includes(expectedSummaryForRecipient.substring(0, 50)) ||
-                          expectedSummaryForRecipient.includes(receivedSummary.substring(0, 50));
+    // Soft check: does received summary resemble expected neutral summary?
+    const summaryMatches =
+      receivedSummary.includes(expectedSummaryForRecipient.substring(0, 50)) ||
+      expectedSummaryForRecipient.includes(receivedSummary.substring(0, 50));
     
     if (!summaryMatches && receivedSummary.length > 0 && expectedSummaryForRecipient.length > 0) {
       console.warn("⚠️ CODE-PATH SAFETY: Received summary may not match expected", {
@@ -269,7 +265,7 @@ Deno.serve(async (req) => {
       isRecipientUserA,
       expectedSummaryLength: expectedSummaryForRecipient.length,
       receivedSummaryLength: receivedSummary.length,
-      summaryMatches: receivedSummary.includes(expectedSummaryForRecipient.substring(0, 50))
+      summaryMatches,
     });
 
     // ✅ FETCH STRUCTURED CONTEXT from entity registry
@@ -384,16 +380,36 @@ const TALK_PATTERNS = [
 
 const containsTalkPhrase = (text: string): boolean => TALK_PATTERNS.some(pattern => pattern.test(text));
 
-// ✅ FIX: Extract summary_a_perspective and summary_shared_neutral from context_data
+// ✅ Extract NEUTRAL summary and thoughts from context_data
 const contextData = chatData?.context_data || {};
-const summaryA = contextData.summary_a_perspective || contextData.summary_a || contextData.summary || summary || originalIssueSummary || '';
-// Use summary_shared_neutral from request body first, then from context_data, then fallback to empty
+
+// ❗ SINGLE SOURCE OF TRUTH for summaries inside this function:
+// summary_shared_neutral = the ONLY summary used for option generation
 const summarySharedNeutral = summary_shared_neutral || contextData.summary_shared_neutral || '';
 const thoughtsA = contextData.thoughts_a || contextData.thoughts || thoughts || '';
-const summaryBFromContext = contextData.summary_b || summaryB || '';
 const thoughtsBFromContext = contextData.thoughts_b || thoughtsB || '';
 const sessionStartedAtIso = contextData.session_started_at;
 const sessionStartedAtMs = sessionStartedAtIso ? Date.parse(sessionStartedAtIso) : NaN;
+
+// ❗ HARD GUARD: We cannot generate contextual options without a neutral summary
+if (!summarySharedNeutral || !summarySharedNeutral.trim()) {
+  console.error('❌ Missing summary_shared_neutral – cannot generate contextual options.', {
+    chatId,
+    recipientId,
+    currentUserId,
+  });
+
+  return new Response(
+    JSON.stringify({
+      success: false,
+      error: 'Missing summary_shared_neutral – cannot generate contextual options.',
+    }),
+    {
+      status: 400,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    }
+  );
+}
 
 const filteredStructuredAnswers =
   !Number.isNaN(sessionStartedAtMs)
@@ -404,22 +420,17 @@ const filteredStructuredAnswers =
     : (structuredAnswers || []);
 
 console.log("📋 Context data extraction:", {
-  hasSummaryA: !!summaryA,
   hasSummarySharedNeutral: !!summarySharedNeutral,
   hasThoughtsA: !!thoughtsA,
   hasThoughtsB: !!thoughtsBFromContext,
-  summaryALength: summaryA.length,
   summarySharedNeutralLength: summarySharedNeutral.length,
   recipientIsUserA: isRecipientUserA,
   recipientIsUserB: isRecipientUserB,
   userAName,
   userBName,
-  note: "summary_b removed - both users now use summary_shared_neutral"
+  note: "summary_shared_neutral is the only summary used for option generation"
 });
 
-// ✅ FIX: Derive recipientSummary based on recipient
-// For User A: use summary_a (User A's original issue)
-// For User B: derive from summary_a by swapping perspectives or use summary_b if available
 // ✅ CRITICAL: BOTH User A and User B MUST ALWAYS use summary_shared_neutral for option generation
 // ❌ NEVER use summary_a_perspective for options - that's ONLY for Stage 3 UI
 // ❌ NEVER use summary_b for options - removed completely
@@ -464,9 +475,7 @@ console.log("✅ Final recipientSummary determination:", {
   usingSummary: finalRecipientSummary ? "summary_shared_neutral" : "EMPTY",
   summaryPreview: finalRecipientSummary.substring(0, 100) || "EMPTY",
   hasSummarySharedNeutral: !!summarySharedNeutral,
-  hasSummaryAPerspective: !!summaryA,
-  summaryAPerspectivePreview: summaryA?.substring(0, 100) || "MISSING",
-  warning: summaryA && !summarySharedNeutral ? "summary_shared_neutral missing, may cause issues" : "OK",
+  warning: !summarySharedNeutral ? "summary_shared_neutral missing, may cause issues" : "OK",
   recipientIsUserA: isRecipientUserA,
   recipientIsUserB: isRecipientUserB,
   finalRecipientSummaryLength: finalRecipientSummary.length,
@@ -624,11 +633,9 @@ const cleanPerspective = (text: string | undefined): string => {
 // ✅ FIX: Use finalRecipientSummary instead of recipientSummary
 const cleanSummary = cleanPerspective(summary);
 const cleanThoughts = cleanPerspective(thoughts);
-// ✅ CRITICAL: For option generation context, use summary_shared_neutral (factual, third-person)
+// ✅ CRITICAL: For option generation context, use summary_shared_neutral (factual, third-person) ONLY
 // This is used for BOTH User A and User B option generation in all turns
-// summary_a_perspective (emotional, first-person) is only shown in Stage 3 UI, NEVER used here
-// ❌ NEVER use summary_a_perspective for option generation - it creates perspective mixing
-// ❌ summary_b removed - both users now use summary_shared_neutral
+// summary_a_perspective / summary_a / summary_b are NEVER used in this pipeline
 const cleanOriginalIssueSummary = cleanPerspective(summarySharedNeutral || '');
 const cleanRecipientSummary = cleanPerspective(finalRecipientSummary);
 const cleanRecipientThoughts = cleanPerspective(finalRecipientThoughts);
@@ -640,8 +647,8 @@ console.log("🧹 Cleaned summaries for option generation:", {
   cleanOriginalIssueSummary: cleanOriginalIssueSummary.substring(0, 100) || "EMPTY",
   cleanRecipientSummary: cleanRecipientSummary.substring(0, 100) || "EMPTY",
   cleanSummarySharedNeutral: cleanSummarySharedNeutral.substring(0, 100) || "EMPTY",
-  warning: summaryA && !summarySharedNeutral ? "Using empty - summary_shared_neutral missing!" : "OK",
-  note: "Both users use summary_shared_neutral only - summary_b removed",
+  warning: !summarySharedNeutral ? "Using empty - summary_shared_neutral missing!" : "OK",
+  note: "Both users use summary_shared_neutral only; no perspective summaries used",
 });
 
 // ✅ Clean conversation history
@@ -832,12 +839,10 @@ const extractThirdPartyNamesFromSummary = (summaryText: string): string[] => {
   return names;
 };
 
-// Extract from all possible summary sources
-// ✅ CRITICAL: summary_b removed - both users now use summary_shared_neutral
-const rawSummaryText = summary || recipientSummary || originalIssueSummary || '';
-const rawContextSummaryA = chatContextData.summary_a_perspective || chatContextData.summary_a || chatContextData.summary || '';
-const rawContextSummarySharedNeutral = chatContextData.summary_shared_neutral || '';
-const allRawSummaries = [rawSummaryText, rawContextSummaryA, rawContextSummarySharedNeutral].filter(Boolean).join(' ');
+// Extract from NEUTRAL summary only (no A/B perspective summaries)
+// summary_shared_neutral still contains original names/@/# and is the single source of truth
+const rawSummaryText = summarySharedNeutral || '';
+const allRawSummaries = rawSummaryText;
 const thirdPartyNamesInSummary = extractThirdPartyNamesFromSummary(allRawSummaries);
 
 
@@ -2137,6 +2142,12 @@ console.log(`   First 200 chars: ${cleanRecipientSummary.substring(0, 200)}`);
 console.log(`   Full length: ${cleanRecipientSummary.length} characters`);
 console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO ❌'}`);
 
+    // 🧠 Log final prompt (for debugging placeholder issues)
+    console.log("🧠 FINAL PROMPT TO LLM:", {
+      preview: userPrompt.substring(0, 800),
+      totalLength: userPrompt.length
+    });
+
     const anthropicResponse = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -2238,37 +2249,19 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     // Log received option count
     console.log(`📊 Received ${options.length} options from AI, expected ${expectedCount}`);
 
-    // ✅ CONTEXT-AWARE FALLBACK OPTIONS: Meaningful, complete responses that reference summary
-    const simpleFallbackOptions = (() => {
-      // Try to create context-aware fallbacks if we have summary
-      const topicSummary = cleanSummarySharedNeutral || cleanOriginalIssueSummary || cleanSummary || '';
-      if (topicSummary && topicSummary.length > 20) {
-        // Extract key topic words from summary (first 5-8 meaningful words)
-        const topicWords = topicSummary
-          .split(/\s+/)
-          .filter(word => word.length > 3 && !/^(the|and|but|was|were|that|this|with|from|have|has|had|been|said|they|them|their|were|when|where|what|which|who|how|can|could|should|would|will|been|being|been)$/i.test(word))
-          .slice(0, 5)
-          .join(' ');
-        
-        if (topicWords && topicWords.length > 5) {
-          return [
-            `Can we talk about ${topicWords}?`,
-            `I wanted to discuss ${topicWords} with you.`,
-            `I'd like to bring up something that's been on my mind about ${topicWords}.`,
-            `Can we chat about this? I want to make sure we're on the same page.`,
-            `I'd appreciate if we could discuss this together.`
-          ];
-        }
-      }
-      // Context-aware fallback (still meaningful, not generic)
-      return [
-        "Can we talk about what happened?",
-        "I'd like to discuss this with you.",
-        "Can we work through this together?",
-        "I want to make sure we understand each other.",
-        "Let's talk about this - I want to hear your side."
-      ];
-    })();
+    // ✅ Minimal, safe fallback set (never uses summary fragments or placeholders)
+    const simpleFallbackOptions = [
+      "I’d like to talk about what happened earlier.",
+      "Can we clear the air a bit?",
+      "I want to share how that felt to me.",
+      "Can we work through this together?",
+      "I appreciate you being open to talk."
+    ];
+    // ✅ Final safeguard: only if model returns zero options, and NEVER overwrite options[0]
+    const ensureFallbackIfEmpty = (opts: string[]): string[] => {
+      if (!Array.isArray(opts) || opts.length === 0) return simpleFallbackOptions.slice(0, expectedCount);
+      return opts;
+    };
 
     // ✅ SIMPLIFIED: Only check for single sentence (no word count validation)
     const meetsOptionConstraints = (text: string): boolean => {
