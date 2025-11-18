@@ -544,9 +544,6 @@ setContactChats(finalChats);
               <Animated.View style={[styles.welcomeCard, { transform: [{ scale }] }]}>
                 {/* Soft backlight behind the text (no border, no button feel) */}
                 <Animated.View style={[styles.welcomeHalo, { opacity: haloOpacity }]} />
-                {/* Double-color “border” around text using layered shadows */}
-                <Text style={styles.welcomeTextBorder2}>{textValue}</Text>
-                <Text style={styles.welcomeTextBorder1}>{textValue}</Text>
                 <Text style={styles.welcomeText}>{textValue}</Text>
               </Animated.View>
             );
@@ -794,30 +791,6 @@ const styles = StyleSheet.create({
     fontWeight: Typography.fontWeight.bold,
     color: Colors.text.primary,
     textAlign: 'center',
-    // subtle outline/glow to make text pop without a button feel
-    textShadowColor: 'rgba(0,0,0,0.08)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 2,
-  },
-  // Layer 1 (inner) shadow color
-  welcomeTextBorder1: {
-    position: 'absolute',
-    fontSize: Typography.fontSize.xl,
-    fontWeight: Typography.fontWeight.bold,
-    color: 'transparent',
-    textShadowColor: Colors.secondary[500],
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 2.5,
-  },
-  // Layer 2 (outer) shadow color
-  welcomeTextBorder2: {
-    position: 'absolute',
-    fontSize: Typography.fontSize.xl,
-    fontWeight: Typography.fontWeight.bold,
-    color: 'transparent',
-    textShadowColor: Colors.primary[400],
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 5,
   },
   headerButton: {
     width: 40,

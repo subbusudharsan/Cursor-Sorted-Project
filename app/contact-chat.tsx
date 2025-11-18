@@ -1730,7 +1730,91 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     triggerOptionSelectVisuals(index);
     setTimeout(() => {
       setShowSuggestedOptions(false);
-      sendMessage(option);
+      
+      // ✅ Lightweight blending layer: Get latest message from other person
+      const otherPersonMessages = messages.filter(
+        (msg) => msg.sender_id !== user?.id
+      );
+      const latestOtherMessage = otherPersonMessages[otherPersonMessages.length - 1];
+      
+      // ✅ Helper function to rewrite option for smooth flow with acknowledgment
+      const rewriteForFlow = (acknowledgment: string, originalOption: string): string => {
+        const ackLower = acknowledgment.toLowerCase().trim();
+        const optionTrimmed = originalOption.trim();
+        const optionLower = optionTrimmed.toLowerCase();
+        
+        // If option already starts with "I", "I'm", "I've", etc., keep it
+        if (/^i['\s]/.test(optionTrimmed)) {
+          // Option already has first-person start - just prepend acknowledgment
+          return `${acknowledgment}${optionTrimmed}`;
+        }
+        
+        // If option starts with lowercase, capitalize after acknowledgment
+        if (/^[a-z]/.test(optionTrimmed)) {
+          const capitalized = optionTrimmed.charAt(0).toUpperCase() + optionTrimmed.slice(1);
+          return `${acknowledgment}${capitalized}`;
+        }
+        
+        // Default: just prepend acknowledgment
+        return `${acknowledgment}${optionTrimmed}`;
+      };
+      
+      // ✅ Determine appropriate acknowledgment based on latest message
+      let finalMessage = option;
+      if (latestOtherMessage && latestOtherMessage.content) {
+        const prevMessage = latestOtherMessage.content.trim();
+        const prevMessageLower = prevMessage.toLowerCase();
+        
+        // Check if option already has acknowledgment
+        const optionLower = option.toLowerCase();
+        const hasAcknowledgment = (
+          optionLower.startsWith('i hear') ||
+          optionLower.startsWith('i understand') ||
+          optionLower.startsWith('i get') ||
+          optionLower.startsWith('i appreciate') ||
+          optionLower.startsWith('thanks') ||
+          optionLower.startsWith('thank you') ||
+          optionLower.includes('i see') ||
+          optionLower.includes('got it') ||
+          /^(ok|okay|sure|yeah|yes),/i.test(option.trim())
+        );
+        
+        // Only add acknowledgment if it's missing
+        if (!hasAcknowledgment) {
+          let acknowledgment = '';
+          
+          // Determine acknowledgment based on message type
+          if (prevMessageLower.includes('how are you') || prevMessageLower.includes('how are')) {
+            acknowledgment = "I'm okay, but ";
+          } else if (prevMessageLower.includes('thank') || prevMessageLower.includes('appreciate')) {
+            acknowledgment = "You're welcome. ";
+          } else if (prevMessageLower.includes('sorry') || prevMessageLower.includes('apologize')) {
+            acknowledgment = "I hear you. ";
+          } else if (prevMessageLower.includes('?')) {
+            // Question detected
+            if (prevMessageLower.match(/^(what|why|when|where|how|who|can|could|would|will|do|did|does)/)) {
+              acknowledgment = "Thanks for asking. ";
+            } else {
+              acknowledgment = "I hear you. ";
+            }
+          } else {
+            // Default acknowledgment for statements
+            acknowledgment = "I hear you. ";
+          }
+          
+          // Rewrite for smooth flow
+          finalMessage = rewriteForFlow(acknowledgment, option);
+          
+          console.log('🔄 Blended option with acknowledgment:', {
+            originalOption: option,
+            previousMessage: prevMessage.substring(0, 50),
+            acknowledgment,
+            finalMessage: finalMessage.substring(0, 80)
+          });
+        }
+      }
+      
+      sendMessage(finalMessage);
     }, 140);
   };
   // 🔄 Regenerate options function

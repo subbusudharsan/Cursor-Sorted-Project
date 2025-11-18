@@ -13,7 +13,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { router } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
 import { COUNTRIES } from '@/constants/countries';
-import { ArrowLeft, Eye, EyeOff, Calendar } from 'lucide-react-native';
+import { ArrowLeft, Eye, EyeOff, Calendar, UserPlus, User, Mail, Lock, Phone, Calendar as CalendarIcon } from 'lucide-react-native';
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/Colors';
 import { isStrongPassword, PASSWORD_RULE_DESCRIPTION, getPasswordErrors } from '@/utils/passwordPolicy';
 import Button from '@/components/ui/Button';
@@ -66,6 +66,22 @@ export default function SignUpScreen() {
   const passwordValidation = useMemo(() => getPasswordErrors(password), [password]);
   const passwordValid = useMemo(() => isStrongPassword(password), [password]);
   const passwordsMatch = useMemo(() => password === confirmPassword && confirmPassword.length > 0, [password, confirmPassword]);
+
+  // Individual password rule checks (for live indicators)
+  const passwordRules = useMemo(() => {
+    const pwd = password;
+    return {
+      length: pwd.length >= 8,
+      uppercase: /[A-Z]/.test(pwd),
+      number: /\d/.test(pwd),
+      special: /[@$!%*?&]/.test(pwd),
+    };
+  }, [password]);
+
+  // Check if all password rules pass
+  const allPasswordRulesPass = useMemo(() => {
+    return passwordRules.length && passwordRules.uppercase && passwordRules.number && passwordRules.special;
+  }, [passwordRules]);
   const canSubmit =
     !loading &&
     firstName.trim() &&
@@ -136,7 +152,7 @@ export default function SignUpScreen() {
 
   const handleSignUp = async () => {
     if (!firstName.trim() || !lastName.trim() || !email.trim() || !password.trim()) {
-      showNotification('error', 'Missing Information', 'Please fill in all fields');
+      showNotification('error', 'Missing Information', 'Please fill in all required fields.');
       return;
     }
 
@@ -158,13 +174,22 @@ export default function SignUpScreen() {
     setLoading(true);
     try {
       const fullName = `${firstName.trim()} ${lastName.trim()}`.trim();
-      await signUp(email.trim(), password, fullName);
-      showNotification('success', 'Account Created!', 'Please check your email to verify your account.');
-      setTimeout(() => {
-        router.replace('/(auth)/signin');
-      }, 2000);
+      const result = await signUp(email.trim(), password, fullName);
+      
+      // Check if user was created successfully
+      if (result?.user) {
+        // Navigate to sign-in page
+        showNotification('success', 'Account Created!', 'Please check your email to verify your account, then sign in.');
+        setTimeout(() => {
+          router.replace('/(auth)/signin');
+        }, 1500);
+      } else {
+        throw new Error('Failed to create account. Please try again.');
+      }
     } catch (error: any) {
-      showNotification('error', 'Sign Up Failed', error.message || 'Failed to create account');
+      // Show only real Supabase error messages
+      const errorMessage = error?.message || 'Failed to create account. Please try again.';
+      showNotification('error', 'Sign Up Failed', errorMessage);
     } finally {
       setLoading(false);
     }
@@ -180,6 +205,9 @@ export default function SignUpScreen() {
         contentContainerStyle={styles.scrollContainer}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        bounces={false}
+        removeClippedSubviews={false}
+        keyboardDismissMode="on-drag"
       >
         <Animated.View style={[styles.content, { opacity: fadeAnim }]}>
             <View style={styles.header}>
@@ -189,6 +217,13 @@ export default function SignUpScreen() {
               >
                 <ArrowLeft size={24} color={Colors.text.secondary} />
               </TouchableOpacity>
+              
+              <View style={styles.iconContainer}>
+                <View style={styles.iconBackground}>
+                  <UserPlus size={24} color={Colors.primary[700]} />
+                </View>
+              </View>
+              
               <Text style={styles.title}>Create Account</Text>
               <Text style={styles.subtitle}>
                 Join Sorted to start your emotional wellness journey
@@ -197,8 +232,11 @@ export default function SignUpScreen() {
 
             <View style={styles.form}>
               <View style={styles.inputContainer}>
-                <Text style={styles.label}>First Name</Text>
-                <View style={styles.inputWrapper}>
+                <View style={styles.labelContainer}>
+                  <User size={16} color={Colors.primary[500]} style={styles.labelIcon} />
+                  <Text style={styles.label}>First Name</Text>
+                </View>
+                <View style={[styles.inputWrapper, styles.nameInputWrapper]}>
                   <TextInput
                     style={styles.input}
                     value={firstName}
@@ -212,8 +250,11 @@ export default function SignUpScreen() {
               </View>
 
               <View style={styles.inputContainer}>
-                <Text style={styles.label}>Last Name</Text>
-                <View style={styles.inputWrapper}>
+                <View style={styles.labelContainer}>
+                  <User size={16} color={Colors.primary[500]} style={styles.labelIcon} />
+                  <Text style={styles.label}>Last Name</Text>
+                </View>
+                <View style={[styles.inputWrapper, styles.nameInputWrapper]}>
                   <TextInput
                     style={styles.input}
                     value={lastName}
@@ -227,7 +268,10 @@ export default function SignUpScreen() {
               </View>
 
               <View style={styles.inputContainer}>
-                <Text style={styles.label}>Nickname (Optional)</Text>
+                <View style={styles.labelContainer}>
+                  <User size={16} color={Colors.text.secondary} style={styles.labelIcon} />
+                  <Text style={styles.label}>Nickname (Optional)</Text>
+                </View>
                 <View style={styles.inputWrapper}>
                   <TextInput
                     style={styles.input}
@@ -242,17 +286,20 @@ export default function SignUpScreen() {
               </View>
 
               <View style={styles.inputContainer}>
-                <Text style={styles.label}>Phone Number</Text>
+                <View style={styles.labelContainer}>
+                  <Phone size={16} color={Colors.secondary[500]} style={styles.labelIcon} />
+                  <Text style={styles.label}>Phone Number</Text>
+                </View>
                 <View style={styles.phoneContainer}>
                   <TouchableOpacity
-                    style={styles.countryCodeButton}
+                    style={[styles.countryCodeButton, styles.phoneInputAccent]}
                     onPress={() => setShowCountryPicker(!showCountryPicker)}
                   >
                     <Text style={styles.countryCodeText}>
                       {selectedCountry?.dialCode || '+1'}
                     </Text>
                   </TouchableOpacity>
-                  <View style={styles.phoneInputWrapper}>
+                  <View style={[styles.phoneInputWrapper, styles.phoneInputAccent]}>
                     <TextInput
                       style={styles.phoneInput}
                       value={phoneNumber}
@@ -264,34 +311,40 @@ export default function SignUpScreen() {
                     />
                   </View>
                 </View>
-                {showCountryPicker && (
-                  <View style={styles.countryPicker}>
-                    <ScrollView style={styles.countryList} nestedScrollEnabled>
-                      {COUNTRIES.map((country) => (
-                        <TouchableOpacity
-                          key={country.code}
-                          style={[
-                            styles.countryItem,
-                            selectedCountry?.code === country.code && styles.selectedCountryItem,
-                          ]}
-                          onPress={() => {
-                            setSelectedCountry(country);
-                            setShowCountryPicker(false);
-                          }}
-                        >
-                          <Text style={styles.countryText}>
-                            {country.name} ({country.dialCode})
-                          </Text>
-                        </TouchableOpacity>
-                      ))}
-                    </ScrollView>
-                  </View>
-                )}
+                <View style={[styles.countryPicker, !showCountryPicker && styles.countryPickerHidden]}>
+                  <ScrollView 
+                    style={styles.countryList} 
+                    nestedScrollEnabled
+                    bounces={false}
+                    removeClippedSubviews={false}
+                  >
+                    {COUNTRIES.map((country) => (
+                      <TouchableOpacity
+                        key={country.code}
+                        style={[
+                          styles.countryItem,
+                          selectedCountry?.code === country.code && styles.selectedCountryItem,
+                        ]}
+                        onPress={() => {
+                          setSelectedCountry(country);
+                          setShowCountryPicker(false);
+                        }}
+                      >
+                        <Text style={styles.countryText}>
+                          {country.name} ({country.dialCode})
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                </View>
               </View>
 
               <View style={styles.inputContainer}>
-                <Text style={styles.label}>Email</Text>
-                <View style={styles.inputWrapper}>
+                <View style={styles.labelContainer}>
+                  <Mail size={16} color={Colors.primary[500]} style={styles.labelIcon} />
+                  <Text style={styles.label}>Email</Text>
+                </View>
+                <View style={[styles.inputWrapper, styles.emailInputWrapper]}>
                   <TextInput
                     style={styles.input}
                     value={email}
@@ -306,8 +359,11 @@ export default function SignUpScreen() {
               </View>
 
               <View style={styles.inputContainer}>
-                <Text style={styles.label}>Password</Text>
-                <View style={[styles.inputWrapper, styles.passwordContainer]}>
+                <View style={styles.labelContainer}>
+                  <Lock size={16} color={Colors.secondary[500]} style={styles.labelIcon} />
+                  <Text style={styles.label}>Password</Text>
+                </View>
+                <View style={[styles.inputWrapper, styles.passwordContainer, styles.passwordInputWrapper]}>
                   <TextInput
                     style={styles.passwordInput}
                     value={password}
@@ -330,22 +386,49 @@ export default function SignUpScreen() {
                   </TouchableOpacity>
                 </View>
               </View>
-              {passwordTouched && !passwordValid && (
-                <View style={styles.validationContainer}>
-                  {passwordValidation.map((error) => (
-                    <Text key={error} style={styles.validationText}>
-                      • {error}
-                    </Text>
-                  ))}
+              
+              {/* PASSWORD RULE INDICATORS - Hide when all rules pass */}
+              <View style={[styles.validationContainer, (password.length === 0 || allPasswordRulesPass) && styles.validationContainerHidden]}>
+                <View style={styles.ruleRow}>
+                  <Text style={[styles.ruleIcon, passwordRules.length ? styles.rulePass : styles.ruleFail]}>
+                    {passwordRules.length ? '✔️' : '❌'}
+                  </Text>
+                  <Text style={[styles.ruleText, passwordRules.length ? styles.rulePassText : styles.ruleFailText]}>
+                    At least 8 characters
+                  </Text>
                 </View>
-              )}
-              {!passwordTouched && (
-                <Text style={styles.policyHint}>{PASSWORD_RULE_DESCRIPTION}</Text>
-              )}
+                <View style={styles.ruleRow}>
+                  <Text style={[styles.ruleIcon, passwordRules.uppercase ? styles.rulePass : styles.ruleFail]}>
+                    {passwordRules.uppercase ? '✔️' : '❌'}
+                  </Text>
+                  <Text style={[styles.ruleText, passwordRules.uppercase ? styles.rulePassText : styles.ruleFailText]}>
+                    One uppercase letter
+                  </Text>
+                </View>
+                <View style={styles.ruleRow}>
+                  <Text style={[styles.ruleIcon, passwordRules.number ? styles.rulePass : styles.ruleFail]}>
+                    {passwordRules.number ? '✔️' : '❌'}
+                  </Text>
+                  <Text style={[styles.ruleText, passwordRules.number ? styles.rulePassText : styles.ruleFailText]}>
+                    One number
+                  </Text>
+                </View>
+                <View style={styles.ruleRow}>
+                  <Text style={[styles.ruleIcon, passwordRules.special ? styles.rulePass : styles.ruleFail]}>
+                    {passwordRules.special ? '✔️' : '❌'}
+                  </Text>
+                  <Text style={[styles.ruleText, passwordRules.special ? styles.rulePassText : styles.ruleFailText]}>
+                    One special symbol (@ $ ! % * ? &)
+                  </Text>
+                </View>
+              </View>
 
               <View style={styles.inputContainer}>
-                <Text style={styles.label}>Confirm Password</Text>
-                <View style={[styles.inputWrapper, styles.passwordContainer]}>
+                <View style={styles.labelContainer}>
+                  <Lock size={16} color={Colors.secondary[500]} style={styles.labelIcon} />
+                  <Text style={styles.label}>Confirm Password</Text>
+                </View>
+                <View style={[styles.inputWrapper, styles.passwordContainer, styles.passwordInputWrapper]}>
                   <TextInput
                     style={styles.passwordInput}
                     value={confirmPassword}
@@ -368,12 +451,24 @@ export default function SignUpScreen() {
                   </TouchableOpacity>
                 </View>
               </View>
-              {confirmTouched && !passwordsMatch && (
-                <Text style={styles.validationText}>• Passwords must match.</Text>
-              )}
+              
+              {/* PASSWORD MATCH INDICATOR - Hide when passwords match */}
+              <View style={[styles.matchContainer, (confirmPassword.length === 0 || passwordsMatch) && styles.matchContainerHidden]}>
+                <View style={styles.ruleRow}>
+                  <Text style={[styles.ruleIcon, passwordsMatch ? styles.rulePass : styles.ruleFail]}>
+                    {passwordsMatch ? '✔️' : '❌'}
+                  </Text>
+                  <Text style={[styles.ruleText, passwordsMatch ? styles.rulePassText : styles.ruleFailText]}>
+                    {passwordsMatch ? 'Passwords match' : 'Passwords do not match'}
+                  </Text>
+                </View>
+              </View>
 
               <View style={styles.inputContainer}>
-                <Text style={styles.label}>Date of Birth (Optional)</Text>
+                <View style={styles.labelContainer}>
+                  <CalendarIcon size={16} color={Colors.text.secondary} style={styles.labelIcon} />
+                  <Text style={styles.label}>Date of Birth (Optional)</Text>
+                </View>
                 <View style={styles.inputWrapper}>
                   <TextInput
                     style={styles.input}
@@ -398,7 +493,10 @@ export default function SignUpScreen() {
 
               <View style={styles.signInContainer}>
                 <Text style={styles.signInText}>Already have an account? </Text>
-                <TouchableOpacity onPress={() => router.replace('/(auth)/signin')}>
+                <TouchableOpacity 
+                  style={styles.signInButton}
+                  onPress={() => router.replace('/(auth)/signin')}
+                >
                   <Text style={styles.signInLink}>Sign In</Text>
                 </TouchableOpacity>
               </View>
@@ -417,14 +515,15 @@ const styles = StyleSheet.create({
   scrollContainer: {
     flexGrow: 1,
     paddingHorizontal: Spacing.xl,
-    paddingTop: 60,
-    paddingBottom: Spacing.xxxl,
+    paddingTop: 10,
+    paddingBottom: Spacing.xl,
   },
   content: {
     flex: 1,
   },
   header: {
-    marginBottom: Spacing.xxxl * 2,
+    marginBottom: Spacing.md,
+    alignItems: 'center',
   },
   backButton: {
     width: 44,
@@ -433,43 +532,94 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: Spacing.xl,
+    marginBottom: Spacing.xs,
+    alignSelf: 'flex-start',
+    ...Shadows.small,
+  },
+  iconContainer: {
+    alignItems: 'center',
+    marginBottom: 0,
+  },
+  iconBackground: {
+    width: 56,
+    height: 56,
+    borderRadius: BorderRadius.full,
+    backgroundColor: Colors.primary[100],
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 3,
+    borderColor: Colors.primary[400],
     ...Shadows.small,
   },
   title: {
-    fontSize: Typography.fontSize['3xl'],
+    fontSize: Typography.fontSize['2xl'],
     fontWeight: Typography.fontWeight.bold,
     color: Colors.text.primary,
-    marginBottom: Spacing.sm,
+    marginTop: 0,
+    marginBottom: 0,
+    textAlign: 'center',
   },
   subtitle: {
-    fontSize: Typography.fontSize.lg,
+    fontSize: Typography.fontSize.sm,
     color: Colors.text.secondary,
-    lineHeight: Typography.lineHeight.normal * Typography.fontSize.lg,
+    lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
+    textAlign: 'center',
+    paddingHorizontal: Spacing.lg,
+    marginTop: 0,
+    marginBottom: 0,
   },
   form: {
-    flex: 1,
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.lg,
+    borderWidth: 2,
+    borderColor: Colors.primary[100],
+    ...Shadows.medium,
   },
   inputContainer: {
-    marginBottom: Spacing.xl,
+    marginBottom: Spacing.md,
+  },
+  labelContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: Spacing.xs,
+  },
+  labelIcon: {
+    marginRight: Spacing.xs,
   },
   label: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.text.primary,
-    marginBottom: Spacing.sm,
   },
   inputWrapper: {
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: Colors.borderLight,
     borderRadius: BorderRadius.lg,
     backgroundColor: Colors.surface,
     ...Shadows.small,
   },
+  nameInputWrapper: {
+    borderLeftWidth: 3,
+    borderLeftColor: Colors.primary[300],
+  },
+  emailInputWrapper: {
+    borderLeftWidth: 3,
+    borderLeftColor: Colors.primary[300],
+  },
+  passwordInputWrapper: {
+    borderLeftWidth: 3,
+    borderLeftColor: Colors.secondary[400],
+    backgroundColor: Colors.secondary[50],
+  },
+  phoneInputAccent: {
+    borderLeftWidth: 3,
+    borderLeftColor: Colors.secondary[400],
+  },
   input: {
     paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.lg,
-    fontSize: Typography.fontSize.base,
+    paddingVertical: Spacing.md,
+    fontSize: Typography.fontSize.sm,
     color: Colors.text.primary,
   },
   passwordContainer: {
@@ -479,64 +629,126 @@ const styles = StyleSheet.create({
   passwordInput: {
     flex: 1,
     paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.lg,
-    fontSize: Typography.fontSize.base,
+    paddingVertical: Spacing.md,
+    fontSize: Typography.fontSize.sm,
     color: Colors.text.primary,
   },
   eyeButton: {
-    padding: Spacing.lg,
+    padding: Spacing.md,
   },
   signUpButton: {
-    marginTop: Spacing.xl,
-    marginBottom: Spacing.xl,
+    marginTop: Spacing.md,
+    marginBottom: Spacing.sm,
+    backgroundColor: Colors.primary[500],
+    borderWidth: 2,
+    borderColor: Colors.secondary[400],
+    shadowColor: Colors.primary[500],
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
   },
   signInContainer: {
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
+    flexWrap: 'wrap',
+    marginTop: Spacing.sm,
   },
   signInText: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     color: Colors.text.secondary,
   },
+  signInButton: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderRadius: BorderRadius.md,
+    backgroundColor: Colors.secondary[100],
+    borderWidth: 1.5,
+    borderColor: Colors.secondary[300],
+    marginLeft: Spacing.xs,
+  },
   signInLink: {
-    fontSize: Typography.fontSize.base,
-    color: Colors.primary[500],
+    fontSize: Typography.fontSize.sm,
+    color: Colors.secondary[700],
     fontWeight: Typography.fontWeight.semibold,
   },
   validationContainer: {
-    marginTop: Spacing.sm,
-    marginBottom: Spacing.xs,
-    paddingLeft: Spacing.sm,
+    marginTop: Spacing.xs,
+    marginBottom: 0,
+    overflow: 'hidden',
+  },
+  validationContainerHidden: {
+    height: 0,
+    marginTop: 0,
+    marginBottom: 0,
+    overflow: 'hidden',
+  },
+  matchContainer: {
+    marginTop: Spacing.xs,
+    marginBottom: 0,
+    overflow: 'hidden',
+  },
+  matchContainerHidden: {
+    height: 0,
+    marginTop: 0,
+    marginBottom: 0,
+    overflow: 'hidden',
+  },
+  ruleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  ruleIcon: {
+    fontSize: Typography.fontSize.base,
+    marginRight: Spacing.sm,
+    width: 24,
+  },
+  rulePass: {
+    color: Colors.success[600],
+  },
+  ruleFail: {
+    color: Colors.error[600],
+  },
+  ruleText: {
+    fontSize: Typography.fontSize.xs,
+    flex: 1,
+  },
+  rulePassText: {
+    color: Colors.success[600],
+  },
+  ruleFailText: {
+    color: Colors.error[600],
   },
   validationText: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.error[600],
-    lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
+    lineHeight: Typography.lineHeight.normal * Typography.fontSize.xs,
   },
   policyHint: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
-    marginTop: Spacing.sm,
+    marginTop: Spacing.xs,
   },
   phoneContainer: {
     flexDirection: 'row',
     gap: Spacing.sm,
   },
   countryCodeButton: {
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: Colors.borderLight,
     borderRadius: BorderRadius.lg,
     backgroundColor: Colors.surface,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.lg,
-    minWidth: 80,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.md,
+    minWidth: 70,
     justifyContent: 'center',
     alignItems: 'center',
     ...Shadows.small,
   },
   countryCodeText: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     color: Colors.text.primary,
     fontWeight: Typography.fontWeight.medium,
   },
@@ -550,8 +762,8 @@ const styles = StyleSheet.create({
   },
   phoneInput: {
     paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.lg,
-    fontSize: Typography.fontSize.base,
+    paddingVertical: Spacing.md,
+    fontSize: Typography.fontSize.sm,
     color: Colors.text.primary,
   },
   countrySelector: {
@@ -590,6 +802,13 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
     maxHeight: 200,
     ...Shadows.medium,
+  },
+  countryPickerHidden: {
+    height: 0,
+    marginTop: 0,
+    overflow: 'hidden',
+    opacity: 0,
+    pointerEvents: 'none',
   },
   countryList: {
     maxHeight: 180,

@@ -160,7 +160,7 @@ function SettingsScreen() {
   const handleClearAllData = () => {
     Alert.alert(
       'Clear All Data',
-      'This will permanently delete all your chats, AI sessions, and soulroom entries. This action cannot be undone.',
+      'This will permanently delete all your chats, AI sessions, soulroom entries, reflections, insights, nudges, emotions, orchestration, and notifications. Your contacts will be preserved. This action cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -169,13 +169,176 @@ function SettingsScreen() {
           onPress: async () => {
             try {
               setLoading(true);
-              await supabase.from('chats').delete().or(`user_id.eq.${user?.id},contact_id.eq.${user?.id}`);
-              await supabase.from('soulroom_entries').delete().eq('user_id', user?.id);
+              
+              if (!user?.id) {
+                showNotification('error', 'Error', 'User not found');
+                return;
+              }
 
-              showNotification('success', 'Data Cleared', 'All your data has been cleared successfully');
-            } catch (error) {
-              console.error('Error clearing data:', error);
-              showNotification('error', 'Clear Failed', 'Failed to clear data. Please try again.');
+              console.log('🗑️ Starting comprehensive data deletion for user:', user.id);
+
+              // 1. Delete all chats (AI assistant + contact chats) where user is involved
+              // This covers: My Talks, Contact Talks, AI chat conversations, ongoing chats
+              // Include participants array check to catch all chats
+              // Use correct Supabase syntax with quotes around user.id for participants.cs
+              const { error: chatsError } = await supabase
+                .from('chats')
+                .delete()
+                .or(`user_id.eq.${user.id},contact_id.eq.${user.id},participants.cs.{"${user.id}"}`);
+              
+              if (chatsError) {
+                console.error('❌ Error deleting chats:', chatsError);
+                throw new Error(`Failed to delete chats: ${chatsError.message}`);
+              }
+              console.log('✅ Deleted all chats (AI assistant + contact chats)');
+
+              // 2. Delete message options (ongoing chat options)
+              // Delete by recipient_id first, then by sender_id if needed
+              const { error: messageOptionsError1 } = await supabase
+                .from('message_options')
+                .delete()
+                .eq('recipient_id', user.id);
+              
+              // Also delete message options where user is the sender (if sender_id exists)
+              const { error: messageOptionsError2 } = await supabase
+                .from('message_options')
+                .delete()
+                .eq('sender_id', user.id);
+              
+              if (messageOptionsError1 || messageOptionsError2) {
+                console.warn('⚠️ Error deleting message options:', messageOptionsError1 || messageOptionsError2);
+              } else {
+                console.log('✅ Deleted message options');
+              }
+
+              // 3. Delete soulroom entries (try both table names for compatibility)
+              const { error: soulEntriesError } = await supabase
+                .from('soul_entries')
+                .delete()
+                .eq('user_id', user.id);
+              
+              if (soulEntriesError) {
+                // Try alternative table name (soulroom_entries might be a view or alias)
+                const { error: soulroomEntriesError } = await supabase
+                  .from('soulroom_entries')
+                  .delete()
+                  .eq('user_id', user.id);
+                
+                if (soulroomEntriesError) {
+                  console.warn('⚠️ Could not delete soulroom entries:', soulroomEntriesError);
+                } else {
+                  console.log('✅ Deleted soulroom entries');
+                }
+              } else {
+                console.log('✅ Deleted soul entries');
+              }
+
+              // 4. Delete soul AI insights
+              const { error: insightsError } = await supabase
+                .from('soul_ai_insights')
+                .delete()
+                .eq('user_id', user.id);
+              
+              if (insightsError) {
+                console.warn('⚠️ Error deleting soul AI insights:', insightsError);
+              } else {
+                console.log('✅ Deleted soul AI insights');
+              }
+
+              // 5. Delete wellness daily checkins
+              const { error: wellnessError } = await supabase
+                .from('wellness_daily_checkins')
+                .delete()
+                .eq('user_id', user.id);
+              
+              if (wellnessError) {
+                console.warn('⚠️ Error deleting wellness checkins:', wellnessError);
+              } else {
+                console.log('✅ Deleted wellness checkins');
+              }
+
+              // 6. Delete emotion timeline
+              const { error: emotionTimelineError } = await supabase
+                .from('emotion_timeline')
+                .delete()
+                .eq('user_id', user.id);
+              
+              if (emotionTimelineError) {
+                console.warn('⚠️ Error deleting emotion timeline:', emotionTimelineError);
+              } else {
+                console.log('✅ Deleted emotion timeline');
+              }
+
+              // 7. Delete soul coach nudges
+              const { error: nudgesError } = await supabase
+                .from('soul_coach_nudges')
+                .delete()
+                .eq('user_id', user.id);
+              
+              if (nudgesError) {
+                console.warn('⚠️ Error deleting coach nudges:', nudgesError);
+              } else {
+                console.log('✅ Deleted coach nudges');
+              }
+
+              // 8. Delete emotion intent history
+              const { error: emotionIntentError } = await supabase
+                .from('emotion_intent_history')
+                .delete()
+                .eq('user_id', user.id);
+              
+              if (emotionIntentError) {
+                console.warn('⚠️ Error deleting emotion intent history:', emotionIntentError);
+              } else {
+                console.log('✅ Deleted emotion intent history');
+              }
+
+              // 9. Delete conversation orchestration
+              const { error: orchestrationError } = await supabase
+                .from('conversation_orchestration')
+                .delete()
+                .eq('user_id', user.id);
+              
+              if (orchestrationError) {
+                console.warn('⚠️ Error deleting conversation orchestration:', orchestrationError);
+              } else {
+                console.log('✅ Deleted conversation orchestration');
+              }
+
+              // 10. Delete agent decisions
+              const { error: agentDecisionsError } = await supabase
+                .from('agent_decisions')
+                .delete()
+                .eq('user_id', user.id);
+              
+              if (agentDecisionsError) {
+                console.warn('⚠️ Error deleting agent decisions:', agentDecisionsError);
+              } else {
+                console.log('✅ Deleted agent decisions');
+              }
+
+              // 11. Delete notifications
+              const { error: notificationsError } = await supabase
+                .from('notifications')
+                .delete()
+                .eq('user_id', user.id);
+              
+              if (notificationsError) {
+                console.warn('⚠️ Error deleting notifications:', notificationsError);
+              } else {
+                console.log('✅ Deleted notifications');
+              }
+
+              console.log('✅ All data cleared successfully');
+              showNotification('success', 'Data Cleared', 'All your data has been cleared successfully. Your contacts have been preserved.');
+              
+              // Navigate to chats tab to refresh the UI and show zero chats
+              setTimeout(() => {
+                router.replace('/(tabs)/chats');
+              }, 500);
+            } catch (error: any) {
+              console.error('❌ Error clearing data:', error);
+              showNotification('error', 'Clear Failed', error?.message || 'Failed to clear data. Please try again.');
             } finally {
               setLoading(false);
             }

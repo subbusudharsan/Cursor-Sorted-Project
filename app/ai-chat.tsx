@@ -11,6 +11,7 @@ import {
   Alert,
   ActivityIndicator,
   Dimensions,
+  Modal,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from "expo-router";
@@ -25,6 +26,7 @@ import {
   Hash,
   Plus,
   Eye,
+  Trash2,
 } from "lucide-react-native";
 import { parseTaggedEntities, getLastTypingTag, replaceTypingTag, getCommonHashTags, extractTags } from "@/lib/tagParser";
 import type { TaggedEntity } from "@/lib/tagParser";
@@ -46,6 +48,7 @@ interface QAPair {
   answer: string;
   answerType: "text" | "dropdown";
   options?: string[];
+  saved?: boolean;
 }
 
 interface Contact {
@@ -85,6 +88,9 @@ function AIChatScreen() {
   const [flowStage, setFlowStage] = useState<FlowStage>("welcome");
   const [contact, setContact] = useState<Contact | null>(null);
   const [qaPairs, setQAPairs] = useState<QAPair[]>([]);
+  const [savedAnswers, setSavedAnswers] = useState<{[key: number]: string}>({});
+  const [currentAnswerSaved, setCurrentAnswerSaved] = useState(false);
+  const [currentAnswerSavedText, setCurrentAnswerSavedText] = useState<string>('');
   const [currentQuestion, setCurrentQuestion] = useState<string>("");
   const [currentQuestionType, setCurrentQuestionType] = useState<"text" | "dropdown">("text");
   const [currentOptions, setCurrentOptions] = useState<string[]>([]);
@@ -116,6 +122,7 @@ function AIChatScreen() {
   const [showEditMode, setShowEditMode] = useState(false);
   const [editedQAPairs, setEditedQAPairs] = useState<QAPair[]>([]);
   const [showGenerateSummaryButton, setShowGenerateSummaryButton] = useState(false);
+  const [showSummaryNoticeModal, setShowSummaryNoticeModal] = useState(false);
   const editScrollViewRef = useRef<ScrollView>(null);
   const contextDataRef = useRef<Record<string, any>>({});
 
@@ -680,7 +687,7 @@ Context (brief):
 
       const { data: contactProfile, error: profileError } = await supabase
         .from("profiles")
-        .select("id, email, full_name")
+        .select("id, email, full_name, nickname")
         .eq("id", contactIdValue)
         .single();
 
@@ -708,7 +715,22 @@ Context (brief):
         return;
       }
 
-      const defaultSessionName = `Conversation with ${contactProfile?.full_name || contactProfile?.email}`;
+      // ✅ Get first name or nickname for default title
+      const getContactDisplayName = (profile: any) => {
+        if (!profile) return '';
+        // Check for nickname first (if available in future)
+        if (profile.nickname) return profile.nickname;
+        // Otherwise use first name from full_name
+        if (profile.full_name) {
+          const firstName = profile.full_name.split(' ')[0];
+          return firstName;
+        }
+        // Fallback to email
+        return profile.email || '';
+      };
+      
+      const contactDisplayName = getContactDisplayName(contactProfile);
+      const defaultSessionName = `Chat with ${contactDisplayName} 💬`;
       setChatTitle(defaultSessionName);
 
       const { data: newChat, error } = await supabase
@@ -1361,6 +1383,11 @@ const inferEntityCategory = (name: string): string => {
     }
 
     setCurrentAnswer(text);
+    
+    // If answer was previously saved but text changed, mark as unsaved
+    if (currentAnswerSaved && currentAnswerSavedText !== text.trim()) {
+      setCurrentAnswerSaved(false);
+    }
 
     const typingTag = getLastTypingTag(text, currentAnswerCursorPos);
     console.log('🔍 Answer tag detection:', { typingTag });
@@ -1600,6 +1627,12 @@ const inferEntityCategory = (name: string): string => {
 
     const updated = [...qaPairs];
     updated[index].answer = nextText;
+    
+    // If answer was previously saved but text changed, mark as unsaved
+    if (updated[index].saved && savedAnswers[index] !== nextText.trim()) {
+      updated[index].saved = false;
+    }
+    
     setQAPairs(updated);
 
     setEditingAnswerIndex(index);
@@ -1890,10 +1923,14 @@ const inferEntityCategory = (name: string): string => {
         // ❌ NEVER use summary_shared_neutral for Stage 3
         const summaryAPerspective = ctx.summary_a_perspective || '';
         
+        // Only check for summary_a_perspective if we're in a stage where summary should exist
+        const shouldHaveSummary = ctx.flowStage === 'summary' || ctx.flowStage === 'ready';
+        
         if (summaryAPerspective) {
           console.log('✅ Found summary_a_perspective for Stage 3:', summaryAPerspective.substring(0, 100));
           setSummary(summaryAPerspective);
-        } else {
+        } else if (shouldHaveSummary) {
+          // Only show error if we're in a stage where summary should exist
           console.error('❌ ERROR: summary_a_perspective missing from database context_data!');
           console.error('This session may have old data structure. Using fallback for Stage 3.');
           // Fallback: Create A-perspective fallback (emotional, first-person, talking to AI)
@@ -1905,6 +1942,7 @@ const inferEntityCategory = (name: string): string => {
             summary_a_perspective: fallbackAPerspective,
           };
         }
+        // If we're in welcome or qa stage, it's normal to not have summary yet - no error needed
         
         // ✅ Store in contextDataRef for later use
         // ✅ CRITICAL: If neutral summary is missing, create it from A-perspective (convert to third-person)
@@ -2170,6 +2208,9 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
         setCurrentQuestionType("text");
         setFlowStage("qa");
         setQuestionCount(1);
+        // Reset saved state for new question
+        setCurrentAnswerSaved(false);
+        setCurrentAnswerSavedText('');
       }
     } catch (err) {
       console.error("Failed to generate question:", err);
@@ -2177,10 +2218,378 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
     }
   };
 
+  const handleDeleteQAPair = (index: number) => {
+    Alert.alert(
+      "Delete Question",
+      "Are you sure you want to delete this question and answer?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () => {
+            const updated = qaPairs.filter((_, i) => i !== index);
+            setQAPairs(updated);
+            // Update question count
+            setQuestionCount(updated.length);
+            // Remove from saved answers if it was saved
+            const newSavedAnswers = {...savedAnswers};
+            delete newSavedAnswers[index];
+            // Reindex saved answers after deletion
+            const reindexed: {[key: number]: string} = {};
+            Object.keys(newSavedAnswers).forEach((key) => {
+              const oldIndex = parseInt(key);
+              if (oldIndex > index) {
+                reindexed[oldIndex - 1] = newSavedAnswers[oldIndex];
+              } else if (oldIndex < index) {
+                reindexed[oldIndex] = newSavedAnswers[oldIndex];
+              }
+            });
+            setSavedAnswers(reindexed);
+          },
+        },
+      ]
+    );
+  };
+
+  const handleSaveAnswer = async (index: number) => {
+    const pair = qaPairs[index];
+    const answer = pair.answer?.trim() || '';
+    
+    // Validation: empty answer
+    if (!answer) {
+      Alert.alert("Quick note needed", "Please enter an answer before saving.");
+      return;
+    }
+    
+    // Validation: clean up and check for irrelevant answers
+    const cleaned = cleanUpAnswer(answer);
+    const lettersOnly = /^[a-zA-Z]+$/;
+    const hasVowel = /[aeiouAEIOU]/;
+    
+    if (isClearlyIrrelevant(cleaned) || (lettersOnly.test(cleaned) && !hasVowel.test(cleaned) && cleaned.length >= 3)) {
+      Alert.alert(
+        "Answer unclear",
+        "That doesn't seem related. Try a short word or phrase."
+      );
+      return;
+    }
+    
+    // Optional: Validate meaningfulness for longer answers
+    if (answer.trim().length >= 10) {
+      const isMeaningful = await validateMeaningfulness(answer);
+      if (!isMeaningful) {
+        Alert.alert(
+          "Let's clarify 💭",
+          "Your answer seems unclear. Could you rephrase it so I can better understand? ❤️"
+        );
+        return;
+      }
+    }
+    
+    // Mark as saved
+    const updated = [...qaPairs];
+    updated[index].saved = true;
+    setQAPairs(updated);
+    
+    // Store the saved answer text to detect future changes
+    setSavedAnswers({...savedAnswers, [index]: answer});
+  };
+
+  const handleSaveCurrentAnswer = async () => {
+    const answer = currentQuestionType === "dropdown" ? selectedOption : currentAnswer;
+    const answerText = answer?.trim() || '';
+    
+    // Validation: empty answer
+    if (!answerText) {
+      Alert.alert("Quick note needed", "Please enter an answer before saving.");
+      return;
+    }
+    
+    // Validation: clean up and check for irrelevant answers
+    const cleaned = cleanUpAnswer(answerText);
+    const lettersOnly = /^[a-zA-Z]+$/;
+    const hasVowel = /[aeiouAEIOU]/;
+    
+    if (isClearlyIrrelevant(cleaned) || (lettersOnly.test(cleaned) && !hasVowel.test(cleaned) && cleaned.length >= 3)) {
+      Alert.alert(
+        "Answer unclear",
+        "That doesn't seem related. Try a short word or phrase."
+      );
+      return;
+    }
+    
+    // Optional: Validate meaningfulness for longer answers
+    if (answerText.trim().length >= 10) {
+      const isMeaningful = await validateMeaningfulness(answerText);
+      if (!isMeaningful) {
+        Alert.alert(
+          "Let's clarify 💭",
+          "Your answer seems unclear. Could you rephrase it so I can better understand? ❤️"
+        );
+        return;
+      }
+    }
+    
+    // Add to qaPairs with saved: true
+    const newPair: QAPair = {
+      question: currentQuestion,
+      answer: cleaned || answerText,
+      answerType: currentQuestionType,
+      options: currentQuestionType === "dropdown" ? currentOptions : undefined,
+      saved: true,
+    };
+    
+    const updatedPairs = [...qaPairs, newPair];
+    setQAPairs(updatedPairs);
+    setQuestionCount(updatedPairs.length);
+    
+    // Store saved answer text
+    setCurrentAnswerSaved(true);
+    setCurrentAnswerSavedText(answerText);
+    
+    // Clear current answer
+    setCurrentAnswer("");
+    setSelectedOption(null);
+    
+    const normalizedTitle = chatTitle.trim() || contextDataRef.current.chat_title || '';
+    
+    await updateChatRecord(
+      {},
+      {
+        qa_pairs: updatedPairs,
+        initial_description: initialDescription,
+        flowStage: 'qa',
+        questionCount: updatedPairs.length,
+        taggedEntities,
+        currentAnswer: '',
+        selectedOption: null,
+        chat_title: normalizedTitle,
+      }
+    );
+    
+    // ✅ Enforce max 5 questions total
+    if (updatedPairs.length >= 5) {
+      setShowGenerateSummaryButton(true);
+      setCurrentQuestion("");
+      scrollToEnd();
+      return;
+    }
+    
+    // If summary button already shown, do not generate more questions
+    if (showGenerateSummaryButton) {
+      setCurrentQuestion("");
+      scrollToEnd();
+      return;
+    }
+    
+    // Show notice modal after saving 2nd answer (same logic as "Next prompt" button)
+    if (updatedPairs.length === 2) {
+      setShowSummaryNoticeModal(true);
+      scrollToEnd();
+      return;
+    }
+    
+    // Generate next question (same logic as handleAnswerSubmit)
+    if (updatedPairs.length >= 2) {
+      await checkIfSufficientInfo(updatedPairs);
+    } else {
+      await generateNextQuestion(updatedPairs);
+    }
+    
+    // Ensure the newest content is visible
+    scrollToEnd();
+  };
+
+  const handleSaveAndExit = async () => {
+    try {
+      // ✅ Check if there's meaningful content to save
+      // Include all possible content: initial description, qaPairs, summary, additionalInfo, currentAnswer
+      const hasInitialDescription = initialDescription.trim().length > 0;
+      const hasQAPairs = qaPairs.length > 0;
+      const hasSummary = summary.trim().length > 0;
+      const hasAdditionalInfo = additionalInfo.trim().length > 0;
+      const hasCurrentAnswer = currentAnswer.trim().length > 0;
+      
+      // Check contextDataRef for previously saved content
+      const ctx = contextDataRef.current || {};
+      const hasCtxInitialDescription = ctx.initial_description && ctx.initial_description.trim().length > 0;
+      const hasCtxQAPairs = ctx.qa_pairs && ctx.qa_pairs.length > 0;
+      const hasCtxSummary = ctx.summary && ctx.summary.trim().length > 0;
+      const hasCtxAdditionalInfo = ctx.additional_info && ctx.additional_info.trim().length > 0;
+      
+      const hasContent = 
+        hasInitialDescription ||
+        hasQAPairs ||
+        hasSummary ||
+        hasAdditionalInfo ||
+        hasCurrentAnswer ||
+        hasCtxInitialDescription ||
+        hasCtxQAPairs ||
+        hasCtxSummary ||
+        hasCtxAdditionalInfo;
+      
+      console.log('💾 Save & Exit - Content check:', {
+        flowStage,
+        hasInitialDescription,
+        hasQAPairs,
+        hasSummary,
+        hasAdditionalInfo,
+        hasCurrentAnswer,
+        hasCtxInitialDescription,
+        hasCtxQAPairs,
+        hasCtxSummary,
+        hasCtxAdditionalInfo,
+        hasContent
+      });
+      
+      // If no meaningful content, delete the chat instead of saving
+      if (!hasContent && currentChatId) {
+        console.log('🗑️ No meaningful content found, deleting empty session:', currentChatId);
+        try {
+          await supabase
+            .from('chats')
+            .delete()
+            .eq('id', currentChatId)
+            .eq('chat_type', 'ai_assistant');
+          console.log('✅ Deleted empty session');
+        } catch (deleteError) {
+          console.error('⚠️ Failed to delete empty session:', deleteError);
+        }
+        router.push('/ai-assistant');
+        return;
+      }
+      
+      // If no chat exists yet and no content, don't create one
+      if (!currentChatId && !hasContent) {
+        console.log('⚠️ No content to save, exiting without creating session');
+        router.push('/ai-assistant');
+        return;
+      }
+      
+      const normalizedTitle = chatTitle.trim() || contextDataRef.current?.chat_title || '';
+      
+      // Prepare context data with all current progress
+      const contextPatch: Record<string, any> = {
+        ...contextDataRef.current, // Preserve all existing fields
+        flowStage: flowStage,
+        chat_title: normalizedTitle,
+        initial_description: initialDescription,
+        taggedEntities: taggedEntities,
+        questionCount: qaPairs.length,
+      };
+      
+      // Stage 1 (welcome): Save title, description, taggedEntities
+      if (flowStage === 'welcome') {
+        // Already included above
+      }
+      
+      // Stage 2 (qa): Save qaPairs and current answer/question state
+      if (flowStage === 'qa') {
+        contextPatch.qa_pairs = qaPairs;
+        // ✅ Always save currentAnswer if it exists (even if not yet saved to qaPairs)
+        if (currentAnswer.trim()) {
+          contextPatch.currentAnswer = currentAnswer;
+        }
+        if (currentQuestion) {
+          contextPatch.currentQuestion = currentQuestion;
+          contextPatch.currentQuestionType = currentQuestionType;
+          if (currentQuestionType === 'dropdown') {
+            contextPatch.currentOptions = currentOptions;
+          }
+        }
+      }
+      
+      // Stage 3 (summary): Save qaPairs, summary, and thoughts
+      if (flowStage === 'summary') {
+        contextPatch.qa_pairs = qaPairs;
+        contextPatch.summary = summary;
+        // ✅ CRITICAL: Always save summary_a_perspective - use summary state if contextDataRef doesn't have it
+        contextPatch.summary_a_perspective = contextDataRef.current?.summary_a_perspective || summary || '';
+        contextPatch.summary_shared_neutral = contextDataRef.current?.summary_shared_neutral || '';
+        contextPatch.thoughts = thoughts;
+        contextPatch.thoughts_a = thoughts;
+        // ✅ Always save additionalInfo if it exists (even if empty, to preserve user's edits)
+        contextPatch.additional_info = additionalInfo || '';
+        contextPatch.additional_info_tags = additionalInfoTags || [];
+      }
+      
+      // Stage 4 (ready): Save everything from Stage 3
+      if (flowStage === 'ready') {
+        contextPatch.qa_pairs = qaPairs;
+        contextPatch.summary = summary;
+        // ✅ CRITICAL: Always save summary_a_perspective - use summary state if contextDataRef doesn't have it
+        contextPatch.summary_a_perspective = contextDataRef.current?.summary_a_perspective || summary || '';
+        contextPatch.summary_shared_neutral = contextDataRef.current?.summary_shared_neutral || '';
+        contextPatch.thoughts = thoughts;
+        contextPatch.thoughts_a = thoughts;
+        // ✅ Always save additionalInfo if it exists (even if empty, to preserve user's edits)
+        contextPatch.additional_info = additionalInfo || '';
+        contextPatch.additional_info_tags = additionalInfoTags || [];
+      }
+      
+      // Determine last_message based on stage
+      let lastMessage = '';
+      if (flowStage === 'welcome') {
+        lastMessage = initialDescription.trim() 
+          ? (initialDescription.length > 140 ? `${initialDescription.slice(0, 137)}…` : initialDescription)
+          : 'Draft started';
+      } else if (flowStage === 'qa') {
+        lastMessage = `In progress: ${qaPairs.length} question${qaPairs.length !== 1 ? 's' : ''} answered`;
+      } else if (flowStage === 'summary') {
+        lastMessage = 'Summary generated';
+      } else if (flowStage === 'ready') {
+        lastMessage = 'Ready to launch';
+      }
+      
+      // ✅ Navigate immediately for faster UX, save in background
+      // Use replace instead of push for faster navigation
+      router.replace('/ai-assistant');
+      
+      // Update chat record with all progress (non-blocking, fire-and-forget)
+      // The realtime subscription on AI assistant page will pick up the changes
+      updateChatRecord(
+        {
+          session_name: normalizedTitle,
+          last_message: lastMessage,
+          last_message_at: new Date().toISOString(),
+        },
+        contextPatch
+      ).catch((saveError) => {
+        console.error('⚠️ Background save failed (non-critical):', saveError);
+        // Don't show error to user since they've already navigated away
+        // The realtime subscription will handle updates when save succeeds
+      });
+      
+      // Early return to prevent error handling from blocking navigation
+      return;
+    } catch (error) {
+      console.error('Failed to save and exit:', error);
+      // Only show error if navigation hasn't happened yet
+      Alert.alert('Error', 'Failed to save your progress. Please try again.');
+    }
+  };
 
   const handleAnswerSubmit = async () => {
     const answer = currentQuestionType === "dropdown" ? selectedOption : currentAnswer;
     const normalizedTitle = chatTitle.trim() || contextDataRef.current.chat_title || '';
+
+    // If answer is already saved, just generate next question
+    if (currentAnswerSaved && currentQuestionType === "text" && currentAnswer.trim() === currentAnswerSavedText) {
+      setCurrentAnswer("");
+      setSelectedOption(null);
+      setCurrentAnswerSaved(false);
+      setCurrentAnswerSavedText('');
+      
+      // Generate next question
+      if (qaPairs.length >= 2) {
+        await checkIfSufficientInfo(qaPairs);
+      } else {
+        await generateNextQuestion(qaPairs);
+      }
+      scrollToEnd();
+      return;
+    }
 
    if (!answer?.trim() && !isReviewMode) {
    Alert.alert("Quick note needed", "Drop a short reply so we can keep rolling.");
@@ -2219,6 +2628,7 @@ for (const [idx, pair] of qaPairs.entries()) {
       answer: cleaned || '',
       answerType: currentQuestionType,
       options: currentQuestionType === "dropdown" ? currentOptions : undefined,
+      saved: false,
     };
 
     const updatedPairs = [...qaPairs, newPair];
@@ -2459,6 +2869,9 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
       setCurrentQuestion(generatedQuestion);
       setCurrentQuestionType("text");
       setQuestionCount((prev) => prev + 1);
+      // Reset saved state for new question
+      setCurrentAnswerSaved(false);
+      setCurrentAnswerSavedText('');
 
       const normalizedTitle = chatTitle.trim() || contextDataRef.current.chat_title || '';
       await updateChatRecord(
@@ -2896,6 +3309,7 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
         console.error('Failed to fetch structured context:', structuredError);
       }
 
+      // Process structured context data
       const sessionStartedAtIso = contextDataRef.current?.session_started_at;
       const sessionStartedAtMs = sessionStartedAtIso
         ? Date.parse(sessionStartedAtIso)
@@ -2927,6 +3341,7 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
       }));
 
       // ✅ CALL THE GENERATE-SUMMARY EDGE FUNCTION
+      // Get session token (fast operation)
       const { data: supabaseData } = await supabase.auth.getSession();
       const sessionToken = supabaseData?.session?.access_token;
 
@@ -2973,7 +3388,8 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
       });
 
       // ✅ EXTRACT BOTH SUMMARIES FROM RESPONSE
-      const summaryAPerspective = result.summary_a_perspective || result.summary || result.context_data?.summary_a_perspective || result.context_data?.summary || '';
+      // CRITICAL: Only use summary_a_perspective fields - NEVER fallback to result.summary which may be neutral
+      const summaryAPerspective = result.summary_a_perspective || result.context_data?.summary_a_perspective || '';
       const summarySharedNeutral = result.summary_shared_neutral || result.context_data?.summary_shared_neutral || '';
       const thoughtsA = result.context_data?.thoughts_a || result.context_data?.thoughts || '';
       const keyPoints = result.key_points || result.context_data?.key_points || [];
@@ -3809,7 +4225,7 @@ Respond ONLY with valid JSON:
             .replace(/\bI've\b/gi, 'User A has')
             .replace(/\bI'd\b/gi, 'User A would');
         }
-        const { data: newChat } = await supabase
+        const { data: newChat, error: newChatError } = await supabase
           .from("chats")
           .insert({
             user_id: user.id,
@@ -3838,7 +4254,18 @@ Respond ONLY with valid JSON:
           })
           .select("id")
           .single();
-        contactChatId = newChat?.id;
+        
+        if (newChatError) {
+          console.error("❌ Failed to create contact chat:", newChatError);
+          throw new Error(`Failed to create contact chat: ${newChatError.message}`);
+        }
+        
+        if (!newChat?.id) {
+          console.error("❌ Contact chat created but no ID returned");
+          throw new Error("Failed to create contact chat: No ID returned");
+        }
+        
+        contactChatId = newChat.id;
       } else if (reusedContactChat) {
         // Clean up any previously generated options so we don't surface stale choices
         const { error: deleteOptionsError } = await supabase
@@ -3926,6 +4353,18 @@ Respond ONLY with valid JSON:
         console.warn('⚠️ Failed to create Soulroom auto note:', soulLogError);
       }
 
+      // ✅ Validate contactChatId before proceeding
+      if (!contactChatId) {
+        console.error("❌ contactChatId is undefined, cannot proceed");
+        throw new Error("Failed to create contact chat. Please try again.");
+      }
+
+      // ✅ Validate contactIdValue before proceeding
+      if (!contactIdValue) {
+        console.error("❌ contactIdValue is undefined, cannot proceed");
+        throw new Error("Contact ID is missing. Please try again.");
+      }
+
       await supabase
         .from("chats")
         .update({ conversation_phase: "discussion" })
@@ -3974,10 +4413,10 @@ Respond ONLY with valid JSON:
       router.push(
         `/contact-chat?chatId=${contactChatId}&contactId=${contactIdValue}&isOngoing=true`
       );
-    } catch (err) {
-      console.error("Error in handleReadyToChat:", err);
-      Alert.alert("Error", "Failed to start contact chat. Please try again.");
-    } finally {
+    } catch (err: any) {
+      console.error("❌ Error in handleReadyToChat:", err);
+      const errorMessage = err?.message || "Failed to start contact chat. Please try again.";
+      Alert.alert("Error", errorMessage);
       setLoading(false);
     }
   };
@@ -3992,18 +4431,10 @@ Respond ONLY with valid JSON:
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.headerSection}>
-          <Sparkles size={36} color={Colors.primary[500]} />
-          <Text style={styles.stageTitle}>Stage 1 – Set the Scene</Text>
-          <Text style={styles.stageSubtitle}>
-            Give this chat a short title and share what's happening with{" "}
-            <Text style={styles.contactName}>
-              {contact?.full_name || contact?.email}
-            </Text>
-            .
-          </Text>
-          <Text style={styles.stageDescription}>
-            Tell me what happened so I can help shape the opener.
-          </Text>
+          <View style={styles.headerTitleRow}>
+            <Text style={styles.stageIcon}>🎬</Text>
+            <Text style={styles.stageTitle}>Stage 1 – Set the Scene</Text>
+          </View>
         </View>
 
         <View style={styles.inputGroup}>
@@ -4013,17 +4444,28 @@ Respond ONLY with valid JSON:
             value={chatTitle}
             onChangeText={setChatTitle}
             placeholder="Give this chat a short title (e.g. Weekend mix-up reset)"
-            placeholderTextColor={Colors.text.tertiary}
-            maxLength={80}
+            placeholderTextColor={Colors.secondary[400]}
+            maxLength={25}
             autoCapitalize="sentences"
             returnKeyType="done"
           />
-          <Text style={styles.inputHelper}>
-            Helps you spot it later in AI prep and shared chat lists.
-          </Text>
+          <View style={styles.contactLabelRow}>
+            <Text style={styles.contactLabel}>Contact</Text>
+            <Text style={styles.contactValue}>
+              {contact?.full_name || contact?.email || 'Unknown'}
+            </Text>
+          </View>
         </View>
 
         <View style={styles.descriptionWrapper}>
+          <View style={styles.placeholderHintWrapper}>
+            {!initialDescription && (
+              <>
+                <Text style={styles.placeholderHintLine1}>Use @ to mention contact to chat with</Text>
+                <Text style={styles.placeholderHintLine2}>Use # to mention third persons/events</Text>
+              </>
+            )}
+          </View>
           <TextInput
             style={styles.descriptionInput}
             value={initialDescription}
@@ -4036,8 +4478,8 @@ Respond ONLY with valid JSON:
             onSelectionChange={(event) => {
               setDescriptionCursorPos(event.nativeEvent.selection.start);
             }}
-            placeholder="Tell me what happened… (use @ or # tags if helpful)"
-            placeholderTextColor={Colors.text.tertiary}
+            placeholder=""
+            placeholderTextColor={Colors.text.primary}
             multiline
             maxLength={800}
           />
@@ -4140,16 +4582,10 @@ Respond ONLY with valid JSON:
         <View style={styles.buttonColumn}>
           <TouchableOpacity
             style={[styles.fullWidthButton, styles.secondaryButton]}
-            onPress={() => router.push('/(tabs)/chats')}
+            onPress={handleSaveAndExit}
+            disabled={loading}
           >
-            <Text style={styles.secondaryButtonText}>Go to Chats Home</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.fullWidthButton, styles.secondaryButton]}
-            onPress={() => router.push('/(tabs)/soulroom')}
-          >
-            <Text style={styles.secondaryButtonText}>Open Soulroom</Text>
+            <Text style={styles.secondaryButtonText}>Save & Exit</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -4178,25 +4614,36 @@ Respond ONLY with valid JSON:
 
   const renderQAStage = () => (
     <View style={styles.stageContainer}>
-      <View style={[styles.headerSection, styles.stageHeaderInset]}>
-        <Text style={styles.stageTitle}>Stage 2 – Fill in the Gaps ({questionCount}/5)</Text>
-        <Text style={styles.stageSubtitle}>
-          I'll toss a few easy prompts to round out the story.
-        </Text>
-      </View>
-
       <ScrollView
         ref={scrollViewRef}
-        style={styles.qaPairsContainer}
-        contentContainerStyle={styles.qaPairsContent}
+        style={styles.stageScroll}
+        contentContainerStyle={styles.stageContent}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
+        <View style={styles.headerSection}>
+          <View style={styles.headerTitleRow}>
+            <Text style={styles.stageIcon}>🎨</Text>
+            <Text style={styles.stageTitle}>Stage 2 - Add the Details</Text>
+          </View>
+        </View>
+
         {qaPairs.map((pair, index) => (
           <View key={index} style={styles.qaCardVertical}>
             <View style={styles.questionSection}>
-              <Text style={styles.questionLabel}>Q{index + 1}</Text>
-              <Text style={styles.questionText}>{pair.question}</Text>
+              <View style={styles.questionHeader}>
+                <View style={styles.questionHeaderLeft}>
+                  <Text style={styles.questionLabel}>Q{index + 1}</Text>
+                  <Text style={styles.questionText}>{pair.question}</Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.deleteButton}
+                  onPress={() => handleDeleteQAPair(index)}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                  <Trash2 size={18} color={Colors.error[600]} />
+                </TouchableOpacity>
+              </View>
             </View>
             <View style={styles.answerSection}>
 
@@ -4327,20 +4774,41 @@ Respond ONLY with valid JSON:
                 }}
                 multiline
                 placeholder="Use @ or # to tag someone."
-                placeholderTextColor={Colors.text.tertiary}
+                placeholderTextColor={Colors.text.primary}
               />
 
-              <View style={{ marginTop: 4, alignItems: "flex-end" }}>
-                <Text
-                  style={[
-                    styles.tokenCounter,
-                    Math.max(0, 20 - Math.round((pair.answer?.trim() ? pair.answer.trim().split(/\s+/).length : 0) * (20/15))) === 0
-                      ? { color: Colors.error[600] }
-                      : { color: Colors.success[600] },
-                  ]}
-                >
-                  {Math.max(0, 20 - Math.round((pair.answer?.trim() ? pair.answer.trim().split(/\s+/).length : 0) * (20/15)))}
-                </Text>
+              <View style={styles.answerActions}>
+                <View style={{ flex: 1 }}>
+                  <View style={{ marginTop: 4, alignItems: "flex-end" }}>
+                    <Text
+                      style={[
+                        styles.tokenCounter,
+                        Math.max(0, 20 - Math.round((pair.answer?.trim() ? pair.answer.trim().split(/\s+/).length : 0) * (20/15))) === 0
+                          ? { color: Colors.error[600] }
+                          : { color: Colors.success[600] },
+                      ]}
+                    >
+                      {Math.max(0, 20 - Math.round((pair.answer?.trim() ? pair.answer.trim().split(/\s+/).length : 0) * (20/15)))}
+                    </Text>
+                  </View>
+                </View>
+                
+                {/* Save/Check Button */}
+                {pair.answer?.trim() ? (
+                  pair.saved ? (
+                    <View style={styles.savedIndicator}>
+                      <Check size={20} color={Colors.success[600]} />
+                    </View>
+                  ) : (
+                    <TouchableOpacity
+                      style={styles.saveButton}
+                      onPress={() => handleSaveAnswer(index)}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    >
+                      <Text style={styles.saveButtonText}>Save</Text>
+                    </TouchableOpacity>
+                  )
+                ) : null}
               </View>
 
             </View>
@@ -4349,8 +4817,8 @@ Respond ONLY with valid JSON:
 
         {isGeneratingSummary ? (
           <View style={styles.generatingContainer}>
-            <ActivityIndicator size="large" color={Colors.primary[500]} />
             <Text style={styles.generatingText}>Piecing things together…</Text>
+            <ActivityIndicator size="small" color={Colors.primary[600]} style={styles.generatingLoader} />
           </View>
         ) : currentQuestion ? (
           <View style={styles.qaCardVertical}>
@@ -4453,17 +4921,38 @@ Respond ONLY with valid JSON:
   maxLength={200}
 />
 
-                  <View style={{ marginTop: 4, alignItems: "flex-end" }}>
-                    <Text
-                      style={[
-                        styles.tokenCounter,
-                        Math.max(0, 20 - Math.round((currentAnswer.trim() ? currentAnswer.trim().split(/\s+/).length : 0) * (20/15))) === 0
-                          ? { color: Colors.error[600] }
-                          : { color: Colors.success[600] },
-                      ]}
-                    >
-                      {Math.max(0, 20 - Math.round((currentAnswer.trim() ? currentAnswer.trim().split(/\s+/).length : 0) * (20/15)))}
-                    </Text>
+                  <View style={styles.answerActions}>
+                    <View style={{ flex: 1 }}>
+                      <View style={{ marginTop: 4, alignItems: "flex-end" }}>
+                        <Text
+                          style={[
+                            styles.tokenCounter,
+                            Math.max(0, 20 - Math.round((currentAnswer.trim() ? currentAnswer.trim().split(/\s+/).length : 0) * (20/15))) === 0
+                              ? { color: Colors.error[600] }
+                              : { color: Colors.success[600] },
+                          ]}
+                        >
+                          {Math.max(0, 20 - Math.round((currentAnswer.trim() ? currentAnswer.trim().split(/\s+/).length : 0) * (20/15)))}
+                        </Text>
+                      </View>
+                    </View>
+                    
+                    {/* Save/Check Button for Current Answer */}
+                    {currentAnswer?.trim() ? (
+                      currentAnswerSaved ? (
+                        <View style={styles.savedIndicator}>
+                          <Check size={20} color={Colors.success[600]} />
+                        </View>
+                      ) : (
+                        <TouchableOpacity
+                          style={styles.saveButton}
+                          onPress={() => handleSaveCurrentAnswer()}
+                          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                        >
+                          <Text style={styles.saveButtonText}>Save</Text>
+                        </TouchableOpacity>
+                      )
+                    ) : null}
                   </View>
 
                 </>
@@ -4495,99 +4984,70 @@ Respond ONLY with valid JSON:
         ) : null}
       </ScrollView>
 
-    {/* bottom buttons */}
-<View style={[styles.stageFooter, styles.qaButtonSection]}>
-  <View style={styles.buttonRow}>
-    <TouchableOpacity
-      style={[styles.secondaryButton, styles.halfButton]}
-      onPress={() => setFlowStage("welcome")}
-      disabled={loading}
-    >
-      <Text style={styles.secondaryButtonText}>Back a step</Text>
-    </TouchableOpacity>
+      <View style={styles.stageFooter}>
+        <View style={styles.buttonColumn}>
+          <TouchableOpacity
+            style={[styles.fullWidthButton, styles.secondaryButton]}
+            onPress={handleSaveAndExit}
+            disabled={loading}
+          >
+            <Text style={styles.secondaryButtonText}>Save & Exit</Text>
+          </TouchableOpacity>
 
-    <TouchableOpacity
-      style={[styles.secondaryButton, styles.halfButton]}
-      onPress={() => {
-        // Show the notice as soon as the SECOND answer is being submitted.
-        // At this point, qaPairs contains answers already saved.
-        // When the user is on Q2, qaPairs.length === 1 before submitting the current answer.
-        // So trigger the notice when length >= 1 (i.e., about to become 2).
-        if (qaPairs.length >= 1) {
-          Alert.alert(
-            "Feeling good?",
-            "If you feel good, click Generate Summary.",
-            [
-              {
-                text: "Generate Summary",
-                onPress: () => {
-                  setIsGeneratingSummary(true);
-                  setCurrentQuestion("");
-                  void generateSummary(qaPairs);
-                },
-              },
-              {
-                text: "See another prompt",
-                style: "default",
-                onPress: () => handleAnswerSubmit(),
-              },
-              {
-                text: "Cancel",
-                style: "cancel",
-              },
-            ],
-            { cancelable: true }
-          );
-        } else {
-          handleAnswerSubmit();
-        }
-      }}
-      disabled={loading}
-    >
-      {loading ? (
-        <ActivityIndicator color={Colors.primary[600]} size="small" />
-      ) : (
-        <Text style={styles.secondaryButtonText}>Next prompt</Text>
-      )}
-    </TouchableOpacity>
-  </View>
+          <View style={styles.buttonRow}>
+            <TouchableOpacity
+              style={[styles.secondaryButton, styles.halfButton]}
+              onPress={() => setFlowStage("welcome")}
+              disabled={loading}
+            >
+              <Text style={styles.secondaryButtonText}>Stage 1</Text>
+            </TouchableOpacity>
 
-  <TouchableOpacity
-    style={[styles.fullWidthButton, styles.secondaryButton]}
-    onPress={() => router.push('/(tabs)/chats')}
-    disabled={loading}
-  >
-    <Text style={styles.secondaryButtonText}>Go to Chats Home</Text>
-  </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.secondaryButton, styles.halfButton]}
+              onPress={() => {
+                // Show the notice as soon as the SECOND answer is being submitted.
+                // At this point, qaPairs contains answers already saved.
+                // When the user is on Q2, qaPairs.length === 1 before submitting the current answer.
+                // So trigger the notice when length >= 1 (i.e., about to become 2).
+                if (qaPairs.length >= 1) {
+                  setShowSummaryNoticeModal(true);
+                } else {
+                  handleAnswerSubmit();
+                }
+              }}
+              disabled={loading || isGeneratingSummary}
+            >
+              <Text style={styles.secondaryButtonText}>Next prompt</Text>
+            </TouchableOpacity>
+          </View>
 
-  {/* Generate Summary button – disabled until at least 2 questions */}
-<TouchableOpacity
-  style={[
-    styles.fullWidthButton,
-    styles.primaryButton,
-    (loading || qaPairs.length < 2) && styles.primaryButtonDisabled,
-  ]}
-  onPress={async () => {
-    if (qaPairs.length < 2) {
-      Alert.alert(
-        "Need one more beat 💬",
-        "Add at least two answers before I spin up your recap."
-      );
-      return;
-    }
-    setIsGeneratingSummary(true);
-    setCurrentQuestion("");
-    scrollToEnd();
-    await generateSummary(qaPairs);
-  }}
-  disabled={loading || qaPairs.length < 2}
->
-  <Sparkles size={16} color="#fff" />
-  <Text style={styles.primaryButtonText}>Generate Summary</Text>
-</TouchableOpacity>
-
-</View>
-
+          {/* Generate Summary button – disabled until at least 2 questions */}
+          <TouchableOpacity
+            style={[
+              styles.fullWidthButton,
+              styles.primaryButton,
+              (loading || qaPairs.length < 2 || isGeneratingSummary) && styles.primaryButtonDisabled,
+            ]}
+            onPress={async () => {
+              if (qaPairs.length < 2) {
+                Alert.alert(
+                  "Need one more beat 💬",
+                  "Add at least two answers before I spin up your recap."
+                );
+                return;
+              }
+              setIsGeneratingSummary(true);
+              setCurrentQuestion("");
+              scrollToEnd();
+              await generateSummary(qaPairs);
+            }}
+            disabled={loading || qaPairs.length < 2 || isGeneratingSummary}
+          >
+            <Text style={styles.primaryButtonText}>Generate Summary</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
     </View>
   );
 
@@ -4695,7 +5155,7 @@ Respond ONLY with valid JSON:
       <View style={styles.summaryCard}>
         <Text style={styles.summaryLabel}>📌 Discussion Summary</Text>
         {/* ✅ CRITICAL: This is ALWAYS summary_a_perspective (emotional, first-person, User A talking to AI) */}
-        <Text style={styles.summaryText}>{finalSummaryForDisplay}</Text>
+        <Text style={styles.summaryTextWithSpacing}>{finalSummaryForDisplay}</Text>
   
         <Text style={styles.summaryLabel}>💡 My Thoughts</Text>
         <Text style={styles.summaryText}>{thoughts}</Text>
@@ -4737,10 +5197,10 @@ Respond ONLY with valid JSON:
       <View style={styles.buttonColumn}>
         <TouchableOpacity
           style={[styles.fullWidthButton, styles.secondaryButton]}
-          onPress={() => router.push('/(tabs)/chats')}
+          onPress={handleSaveAndExit}
           disabled={loading}
         >
-          <Text style={styles.secondaryButtonText}>Go to Chats Home</Text>
+          <Text style={styles.secondaryButtonText}>Save & Exit</Text>
         </TouchableOpacity>
   
         <TouchableOpacity
@@ -4777,7 +5237,10 @@ Respond ONLY with valid JSON:
         >
           {editedQAPairs.map((pair, index) => (
             <View key={index} style={styles.editQACard}>
-              <Text style={styles.editQuestionText}>{pair.question}</Text>
+              <View style={styles.questionSection}>
+                <Text style={styles.questionLabel}>Q{index + 1}</Text>
+                <Text style={styles.editQuestionText}>{pair.question}</Text>
+              </View>
   
               {editModeAnswerIndex === index && editModeContactSuggestions.length > 0 && (
                 <ScrollView style={styles.tagDropdownScroll} nestedScrollEnabled>
@@ -4852,35 +5315,38 @@ Respond ONLY with valid JSON:
                 </ScrollView>
               )}
   
-              <TextInput
-                style={styles.editAnswerInput}
-                value={pair.answer}
-                onChangeText={(text) => handleEditAnswerWithTags(index, text)}
-                onSelectionChange={(event) => {
-                  setEditModeCursorPos({...editModeCursorPos, [index]: event.nativeEvent.selection.start });
-                }}
-                multiline
-                placeholder="Edit your answer (use @ or #)..."
-              />
+              <View style={styles.answerSection}>
+                <TextInput
+                  style={styles.editAnswerInput}
+                  value={pair.answer}
+                  onChangeText={(text) => handleEditAnswerWithTags(index, text)}
+                  onSelectionChange={(event) => {
+                    setEditModeCursorPos({...editModeCursorPos, [index]: event.nativeEvent.selection.start });
+                  }}
+                  multiline
+                  placeholder="Use @ or # to tag someone."
+                  placeholderTextColor={Colors.text.primary}
+                />
   
-              <View style={{ marginTop: 4, alignItems: "flex-end" }}>
-                <Text
-                  style={[
-                    styles.tokenCounter,
-                    Math.max(0, 20 - Math.round((pair.answer?.trim() ? pair.answer.trim().split(/\s+/).length : 0) * (20/15))) === 0
-                      ? { color: Colors.error[600] }
-                      : { color: Colors.success[600] },
-                  ]}
-                >
-                  {Math.max(0, 20 - Math.round((pair.answer?.trim() ? pair.answer.trim().split(/\s+/).length : 0) * (20/15)))}
-                </Text>
+                <View style={{ marginTop: 4, alignItems: "flex-end" }}>
+                  <Text
+                    style={[
+                      styles.tokenCounter,
+                      Math.max(0, 20 - Math.round((pair.answer?.trim() ? pair.answer.trim().split(/\s+/).length : 0) * (20/15))) === 0
+                        ? { color: Colors.error[600] }
+                        : { color: Colors.success[600] },
+                    ]}
+                  >
+                    {Math.max(0, 20 - Math.round((pair.answer?.trim() ? pair.answer.trim().split(/\s+/).length : 0) * (20/15)))}
+                  </Text>
+                </View>
               </View>
             </View>
           ))}
   
           <View style={styles.additionalInfoSection}>
             <Text style={styles.additionalInfoLabel}>
-              Additional Information (Optional - use @ or # tags)
+              Add more info
             </Text>
   
             {showPronounDropdown && pronounSelectionContext?.stage === 'additionalInfo' && (
@@ -4983,7 +5449,9 @@ Respond ONLY with valid JSON:
             </View>
           </View>
         </ScrollView>
-        {editModeActions}
+        <View style={styles.stageFooter}>
+          {editModeActions}
+        </View>
       </View>
     );
   
@@ -4991,12 +5459,20 @@ Respond ONLY with valid JSON:
       <View style={styles.buttonColumn}>
         <TouchableOpacity
           style={[styles.fullWidthButton, styles.secondaryButton]}
-          onPress={() => router.push('/(tabs)/chats')}
+          onPress={handleSaveAndExit}
           disabled={loading}
         >
-          <Text style={styles.secondaryButtonText}>Go to Chats Home</Text>
+          <Text style={styles.secondaryButtonText}>Save & Exit</Text>
         </TouchableOpacity>
-  
+
+        <TouchableOpacity
+          style={[styles.fullWidthButton, styles.secondaryButton]}
+          onPress={() => setFlowStage("welcome")}
+          disabled={loading}
+        >
+          <Text style={styles.secondaryButtonText}>Stage 1</Text>
+        </TouchableOpacity>
+
         <TouchableOpacity
           style={[styles.fullWidthButton, styles.secondaryButton]}
           onPress={handleAddExtraInfo}
@@ -5005,7 +5481,7 @@ Respond ONLY with valid JSON:
           <Plus size={16} color={Colors.primary[600]} />
           <Text style={styles.secondaryButtonText}>Add more context</Text>
         </TouchableOpacity>
-  
+
         <TouchableOpacity
           style={[
             styles.fullWidthButton,
@@ -5025,26 +5501,31 @@ Respond ONLY with valid JSON:
   
     return (
       <View style={styles.stageContainer}>
-        <View style={[styles.headerSection, styles.stageHeaderInset]}>
-          <Text style={styles.stageTitle}>Stage 3 – Your Recap</Text>
-          <Text style={styles.stageSubtitle}>
-            Here's a gentle snapshot of what you've shared.
-          </Text>
-          <TouchableOpacity onPress={restartFlowToInitial} style={styles.smallLinkButton}>
-            <Text style={styles.smallLinkButtonText}>Revisit Stage 1</Text>
-          </TouchableOpacity>
-        </View>
-  
-        <View style={styles.stageBodyInset}>
+        <ScrollView
+          ref={scrollViewRef}
+          style={styles.stageScroll}
+          contentContainerStyle={styles.stageContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.headerSection}>
+            <View style={styles.headerTitleRow}>
+              <Text style={styles.stageIcon}>🧩</Text>
+              <Text style={styles.stageTitle}>Stage 3 - Your Recap</Text>
+            </View>
+          </View>
+
           {quickTipContent}
           {summaryCardContent}
   
-          {isSummaryUnclear
-            ? unclearActions
-            : showEditMode
-              ? editModeContent
-              : defaultActions}
-        </View>
+          {showEditMode && editModeContent}
+        </ScrollView>
+
+        {!showEditMode && (
+          <View style={styles.stageFooter}>
+            {isSummaryUnclear ? unclearActions : defaultActions}
+          </View>
+        )}
       </View>
     );
   };
@@ -5058,21 +5539,21 @@ Respond ONLY with valid JSON:
 
   const renderReadyStage = () => (
     <View style={styles.stageContainer}>
-      <View style={[styles.headerSection, styles.stageHeaderInset]}>
-        <Check size={48} color={Colors.success[500]} />
-        <Text style={styles.stageTitle}>Stage 4 – Launch Time</Text>
-        <Text style={styles.stageSubtitle}>
-          Your prep is locked in. I'll help you kick things off with{" "}
-          <Text style={styles.contactName}>{contact?.full_name || contact?.email}</Text>.
-        </Text>
-        <Text style={styles.readyMessage}>Feeling good?</Text>
-        {/* Small quick-link back to Stage 1 */}
-        <TouchableOpacity onPress={restartFlowToInitial} style={styles.smallLinkButton}>
-          <Text style={styles.smallLinkButtonText}>Back to Stage 1</Text>
-        </TouchableOpacity>
-      </View>
+      <ScrollView
+        ref={scrollViewRef}
+        style={styles.stageScroll}
+        contentContainerStyle={styles.stageContent}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.headerSection}>
+          <View style={styles.headerTitleRow}>
+            <Text style={styles.stageIcon}>🟢</Text>
+            <Text style={styles.stageTitle}>Stage 4 - Launch Time</Text>
+          </View>
+        </View>
 
-      <View style={styles.stageBodyInset}>
+        <View style={styles.stageBodyInset}>
       {showReturnFromChatBanner && (
         <View style={styles.returnBanner}>
           <Text style={styles.returnBannerText}>Need to jump anywhere else?</Text>
@@ -5087,7 +5568,7 @@ Respond ONLY with valid JSON:
       {((summary || '').trim().length > 0 || (thoughts || '').trim().length > 0) ? (
         <View style={styles.summaryCard}>
           <Text style={styles.summaryLabel}>📌 Discussion Summary</Text>
-          <Text style={styles.summaryText}>{summary}</Text>
+          <Text style={styles.summaryTextWithSpacing}>{summary}</Text>
 
           <Text style={styles.summaryLabel}>💡 My Thoughts</Text>
           <Text style={styles.summaryText}>{thoughts}</Text>
@@ -5098,72 +5579,134 @@ Respond ONLY with valid JSON:
           <Text style={styles.loadingText}>Grabbing your recap…</Text>
         </View>
       )}
-    {loading && (
-  <>
-    <View style={styles.loadingInfoBox}>
-      <ActivityIndicator color={Colors.primary[500]} size="large" />
-      <Text style={styles.loadingText}>Lining up your opening lines…</Text>
-      <Text style={styles.loadingSubtext}>Thanks for waiting—I usually wrap this in a few seconds.</Text>
-    </View>
-    <Text style={{ textAlign: "center", marginTop: 10, color: Colors.text.secondary }}>
-      💬 Almost there—just polishing your first message choices…
-    </Text>
-  </>
-      )}
-      </View>
+        </View>
+      </ScrollView>
 
-      <View style={[styles.stageFooter, styles.buttonColumn]}>
-        <TouchableOpacity
-          style={[styles.fullWidthButton, styles.secondaryButton]}
-          onPress={() => router.push('/(tabs)/chats')}
-          disabled={loading}
-        >
-          <Text style={styles.secondaryButtonText}>Go to Chats Home</Text>
-        </TouchableOpacity>
+      <View style={styles.stageFooter}>
+        <View style={styles.buttonColumn}>
+          <TouchableOpacity
+            style={[styles.fullWidthButton, styles.secondaryButton]}
+            onPress={handleSaveAndExit}
+            disabled={loading}
+          >
+            <Text style={styles.secondaryButtonText}>Save & Exit</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          style={[styles.fullWidthButton, styles.secondaryButton]}
-          onPress={handleBackToSummary}
-          disabled={
-            loading ||
-            (((summary || '').trim().length === 0) && ((thoughts || '').trim().length === 0))
-          }
-        >
-          <Eye size={16} color={Colors.primary[600]} />
-          <Text style={styles.secondaryButtonText}>Edit Summary</Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.fullWidthButton, styles.secondaryButton]}
+            onPress={handleBackToSummary}
+            disabled={
+              loading ||
+              (((summary || '').trim().length === 0) && ((thoughts || '').trim().length === 0))
+            }
+          >
+            <Eye size={16} color={Colors.primary[600]} />
+            <Text style={styles.secondaryButtonText}>Edit Summary</Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          style={[styles.fullWidthButton, styles.readyButton, loading && styles.primaryButtonDisabled]}
-          onPress={handleReadyToChat}
-          disabled={loading}
-        >
-          {loading ? (
-            <ActivityIndicator color="#fff" size="small" />
-          ) : (
-            <Text style={styles.readyButtonText}>Send to contact</Text>
-          )}
-        </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.fullWidthButton, styles.primaryButton, loading && styles.primaryButtonDisabled]}
+            onPress={handleReadyToChat}
+            disabled={loading}
+          >
+            {loading ? (
+              <ActivityIndicator color="#fff" size="small" />
+            ) : (
+              <Text style={styles.primaryButtonText}>Send to contact</Text>
+            )}
+          </TouchableOpacity>
+        </View>
       </View>
     </View>
   );
 
   return (
-    <KeyboardSafeView style={styles.container} contentStyle={styles.content} edges={['top', 'left', 'right']}>
-      <ScrollView
-        ref={scrollViewRef}
-        style={styles.scrollView}
-        contentInsetAdjustmentBehavior="automatic"
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-        contentContainerStyle={[styles.scrollContent, { paddingTop: Spacing.md }]}
+    <>
+      <KeyboardSafeView style={styles.container} contentStyle={styles.content} edges={['top', 'left', 'right']}>
+        <ScrollView
+          ref={scrollViewRef}
+          style={styles.scrollView}
+          contentInsetAdjustmentBehavior="automatic"
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={[styles.scrollContent, { paddingTop: Spacing.md }]}
+        >
+          {flowStage === "welcome" && renderWelcomeStage()}
+          {flowStage === "qa" && renderQAStage()}
+          {flowStage === "summary" && renderSummaryStage()}
+          {flowStage === "ready" && renderReadyStage()}
+        </ScrollView>
+      </KeyboardSafeView>
+
+      {/* Beautiful Summary Notice Modal */}
+      <Modal
+        visible={showSummaryNoticeModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowSummaryNoticeModal(false)}
       >
-        {flowStage === "welcome" && renderWelcomeStage()}
-        {flowStage === "qa" && renderQAStage()}
-        {flowStage === "summary" && renderSummaryStage()}
-        {flowStage === "ready" && renderReadyStage()}
-      </ScrollView>
-    </KeyboardSafeView>
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowSummaryNoticeModal(false)}
+        >
+          <TouchableOpacity
+            style={styles.modalContent}
+            activeOpacity={1}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={styles.modalHeader}>
+              <Sparkles size={20} color={Colors.primary[600]} />
+              <Text style={styles.modalTitle}>Feeling good? ✨</Text>
+            </View>
+            
+            <Text style={styles.modalMessage}>
+              If you feel good, click Generate Summary.
+            </Text>
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalButtonPrimary]}
+                onPress={async () => {
+                  setShowSummaryNoticeModal(false);
+                  if (qaPairs.length < 2) {
+                    Alert.alert(
+                      "Need one more beat 💬",
+                      "Add at least two answers before I spin up your recap."
+                    );
+                    return;
+                  }
+                  setIsGeneratingSummary(true);
+                  setCurrentQuestion("");
+                  scrollToEnd();
+                  await generateSummary(qaPairs);
+                }}
+              >
+                <Sparkles size={16} color="#fff" />
+                <Text style={styles.modalButtonPrimaryText}>Generate Summary</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalButtonSecondary]}
+                onPress={async () => {
+                  setShowSummaryNoticeModal(false);
+                  await handleAnswerSubmit();
+                }}
+              >
+                <Text style={styles.modalButtonSecondaryText}>See another prompt</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.modalButton, styles.modalButtonCancel]}
+                onPress={() => setShowSummaryNoticeModal(false)}
+              >
+                <Text style={styles.modalButtonCancelText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+    </>
   );
 }
 
@@ -5210,14 +5753,14 @@ const styles = StyleSheet.create({
   },
   stageContent: {
     paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.lg,
-    paddingBottom: Spacing.xl,
-    gap: Spacing.lg,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.md,
+    gap: Spacing.sm,
   },
   stageFooter: {
     paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.md,
-    paddingBottom: Spacing.lg,
+    paddingTop: Spacing.sm,
+    paddingBottom: Spacing.md,
     borderTopWidth: 1,
     borderTopColor: Colors.borderLight,
     backgroundColor: Colors.background,
@@ -5227,19 +5770,29 @@ const styles = StyleSheet.create({
   },
   stageBodyInset: {
     paddingHorizontal: Spacing.lg,
-    paddingBottom: Spacing.xl,
-    gap: Spacing.lg,
+    paddingBottom: Spacing.md,
+    gap: Spacing.sm,
   },
   headerSection: {
     alignItems: "center",
-    marginBottom: Spacing.lg,
+    marginTop: Spacing.lg,
+    marginBottom: Spacing.sm,
+  },
+  headerTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: Spacing.sm,
+  },
+  stageIcon: {
+    fontSize: 24,
   },
   stageTitle: {
-    fontSize: Typography.fontSize.lg,
-    fontWeight: Typography.fontWeight.semibold,
-    color: Colors.text.primary,
-    marginTop: Spacing.sm,
+    fontSize: Typography.fontSize.xl,
+    fontWeight: Typography.fontWeight.bold,
+    color: Colors.primary[700],
     textAlign: "center",
+    letterSpacing: 0.3,
   },
   stageSubtitle: {
     fontSize: Typography.fontSize.xs,
@@ -5259,15 +5812,17 @@ const styles = StyleSheet.create({
     color: Colors.primary[600],
   },
   descriptionInput: {
-  borderWidth: 1,
-  borderColor: Colors.borderLight,
+  borderWidth: 2,
+  borderColor: Colors.primary[400],
   borderRadius: BorderRadius.lg,
   padding: Spacing.md,
-  fontSize: Typography.fontSize.sm,
-  backgroundColor: Colors.surface,
-  minHeight: 120,
+  fontSize: Typography.fontSize.xs,
+  fontWeight: Typography.fontWeight.normal,
+  backgroundColor: Colors.secondary[50],
+  minHeight: 140,
   textAlignVertical: "top",
-  marginTop: Spacing.md,
+  marginTop: Spacing.xs,
+  color: Colors.text.primary,
   ...Shadows.small,
 },
   hashTagWarningText: {
@@ -5280,7 +5835,8 @@ const styles = StyleSheet.create({
   descriptionWrapper: {
     position: "relative",
     width: "100%",
-    gap: Spacing.sm,
+    gap: Spacing.xs,
+    marginTop: Spacing.xs,
   },
   helperSummary: {
     alignItems: "flex-end",
@@ -5288,35 +5844,73 @@ const styles = StyleSheet.create({
   },
   helperHint: {
     fontSize: Typography.fontSize.xs,
-    color: Colors.text.tertiary,
+    color: Colors.primary[600],
     fontStyle: "italic",
+    fontWeight: Typography.fontWeight.medium,
+  },
+  placeholderHintWrapper: {
+    position: "absolute",
+    top: Spacing.md,
+    left: Spacing.md,
+    zIndex: 1,
+    pointerEvents: "none",
+  },
+  placeholderHintLine1: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.text.primary,
+    fontWeight: Typography.fontWeight.normal,
+    marginBottom: 2,
+  },
+  placeholderHintLine2: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.text.primary,
+    fontWeight: Typography.fontWeight.normal,
   },
   qaPairsContent: {
     paddingHorizontal: Spacing.lg,
-    paddingBottom: Spacing.xl,
-    gap: Spacing.md,
+    paddingTop: Spacing.xs,
+    paddingBottom: Spacing.md,
+    gap: Spacing.sm,
   },
   qaPairsContainer: {
     flex: 1,
     marginBottom: Spacing.lg,
   },
   qaCardVertical: {
-  backgroundColor: Colors.surface,
+  backgroundColor: Colors.secondary[50],
   borderRadius: BorderRadius.lg,
-  padding: Spacing.md,
+  padding: Spacing.sm,
   marginBottom: Spacing.sm,
-  borderWidth: 1,
-  borderColor: Colors.borderLight,
+  borderWidth: 2,
+  borderColor: Colors.primary[400],
   ...Shadows.small,
 },
   questionSection: {
-    marginBottom: Spacing.md,
-    paddingBottom: Spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.borderLight,
+    marginBottom: Spacing.sm,
+    paddingBottom: Spacing.sm,
+    borderBottomWidth: 2,
+    borderBottomColor: Colors.secondary[300],
+  },
+  questionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  questionHeaderLeft: {
+    flex: 1,
+    marginRight: Spacing.sm,
+  },
+  deleteButton: {
+    padding: Spacing.xs,
+    borderRadius: BorderRadius.sm,
+    backgroundColor: Colors.error[50],
+    justifyContent: 'center',
+    alignItems: 'center',
+    minWidth: 32,
+    minHeight: 32,
   },
   answerSection: {
-    paddingTop: Spacing.xs,
+    paddingTop: 0,
   },
   questionLabel: {
     fontSize: Typography.fontSize.xs,
@@ -5328,7 +5922,7 @@ const styles = StyleSheet.create({
  questionText: {
   fontSize: Typography.fontSize.sm,
   color: Colors.text.primary,
-  fontWeight: Typography.fontWeight.semibold,
+  fontWeight: Typography.fontWeight.normal,
   lineHeight: 20,
 },
   answerLabel: {
@@ -5343,15 +5937,51 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
  answerInput: {
-  borderWidth: 1,
-  borderColor: Colors.borderLight,
-  borderRadius: BorderRadius.md,
-  padding: Spacing.sm,
-  fontSize: Typography.fontSize.base,
-  backgroundColor: Colors.surface,
+  borderWidth: 2,
+  borderColor: Colors.primary[400],
+  borderRadius: BorderRadius.lg,
+  padding: Spacing.md,
+  fontSize: Typography.fontSize.sm,
+  fontWeight: Typography.fontWeight.normal,
+  backgroundColor: Colors.secondary[50],
   minHeight: 70,
   textAlignVertical: "top",
+  color: Colors.text.primary,
+  ...Shadows.small,
 },
+  answerActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: Spacing.xs,
+    marginBottom: Spacing.xs,
+  },
+  saveButton: {
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderRadius: BorderRadius.md,
+    backgroundColor: Colors.primary[500],
+    justifyContent: 'center',
+    alignItems: 'center',
+    minWidth: 60,
+    marginLeft: Spacing.sm,
+  },
+  saveButtonText: {
+    color: '#FFFFFF',
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.semibold,
+  },
+  savedIndicator: {
+    width: 32,
+    height: 32,
+    borderRadius: BorderRadius.full,
+    backgroundColor: Colors.success[50],
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: Colors.success[600],
+    marginLeft: Spacing.sm,
+  },
   optionsContainer: {
     gap: Spacing.sm,
   },
@@ -5376,20 +6006,26 @@ const styles = StyleSheet.create({
     fontWeight: Typography.fontWeight.semibold,
   },
   summaryCard: {
-  backgroundColor: Colors.surface,
-  borderRadius: BorderRadius.lg,
-  padding: Spacing.md,
-  borderWidth: 1,
-  borderColor: Colors.borderLight,
-  marginBottom: Spacing.md,
-  ...Shadows.small,
-},
+    backgroundColor: Colors.secondary[50],
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.sm,
+    marginBottom: Spacing.sm,
+    borderWidth: 2,
+    borderColor: Colors.primary[400],
+    ...Shadows.small,
+  },
 summaryLabel: {
   fontSize: Typography.fontSize.base,
   fontWeight: Typography.fontWeight.semibold,
   color: Colors.text.primary,
-  marginTop: Spacing.md,   // ✅ keep this as is
+  marginTop: Spacing.sm,
   marginBottom: Spacing.xs,
+},
+summaryTextWithSpacing: {
+  fontSize: Typography.fontSize.sm,
+  color: Colors.text.secondary,
+  lineHeight: 20,
+  marginBottom: Spacing.md,
 },
 
 
@@ -5414,16 +6050,20 @@ summaryText: {
 },
 
   generatingContainer: {
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: Spacing.md,   // tightened
-    gap: Spacing.sm,               // tightened
+    paddingVertical: Spacing.xs,
+    marginVertical: Spacing.xs,
+    gap: Spacing.xs,
   },
   generatingText: {
-    fontSize: Typography.fontSize.lg,
+    fontSize: Typography.fontSize.base,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.primary[600],
-    marginTop: Spacing.xs,         // tightened
+  },
+  generatingLoader: {
+    marginLeft: Spacing.xs,
   },
 tagDropdownContainer: {
   position: "absolute",
@@ -5513,12 +6153,12 @@ tagDropdownScroll: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    gap: Spacing.xs,
-    backgroundColor: Colors.primary[500],
-    borderWidth: 1,
+    gap: Spacing.sm,
+    backgroundColor: Colors.secondary[600],
+    borderWidth: 3,
     borderColor: Colors.primary[400],
-    paddingVertical: Spacing.sm,
-    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.xl,
     borderRadius: BorderRadius.lg,
     ...Shadows.small,
   },
@@ -5527,8 +6167,9 @@ tagDropdownScroll: {
   },
   primaryButtonText: {
     color: "#fff",
-    fontSize: Typography.fontSize.sm,
-    fontWeight: Typography.fontWeight.semibold,
+    fontSize: Typography.fontSize.base,
+    fontWeight: Typography.fontWeight.bold,
+    letterSpacing: 0.3,
   },
   secondaryButton: {
      flex: 1,
@@ -5536,17 +6177,19 @@ tagDropdownScroll: {
      alignItems: "center",
      justifyContent: "center",
      gap: Spacing.xs,
-     backgroundColor: Colors.surface,
-     borderWidth: 1,
-     borderColor: Colors.primary[200],
-     paddingVertical: Spacing.sm,
+     backgroundColor: Colors.secondary[50],
+     borderWidth: 2,
+     borderColor: Colors.secondary[300],
+     paddingVertical: Spacing.md,
      paddingHorizontal: Spacing.lg,
      borderRadius: BorderRadius.lg,
+     ...Shadows.small,
    },
    secondaryButtonText: {
-     color: Colors.primary[600],
+     color: Colors.secondary[700],
      fontSize: Typography.fontSize.sm,
-     fontWeight: Typography.fontWeight.semibold,
+     fontWeight: Typography.fontWeight.bold,
+     letterSpacing: 0.2,
    },
   readyMessage: {
   fontSize: Typography.fontSize.sm,
@@ -5581,65 +6224,69 @@ readyButtonText: {
     marginTop: Spacing.xs,
   },
   loadingInfoBox: {
-    marginTop: Spacing.xl,
-    padding: Spacing.xl,
+    marginTop: Spacing.md,
+    padding: Spacing.md,
     backgroundColor: Colors.surface,
     borderRadius: BorderRadius.lg,
     borderWidth: 1,
     borderColor: Colors.borderLight,
     alignItems: 'center',
-    gap: Spacing.sm,
+    gap: Spacing.xs,
   },
   editModeContainer: {
-    marginTop: Spacing.lg,
     flex: 1,
+    backgroundColor: Colors.background,
   },
   editModeTitle: {
     fontSize: Typography.fontSize.lg,
     fontWeight: Typography.fontWeight.bold,
     color: Colors.text.primary,
-    marginBottom: Spacing.md,
+    marginBottom: Spacing.sm,
   },
   editScrollView: {
     flex: 1,
-    marginBottom: Spacing.lg,
+    backgroundColor: Colors.background,
   },
   editScrollViewContent: {
-    paddingBottom: Spacing.xxl * 2,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.md,
+    gap: Spacing.sm,
   },
   editQACard: {
-    backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.lg,
-    padding: Spacing.md,
-    marginBottom: Spacing.md,
-    borderWidth: 1,
-    borderColor: Colors.borderLight,
+    marginBottom: Spacing.sm,
+    gap: Spacing.xs,
   },
   editQuestionText: {
     fontSize: Typography.fontSize.sm,
-    fontWeight: Typography.fontWeight.semibold,
-    color: Colors.text.secondary,
-    marginBottom: Spacing.sm,
+    color: Colors.text.primary,
+    fontWeight: Typography.fontWeight.normal,
+    lineHeight: 20,
+    marginBottom: Spacing.xs,
   },
   editAnswerInput: {
-    borderWidth: 1,
-    borderColor: Colors.borderLight,
-    borderRadius: BorderRadius.md,
+    borderWidth: 2,
+    borderColor: Colors.primary[400],
+    borderRadius: BorderRadius.lg,
     padding: Spacing.md,
-    fontSize: Typography.fontSize.base,
-    color: Colors.text.primary,
-    backgroundColor: "#fff",
-    minHeight: 60,
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.normal,
+    backgroundColor: Colors.secondary[50],
+    minHeight: 70,
     textAlignVertical: "top",
+    color: Colors.text.primary,
+    ...Shadows.small,
   },
   additionalInfoSection: {
-    marginTop: Spacing.md,
+    marginTop: Spacing.sm,
+    gap: Spacing.xs,
   },
   additionalInfoLabel: {
-    fontSize: Typography.fontSize.sm,
-    fontWeight: Typography.fontWeight.semibold,
-    color: Colors.text.primary,
-    marginBottom: Spacing.sm,
+    fontSize: Typography.fontSize.base,
+    fontWeight: Typography.fontWeight.bold,
+    color: Colors.secondary[700],
+    marginBottom: Spacing.xs,
+    letterSpacing: 0.2,
   },
   
   warningText: {
@@ -5656,21 +6303,23 @@ readyButtonText: {
 
 
   additionalInfoInput: {
-    borderWidth: 1,
-    borderColor: Colors.borderLight,
-    borderRadius: BorderRadius.md,
+    borderWidth: 2,
+    borderColor: Colors.primary[400],
+    borderRadius: BorderRadius.lg,
     padding: Spacing.md,
-    fontSize: Typography.fontSize.base,
-    color: Colors.text.primary,
-    backgroundColor: "#fff",
-    minHeight: 100,
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.normal,
+    backgroundColor: Colors.secondary[50],
+    minHeight: 70,
     textAlignVertical: "top",
+    color: Colors.text.primary,
+    ...Shadows.small,
   },
 
   buttonColumn: {
     flexDirection: "column",
     alignItems: "stretch",
-    gap: Spacing.sm,
+    gap: Spacing.xs,
   },
 
 fullWidthButton: {
@@ -5689,7 +6338,8 @@ halfButton: {
   fontSize: Typography.fontSize.xs,
   textAlign: "right",
   marginRight: 6,
-  color: Colors.text.secondary,
+  color: Colors.secondary[500],
+  fontWeight: Typography.fontWeight.normal,
   fontStyle: "italic",
 },
 
@@ -5713,14 +6363,14 @@ halfButton: {
     borderWidth: 1,
     borderColor: Colors.borderLight,
     borderRadius: BorderRadius.lg,
-    padding: Spacing.md,
-    marginBottom: Spacing.md,
+    padding: Spacing.sm,
+    marginBottom: Spacing.sm,
     ...Shadows.small,
   },
   returnBannerText: {
     fontSize: Typography.fontSize.sm,
     color: Colors.text.secondary,
-    marginBottom: Spacing.sm,
+    marginBottom: Spacing.xs,
     textAlign: 'center',
   },
   returnBannerRow: {
@@ -5786,30 +6436,139 @@ halfButton: {
   },
 
   inputGroup: {
-    marginBottom: Spacing.md,
+    marginBottom: Spacing.sm,
   },
   inputLabel: {
+    fontSize: Typography.fontSize.base,
+    fontWeight: Typography.fontWeight.bold,
+    color: Colors.secondary[700],
+    marginBottom: Spacing.xs,
+    letterSpacing: 0.2,
+  },
+  contactLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: Spacing.sm,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    backgroundColor: Colors.secondary[100],
+    borderRadius: BorderRadius.lg,
+    borderWidth: 2,
+    borderColor: Colors.primary[400],
+    ...Shadows.small,
+  },
+  contactLabel: {
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.bold,
+    color: Colors.secondary[700],
+    letterSpacing: 0.2,
+  },
+  contactValue: {
     fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.semibold,
-    color: Colors.text.primary,
-    marginBottom: Spacing.xs,
+    color: Colors.secondary[600],
   },
   titleInput: {
-    borderWidth: 1,
-    borderColor: Colors.borderLight,
-    borderRadius: BorderRadius.md,
-    padding: Spacing.sm,
-    fontSize: Typography.fontSize.base,
-    backgroundColor: Colors.surface,
-    minHeight: 40,
+    borderWidth: 2,
+    borderColor: Colors.primary[400],
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.normal,
+    backgroundColor: Colors.secondary[50],
+    minHeight: 44,
     textAlignVertical: "top",
     marginBottom: Spacing.xs,
+    color: Colors.text.primary,
     ...Shadows.small,
   },
   inputHelper: {
     fontSize: Typography.fontSize.xs,
     color: Colors.text.tertiary,
     marginBottom: Spacing.xs,
+  },
+  // Modal styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: Spacing.lg,
+  },
+  modalContent: {
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.lg,
+    width: '100%',
+    maxWidth: 400,
+    borderWidth: 2,
+    borderColor: Colors.primary[400],
+    ...Shadows.medium,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: Spacing.sm,
+    gap: Spacing.xs,
+  },
+  modalTitle: {
+    fontSize: Typography.fontSize.base,
+    fontWeight: Typography.fontWeight.bold,
+    color: Colors.primary[700],
+    textAlign: 'center',
+    letterSpacing: 0.2,
+  },
+  modalMessage: {
+    fontSize: Typography.fontSize.sm,
+    color: Colors.text.secondary,
+    textAlign: 'center',
+    marginBottom: Spacing.md,
+    lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
+  },
+  modalButtons: {
+    gap: Spacing.sm,
+  },
+  modalButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    gap: Spacing.xs,
+  },
+  modalButtonPrimary: {
+    backgroundColor: Colors.secondary[600],
+    borderWidth: 2,
+    borderColor: Colors.primary[400],
+    ...Shadows.small,
+  },
+  modalButtonPrimaryText: {
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.bold,
+    color: Colors.text.inverse,
+    letterSpacing: 0.2,
+  },
+  modalButtonSecondary: {
+    backgroundColor: Colors.secondary[50],
+    borderWidth: 2,
+    borderColor: Colors.secondary[300],
+  },
+  modalButtonSecondaryText: {
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.semibold,
+    color: Colors.secondary[600],
+    letterSpacing: 0.1,
+  },
+  modalButtonCancel: {
+    backgroundColor: 'transparent',
+  },
+  modalButtonCancelText: {
+    fontSize: Typography.fontSize.xs,
+    fontWeight: Typography.fontWeight.medium,
+    color: Colors.text.tertiary,
   },
 
 });

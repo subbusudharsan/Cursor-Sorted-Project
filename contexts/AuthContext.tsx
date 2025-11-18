@@ -164,19 +164,66 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       body: policyPayload,
     });
 
+    // 🔍 DEBUG LOGGING - Full response details
+    console.log('🔍 [SIGNUP DEBUG] Password Policy Function Response:');
+    console.log('  - policyData:', JSON.stringify(policyData, null, 2));
+    console.log('  - policyError:', JSON.stringify(policyError, null, 2));
+    console.log('  - policyError type:', typeof policyError);
+    console.log('  - policyError message:', (policyError as any)?.message);
+    console.log('  - policyError error:', (policyError as any)?.error);
     if (policyError) {
-      throw new Error((policyError as Error)?.message || 'Failed to validate password policy.');
+      console.log('  - Full policyError object:', policyError);
     }
+
+    // Handle edge function response - check data.error first (from response body), then policyError (HTTP error)
     if (policyData?.error) {
+      // Response body contains an error message
+      console.log('❌ [SIGNUP DEBUG] Error in policyData:', policyData.error);
       throw new Error(policyData.error);
     }
 
+    // Check for HTTP-level errors (non-2xx status codes)
+    if (policyError) {
+      // Try to extract error message from policyError or use policyData if available
+      const errorMessage = (policyError as any)?.message || 
+                          (policyError as any)?.error?.message ||
+                          policyData?.error ||
+                          'Failed to validate password policy.';
+      console.log('❌ [SIGNUP DEBUG] HTTP Error from edge function:', errorMessage);
+      throw new Error(errorMessage);
+    }
+
+    // Require explicit success flag
+    if (!policyData || policyData.valid !== true) {
+      console.log('❌ [SIGNUP DEBUG] Missing valid flag. policyData:', policyData);
+      throw new Error('Password validation failed.');
+    }
+
+    console.log('✅ [SIGNUP DEBUG] Password policy validation passed');
+
+    // Call supabase.auth.signUp with correct parameters
     const { data, error } = await supabase.auth.signUp({
-      email,
+      email: email.trim(),
       password,
-      options: { data: { full_name: fullName } },
+      options: {
+        data: {
+          full_name: fullName,
+        },
+      },
     });
-    if (error) throw error;
+
+    // Only throw if there's an actual error from Supabase
+    if (error) {
+      throw error;
+    }
+
+    // Treat signup as successful if user was created, even if session is null
+    // (This is normal for email confirmation flows)
+    if (!data.user) {
+      throw new Error('Failed to create user account. Please try again.');
+    }
+
+    // Return data - user exists, session may be null if email confirmation is required
     return data;
   };
 

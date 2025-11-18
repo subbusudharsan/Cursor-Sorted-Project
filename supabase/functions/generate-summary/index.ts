@@ -100,6 +100,42 @@ Your task is to:
 CRITICAL: The summaries MUST incorporate ALL Q&A responses, not just the initial description.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INPUT VALIDATION RULES:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Reject and ignore (do NOT treat as meaningful):
+- random character strings ("asdfgh", "nnnnn", "xxxxx")
+- pure gibberish
+- empty strings
+- single-letter inputs ("a", "b", "k")
+- punctuation-only or emoji-only responses ("!!!", "...", "??", "😂")
+
+Accept and interpret meaningfully:
+- short answers (1–3 meaningful words)
+- minimal but meaningful replies ("sad", "confused", "hurt")
+- broken or incomplete sentences
+- spelling mistakes
+- punctuation errors (run-ons, missing punctuation, extra punctuation)
+- fragmented thoughts
+
+If answers are low-detail but meaningful:
+- infer emotional meaning softly
+- reconstruct a high-level interpretation
+- DO NOT skip summary generation
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SUMMARY LENGTH RULE (IMPORTANT):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The model must NOT make the summaries significantly longer or shorter than the natural meaning of the user's input.
+
+Do NOT add new ideas.
+Do NOT compress away meaning.
+Simply reorganize what the user said into a clean, clear, meaningful summary.
+
+Focus on clarity, NOT expansion or shortening.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 1) A-PERSPECTIVE SUMMARY (User A talking to AI - ONLY for User A in Stage 3):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 • This is ONLY for User A.
@@ -177,6 +213,13 @@ Return ONLY valid JSON with this structure:
   }
 }
 
+CRITICAL REQUIREMENTS:
+- The model MUST ALWAYS return BOTH fields: summary_a_perspective AND summary_shared_neutral
+- NEVER return null for either summary
+- NEVER output "insufficient information" or skip summary generation
+- If needed, generate a short, safe, high-level version based strictly on what the user provided
+- Both summaries must be meaningful and complete, even if the input is minimal
+
 Guidelines:
 - MUST include information from ALL Q&A responses in BOTH summaries
 - A-PERSPECTIVE SUMMARY: Emotional, first-person, preserves @ and # tags
@@ -186,7 +229,10 @@ Guidelines:
 - Choose appropriate pronouns based on names and context
 - NEVER invent new person names. Only reference names that appear in the initial description, Q&A responses, or the tagged_persons list. If no name is provided, describe the person generically (e.g., "a coworker").
 - Preserve ALL important emotional context in A-PERSPECTIVE SUMMARY only
-- Keep NEUTRAL SHARED SUMMARY purely factual and neutral`;
+- Keep NEUTRAL SHARED SUMMARY purely factual and neutral
+- ALWAYS generate BOTH summaries - never skip or return null
+- Apply input validation rules to filter out meaningless inputs while accepting all meaningful content
+- Maintain natural summary length based on user input - do not expand or compress unnecessarily`;
 
     const claudePayload = {
       model: 'claude-3-5-haiku-20241022',

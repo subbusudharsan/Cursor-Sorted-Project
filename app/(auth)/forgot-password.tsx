@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, ScrollView, ActivityIndicator, Alert, Platform } from 'react-native';
 import { router } from 'expo-router';
 import { supabase } from '@/lib/supabase';
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/Colors';
@@ -17,10 +17,17 @@ export default function ForgotPasswordScreen() {
     }
     setLoading(true);
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(trimmed);
+      // Get the redirect URL - for web, use current origin; for native, use deep link
+      const redirectUrl = Platform.OS === 'web' 
+        ? `${typeof window !== 'undefined' ? window.location.origin : ''}/(auth)/reset-password`
+        : 'sorted://reset-password';
+      
+      const { error } = await supabase.auth.resetPasswordForEmail(trimmed, {
+        redirectTo: redirectUrl,
+      });
       if (error) throw error;
       Alert.alert('Check your inbox', 'If an account exists for this address, a reset link has been sent.');
-      router.back();
+      router.push({ pathname: '/(auth)/enter-otp', params: { email: trimmed } });
     } catch (err: any) {
       Alert.alert('Could not send reset email', err?.message || 'Please try again.');
     } finally {

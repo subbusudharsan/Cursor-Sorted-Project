@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { router } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
-import { ArrowLeft, Eye, EyeOff } from 'lucide-react-native';
+import { ArrowLeft, Eye, EyeOff, Mail, Lock, LogIn } from 'lucide-react-native';
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/Colors';
 import Button from '@/components/ui/Button';
 import NotificationBanner from '@/components/ui/NotificationBanner';
@@ -79,6 +79,9 @@ function SignInScreen() {
         contentContainerStyle={styles.scrollContainer}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        bounces={false}
+        removeClippedSubviews={false}
+        keyboardDismissMode="on-drag"
       >
           <Animated.View style={[styles.content, { opacity: fadeAnim }]}>
             <View style={styles.header}>
@@ -88,16 +91,28 @@ function SignInScreen() {
               >
                 <ArrowLeft size={24} color={Colors.text.secondary} />
               </TouchableOpacity>
+              
+              <View style={styles.iconContainer}>
+                <View style={styles.iconBackground}>
+                  <View style={styles.iconInnerCircle}>
+                    <LogIn size={24} color={Colors.primary[700]} />
+                  </View>
+                </View>
+              </View>
+              
               <Text style={styles.title}>Welcome Back</Text>
               <Text style={styles.subtitle}>
-                Sign in to continue your emotional wellness journey
+                Sign in to keep growing emotionally 🌸
               </Text>
             </View>
 
             <View style={styles.form}>
               <View style={styles.inputContainer}>
-                <Text style={styles.label}>Email</Text>
-                <View style={styles.inputWrapper}>
+                <View style={styles.labelContainer}>
+                  <Mail size={16} color={Colors.primary[500]} style={styles.labelIcon} />
+                  <Text style={styles.label}>Email</Text>
+                </View>
+                <View style={[styles.inputWrapper, styles.emailInputWrapper]}>
                   <TextInput
                     style={styles.input}
                     value={email}
@@ -112,8 +127,11 @@ function SignInScreen() {
               </View>
 
               <View style={styles.inputContainer}>
-                <Text style={styles.label}>Password</Text>
-                <View style={[styles.inputWrapper, styles.passwordContainer]}>
+                <View style={styles.labelContainer}>
+                  <Lock size={16} color={Colors.secondary[500]} style={styles.labelIcon} />
+                  <Text style={styles.label}>Password</Text>
+                </View>
+                <View style={[styles.inputWrapper, styles.passwordContainer, styles.passwordInputWrapper]}>
                   <TextInput
                     style={styles.passwordInput}
                     value={password}
@@ -134,10 +152,10 @@ function SignInScreen() {
                     )}
                   </TouchableOpacity>
                 </View>
-              </View>
-
-              <View style={styles.forgotContainer}>
-                <TouchableOpacity onPress={() => router.push('/(auth)/forgot-password')}>
+                <TouchableOpacity 
+                  style={styles.forgotContainer}
+                  onPress={() => router.push('/(auth)/forgot-password')}
+                >
                   <Text style={styles.forgotLink}>Forgot password?</Text>
                 </TouchableOpacity>
               </View>
@@ -154,7 +172,9 @@ function SignInScreen() {
 
               <View style={styles.signUpContainer}>
                 <Text style={styles.signUpText}>Don't have an account? </Text>
-                <TouchableOpacity onPress={() => router.replace('/(auth)/signup')}>
+                <TouchableOpacity 
+                  onPress={() => router.replace('/(auth)/signup')}
+                >
                   <Text style={styles.signUpLink}>Sign Up</Text>
                 </TouchableOpacity>
               </View>
@@ -173,14 +193,15 @@ const styles = StyleSheet.create({
   scrollContainer: {
     flexGrow: 1,
     paddingHorizontal: Spacing.xl,
-    paddingTop: 60,
+    paddingTop: 40,
     paddingBottom: Spacing.xxxl,
   },
   content: {
     flex: 1,
   },
   header: {
-    marginBottom: Spacing.xxxl * 2,
+    marginBottom: Spacing.xl,
+    alignItems: 'center',
   },
   backButton: {
     width: 44,
@@ -189,42 +210,92 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: Spacing.xl,
+    marginBottom: Spacing.lg,
+    alignSelf: 'flex-start',
     ...Shadows.small,
+  },
+  iconContainer: {
+    alignItems: 'center',
+    marginBottom: Spacing.sm,
+  },
+  iconBackground: {
+    width: 56,
+    height: 56,
+    borderRadius: BorderRadius.full,
+    backgroundColor: Colors.primary[100],
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 3,
+    borderColor: Colors.primary[400],
+    ...Shadows.small,
+  },
+  iconInnerCircle: {
+    width: 46,
+    height: 46,
+    borderRadius: BorderRadius.full,
+    backgroundColor: Colors.primary[200],
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: Colors.primary[300],
   },
   title: {
     fontSize: Typography.fontSize['3xl'],
     fontWeight: Typography.fontWeight.bold,
     color: Colors.text.primary,
-    marginBottom: Spacing.sm,
+    marginBottom: Spacing.xs,
+    textAlign: 'center',
   },
   subtitle: {
-    fontSize: Typography.fontSize.lg,
+    fontSize: Typography.fontSize.base,
     color: Colors.text.secondary,
-    lineHeight: Typography.lineHeight.normal * Typography.fontSize.lg,
+    lineHeight: Typography.lineHeight.normal * Typography.fontSize.base,
+    textAlign: 'center',
+    paddingHorizontal: Spacing.lg,
   },
   form: {
-    flex: 1,
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.xl,
+    borderWidth: 2,
+    borderColor: Colors.primary[100],
+    ...Shadows.medium,
   },
   inputContainer: {
-    marginBottom: Spacing.xl,
+    marginBottom: Spacing.lg,
+  },
+  labelContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: Spacing.sm,
+  },
+  labelIcon: {
+    marginRight: Spacing.xs,
   },
   label: {
     fontSize: Typography.fontSize.base,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.text.primary,
-    marginBottom: Spacing.sm,
   },
   inputWrapper: {
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: Colors.borderLight,
     borderRadius: BorderRadius.lg,
     backgroundColor: Colors.surface,
     ...Shadows.small,
   },
+  emailInputWrapper: {
+    borderLeftWidth: 3,
+    borderLeftColor: Colors.primary[300],
+  },
+  passwordInputWrapper: {
+    borderLeftWidth: 3,
+    borderLeftColor: Colors.secondary[400],
+    backgroundColor: Colors.secondary[50],
+  },
   input: {
     paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.lg,
+    paddingVertical: Spacing.sm,
     fontSize: Typography.fontSize.base,
     color: Colors.text.primary,
   },
@@ -235,41 +306,50 @@ const styles = StyleSheet.create({
   passwordInput: {
     flex: 1,
     paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.lg,
+    paddingVertical: Spacing.sm,
     fontSize: Typography.fontSize.base,
     color: Colors.text.primary,
   },
   eyeButton: {
-    padding: Spacing.lg,
+    padding: Spacing.sm,
   },
   signInButton: {
-    marginTop: Spacing.xl,
-    marginBottom: Spacing.xl,
+    marginTop: Spacing.lg,
+    marginBottom: Spacing.md,
+    backgroundColor: Colors.primary[500],
+    borderWidth: 2,
+    borderColor: Colors.secondary[400],
+    shadowColor: Colors.primary[500],
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
   },
   signUpContainer: {
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
+    flexWrap: 'wrap',
   },
   signUpText: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     color: Colors.text.secondary,
   },
   signUpLink: {
     fontSize: Typography.fontSize.base,
-    color: Colors.primary[500],
-    fontWeight: Typography.fontWeight.semibold,
+    color: Colors.success[700],
+    fontWeight: Typography.fontWeight.medium,
+    marginLeft: Spacing.xs,
   },
   forgotContainer: {
     alignItems: 'flex-end',
-    marginTop: Spacing.sm,
-    marginBottom: Spacing.sm,
+    marginTop: Spacing.xs,
+    marginBottom: 0,
   },
   forgotLink: {
-    color: Colors.primary[500],
+    color: Colors.secondary[600],
     fontSize: Typography.fontSize.sm,
-    fontWeight: Typography.fontWeight.semibold,
-    textDecorationLine: 'underline',
+    fontWeight: Typography.fontWeight.medium,
   },
 });
 

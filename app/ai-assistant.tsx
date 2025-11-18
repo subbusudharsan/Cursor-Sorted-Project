@@ -15,7 +15,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { LongPressGestureHandler, State } from "react-native-gesture-handler";
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
-import { ArrowLeft, Bot, MessageCircle, Plus, Sparkles, Check, Trash2, X } from "lucide-react-native";
+import { ArrowLeft, MessageCircle, Plus, Sparkles, Check, Trash2, X } from "lucide-react-native";
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/Colors';
 import { MY_TALKS_LIMIT, getCompletedMyTalksCount, buildMyTalksLimitMessage } from '@/lib/myTalksLimit';
 
@@ -28,6 +28,7 @@ interface AIConversation {
   created_at: string;
   context_contact_id: string;
   contact_name: string;
+  context_data: any;
 }
 
 function AIAssistantScreen() {
@@ -51,7 +52,11 @@ const fetchConversations = useCallback(async () => {
     }
 
     try {
-      setLoading(true);
+      // ✅ Only show loading spinner on initial load, not on refresh
+      // This makes navigation feel instant when returning from AI chat
+      if (conversations.length === 0) {
+        setLoading(true);
+      }
       console.log('📥 Fetching AI conversations for user:', user?.id);
 
       const { data: chatsData, error } = await supabase
@@ -62,6 +67,27 @@ const fetchConversations = useCallback(async () => {
   .order('created_at', { ascending: false })
   .range(0, MAX_CONVERSATIONS - 1)
   .throwOnError();
+  
+      // ✅ Filter out empty sessions (no meaningful content)
+      const validChats = (chatsData || []).filter((chat) => {
+        const ctx = chat.context_data;
+        if (!ctx) return false;
+        
+        const flowStage = ctx.flowStage || 'welcome';
+        const hasInitialDescription = ctx.initial_description && ctx.initial_description.trim().length > 0;
+        const hasQAPairs = ctx.qa_pairs && ctx.qa_pairs.length > 0;
+        const hasSummary = ctx.summary && ctx.summary.trim().length > 0;
+        
+        // Only include chats with meaningful content
+        return (
+          (flowStage === 'welcome' && hasInitialDescription) ||
+          (flowStage === 'qa' && hasQAPairs) ||
+          (flowStage === 'summary' && hasQAPairs && hasSummary) ||
+          (flowStage === 'ready' && hasQAPairs && hasSummary)
+        );
+      });
+      
+      console.log(`✅ Filtered ${(chatsData || []).length} chats to ${validChats.length} valid chats`);
 
 
 
@@ -71,16 +97,16 @@ const fetchConversations = useCallback(async () => {
         throw error;
       }
 
-      console.log('✅ Found', chatsData?.length || 0, 'AI conversations');
+      console.log('✅ Found', validChats?.length || 0, 'AI conversations');
 
-      if (!chatsData || chatsData.length === 0) {
+      if (!validChats || validChats.length === 0) {
         setConversations([]);
         return;
       }
 
       const contactIds = Array.from(
         new Set(
-          (chatsData || [])
+          validChats
             .map((chat) => chat.context_contact_id)
             .filter((id): id is string => Boolean(id))
         )
@@ -105,7 +131,7 @@ const fetchConversations = useCallback(async () => {
         }
       }
 
-      const filteredChats = (chatsData || []).filter((chat) => {
+      const filteredChats = validChats.filter((chat) => {
         if (!chat.context_data) return true;
         if (chat.context_data.initial_pending === false) return false;
         if (chat.context_data.session_promoted === true) return false;
@@ -393,6 +419,49 @@ const fetchConversations = useCallback(async () => {
     return date.toLocaleDateString();
   };
 
+  const getStageDetail = (conversation: AIConversation): string => {
+    const ctx = conversation.context_data;
+    
+    // Always return a stage number, even if context_data is missing
+    if (!ctx || !ctx.flowStage) {
+      return 'Stage 0: Draft';
+    }
+
+    const flowStage = ctx.flowStage;
+    const qaPairs = ctx.qa_pairs || [];
+    const questionCount = qaPairs.length || ctx.questionCount || 0;
+
+    switch (flowStage) {
+      case 'welcome':
+        return 'Stage 1: Getting started';
+      case 'qa':
+        return `Stage 2: Q&A (${questionCount} question${questionCount !== 1 ? 's' : ''} answered)`;
+      case 'summary':
+        return 'Stage 3: Summary generated';
+      case 'ready':
+        return 'Stage 4: Ready to launch';
+      default:
+        return 'Stage 0: Draft';
+    }
+  };
+
+  const getIssuePreview = (conversation: AIConversation): string | null => {
+    const ctx = conversation.context_data;
+    if (!ctx) return null;
+
+    const initialDescription = ctx.initial_description || '';
+    if (!initialDescription || initialDescription.trim().length === 0) {
+      return null;
+    }
+
+    // Truncate to 40 characters for single line display
+    const truncated = initialDescription.trim();
+    if (truncated.length > 40) {
+      return truncated.substring(0, 37) + '...';
+    }
+    return truncated;
+  };
+
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
@@ -413,11 +482,16 @@ const fetchConversations = useCallback(async () => {
           style={styles.backButton}
           onPress={() => router.push('/(tabs)/chats')}
         >
-          <ArrowLeft size={24} color={Colors.text.secondary} />
+          <ArrowLeft size={24} color={Colors.secondary[600]} />
         </TouchableOpacity>
         
         <View style={styles.headerContent}>
-          <Text style={styles.headerTitle}>AI Assistant</Text>
+          <View style={styles.headerTitleRow}>
+            <View style={styles.headerIconContainer}>
+              <Text style={styles.headerIconEmoji}>🤖</Text>
+            </View>
+            <Text style={styles.headerTitle}>Sorted Assistant</Text>
+          </View>
           {contactId && contactName ? (
             <Text style={styles.headerSubtitle}>for {contactName}</Text>
           ) : null}
@@ -426,23 +500,7 @@ const fetchConversations = useCallback(async () => {
         <View style={styles.placeholder} />
       </View>
 
-      <ScrollView
-        style={styles.content}
-        contentContainerStyle={[
-          styles.contentContainer,
-          multiSelectMode && { paddingBottom: 100 },
-        ]}
-      >
-
-        <View style={styles.heroSection}>
-          <View style={styles.heroIcon}>
-            <Bot size={32} color={Colors.primary[500]} />
-          </View>
-          <Text style={styles.heroTitle}>AI Conversation Assistant</Text>
-          <Text style={styles.heroDescription}>
-            I'll help you prepare for meaningful conversations
-          </Text>
-        </View>
+      <View style={styles.fixedSection}>
 
         <TouchableOpacity
           style={[
@@ -452,7 +510,7 @@ const fetchConversations = useCallback(async () => {
           onPress={isLimitReached ? undefined : handleCreateConversation}
           disabled={isLimitReached}
         >
-          <Plus size={20} color="#fff" />
+          <Plus size={20} color={Colors.secondary[600]} />
           <Text style={styles.createButtonText}>
             {isLimitReached
               ? 'Clear one to start'
@@ -493,6 +551,15 @@ const fetchConversations = useCallback(async () => {
             </View>
           </View>
         </View>
+      </View>
+
+      <ScrollView
+        style={styles.content}
+        contentContainerStyle={[
+          styles.contentContainer,
+          multiSelectMode && { paddingBottom: 100 },
+        ]}
+      >
 
         {conversations.length > 0 ? (
           <View style={styles.conversationsSection}>
@@ -540,16 +607,29 @@ const fetchConversations = useCallback(async () => {
           )}
         </View>
       )}
-      <MessageCircle size={20} color={Colors.primary[500]} />
-      <View style={{ marginLeft: 10 }}>
+      <MessageCircle size={20} color={Colors.secondary[500]} />
+      <View style={styles.conversationInfo}>
         <Text style={styles.conversationTitle}>{conversation.session_name}</Text>
-        <Text style={styles.conversationContact}>
-          with {conversation.contact_name}
+        <Text 
+          style={styles.conversationDetail}
+          numberOfLines={1}
+          ellipsizeMode="tail"
+        >
+          {getStageDetail(conversation)}
         </Text>
-        <Text style={styles.conversationTime}>
-          {formatTime(conversation.created_at)}
-        </Text>
+        {getIssuePreview(conversation) && (
+          <Text 
+            style={styles.conversationIssue}
+            numberOfLines={1}
+            ellipsizeMode="tail"
+          >
+            ISSUE: {getIssuePreview(conversation)}
+          </Text>
+        )}
       </View>
+      <Text style={styles.conversationTime}>
+        {formatTime(conversation.created_at)}
+      </Text>
     </TouchableOpacity>
   </LongPressGestureHandler>
 ))}
@@ -557,7 +637,7 @@ const fetchConversations = useCallback(async () => {
           </View>
         ) : (
           <View style={styles.emptyState}>
-            <Sparkles size={40} color={Colors.text.tertiary} />
+            <Sparkles size={40} color={Colors.secondary[500]} />
             <Text style={styles.emptyTitle}>No active conversations</Text>
             <Text style={styles.emptyDescription}>
               {contactId
@@ -771,15 +851,31 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
   },
+  headerTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerIconContainer: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: Spacing.sm,
+  },
+  headerIconEmoji: {
+    fontSize: 22,
+    lineHeight: 26,
+  },
   headerTitle: {
-    fontSize: Typography.fontSize.lg,
+    fontSize: Typography.fontSize.xl,
     fontWeight: Typography.fontWeight.bold,
-    color: Colors.text.primary,
+    color: Colors.secondary[700],
+    letterSpacing: 0.3,
   },
   headerSubtitle: {
     fontSize: Typography.fontSize.sm,
-    color: Colors.text.secondary,
+    color: Colors.secondary[600],
     marginTop: 2,
+    fontWeight: Typography.fontWeight.medium,
   },
   placeholder: {
     width: 40,
@@ -795,71 +891,75 @@ const styles = StyleSheet.create({
     color: Colors.text.secondary,
     marginTop: Spacing.sm,
   },
+  fixedSection: {
+    backgroundColor: Colors.background,
+    paddingHorizontal: Spacing.md,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.borderLight,
+  },
   content: {
     flex: 1,
   },
   contentContainer: {
-    padding: Spacing.xl,
+    padding: Spacing.md,
   },
   heroSection: {
     alignItems: 'center',
     marginBottom: Spacing.md,
+    paddingVertical: Spacing.sm,
   },
   heroIcon: {
-    width: 64,
-    height: 64,
-    borderRadius: BorderRadius.xl,
-    backgroundColor: Colors.primary[50],
+    width: 56,
+    height: 56,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: Colors.secondary[50],
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: Spacing.sm,
+    marginBottom: Spacing.xs,
+    borderWidth: 2,
+    borderColor: Colors.secondary[200],
     ...Shadows.small,
   },
   heroTitle: {
-    fontSize: Typography.fontSize.lg,
+    fontSize: Typography.fontSize.base,
     fontWeight: Typography.fontWeight.bold,
-    color: Colors.text.primary,
-    marginBottom: 4,
+    color: Colors.secondary[700],
     textAlign: 'center',
-  },
-  heroDescription: {
-    fontSize: Typography.fontSize.sm,
-    color: Colors.text.secondary,
-    textAlign: 'center',
-    lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
-    paddingHorizontal: Spacing.md,
+    letterSpacing: 0.3,
   },
   limitSection: {
-    marginBottom: Spacing.lg,
+    marginBottom: Spacing.md,
   },
   limitCard: {
     backgroundColor: Colors.surfaceElevated,
-    borderRadius: BorderRadius.lg,
-    padding: Spacing.md,
+    borderRadius: BorderRadius.md,
+    padding: Spacing.xs,
     borderWidth: 1,
-    borderColor: Colors.borderLight,
+    borderColor: Colors.secondary[200],
     ...Shadows.small,
   },
   limitTitle: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.xs,
     fontWeight: Typography.fontWeight.bold,
-    color: Colors.text.primary,
-    marginBottom: Spacing.sm,
+    color: Colors.secondary[700],
+    marginBottom: 1,
     textAlign: 'center',
   },
   limitProgress: {
     alignItems: 'center',
-    marginBottom: Spacing.sm,
+    marginBottom: 1,
   },
   limitNumber: {
-    fontSize: Typography.fontSize.xl,
+    fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.bold,
-    color: Colors.primary[500],
+    color: Colors.secondary[600],
   },
   limitLabel: {
     fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
-    marginTop: 2,
+    marginTop: 1,
   },
   progressBar: {
     height: 8,
@@ -872,13 +972,14 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.full,
   },
   conversationsSection: {
-    marginBottom: Spacing.lg,
+    marginBottom: Spacing.md,
   },
   sectionTitle: {
     fontSize: Typography.fontSize.base,
-    fontWeight: Typography.fontWeight.semibold,
-    color: Colors.text.primary,
+    fontWeight: Typography.fontWeight.bold,
+    color: Colors.secondary[700],
     marginBottom: Spacing.sm,
+    letterSpacing: 0.2,
   },
   conversationCard: {
     flexDirection: 'row',
@@ -887,8 +988,8 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.lg,
     padding: Spacing.md,
     marginBottom: Spacing.sm,
-    borderWidth: 1,
-    borderColor: Colors.borderLight,
+    borderWidth: 2,
+    borderColor: Colors.secondary[200],
     ...Shadows.small,
   },
   conversationIcon: {
@@ -902,30 +1003,45 @@ const styles = StyleSheet.create({
   },
   conversationInfo: {
     flex: 1,
+    marginLeft: Spacing.sm,
   },
   conversationTitle: {
     fontSize: Typography.fontSize.sm,
-    fontWeight: Typography.fontWeight.semibold,
+    fontWeight: Typography.fontWeight.bold,
     color: Colors.text.primary,
-    marginBottom: 1,
+    marginBottom: 2,
   },
   conversationContact: {
     fontSize: Typography.fontSize.xs,
+    color: Colors.secondary[600],
+    fontWeight: Typography.fontWeight.medium,
+  },
+  conversationIssue: {
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
-    marginBottom: 1,
+    fontWeight: Typography.fontWeight.medium,
+    marginTop: 2,
+  },
+  conversationDetail: {
+    fontSize: Typography.fontSize.xs,
+    color: Colors.warning[500],
+    fontWeight: Typography.fontWeight.bold,
+    marginTop: 2,
   },
   conversationTime: {
-    fontSize: 10,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.tertiary,
+    alignSelf: 'flex-start',
+    marginLeft: Spacing.xs,
   },
   emptyState: {
     alignItems: 'center',
-    paddingVertical: Spacing.lg,
+    paddingVertical: Spacing.md,
   },
   emptyTitle: {
     fontSize: Typography.fontSize.base,
-    fontWeight: Typography.fontWeight.semibold,
-    color: Colors.text.primary,
+    fontWeight: Typography.fontWeight.bold,
+    color: Colors.secondary[700],
     marginTop: Spacing.md,
     marginBottom: Spacing.xs,
   },
@@ -933,6 +1049,8 @@ const styles = StyleSheet.create({
     fontSize: Typography.fontSize.sm,
     color: Colors.text.secondary,
     textAlign: 'center',
+    lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
+    paddingHorizontal: Spacing.md,
   },
   footer: {
     padding: Spacing.lg,
@@ -948,11 +1066,12 @@ const styles = StyleSheet.create({
     borderWidth: 3,
     borderColor: Colors.secondary[600],
     paddingVertical: Spacing.md,
-    paddingHorizontal: Spacing.lg,
+    paddingHorizontal: Spacing.xxl,
     borderRadius: BorderRadius.lg,
-    gap: Spacing.xs,
-    marginBottom: Spacing.lg,
-    ...Shadows.medium,
+    gap: Spacing.sm,
+    marginTop: Spacing.sm,
+    marginBottom: Spacing.md,
+    ...Shadows.small,
   },
   createButtonDisabled: {
     backgroundColor: Colors.neutral[400],
@@ -963,25 +1082,25 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.error[50],
     borderColor: Colors.error[200],
     borderWidth: 1,
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.lg,
-    marginTop: Spacing.md,
-    marginBottom: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    marginTop: Spacing.sm,
+    marginBottom: Spacing.sm,
     ...Shadows.small,
   },
   limitWarningTitle: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.error[700],
     marginBottom: Spacing.xs,
   },
   limitWarningMessage: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.error[700],
-    lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
+    lineHeight: Typography.lineHeight.normal * Typography.fontSize.xs,
   },
   createButtonText: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.lg,
     fontWeight: Typography.fontWeight.bold,
     color: '#FFFFFF',
     textShadowColor: Colors.secondary[600],

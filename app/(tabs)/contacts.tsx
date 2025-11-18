@@ -643,7 +643,7 @@ const performBulkDelete = async () => {
 
           <View style={styles.searchContainer}>
             <View style={styles.searchInputContainer}>
-              <Search size={20} color={Colors.text.tertiary} />
+              <Search size={20} color={Colors.secondary[500]} />
               <TextInput
                 style={styles.searchInput}
                 placeholder="Search contacts or enter email..."
@@ -657,7 +657,7 @@ const performBulkDelete = async () => {
           <ScrollView style={styles.scrollContent} keyboardShouldPersistTaps="handled">
             {readyToTalk === 'true' && (
               <View style={styles.callToActionContainer}>
-                <MessageCircle size={32} color="#6366f1" />
+                <MessageCircle size={32} color={Colors.success[500]} />
                 <Text style={styles.callToActionText}>
                   **Select a contact** to continue your conversation.
                 </Text>
@@ -666,9 +666,9 @@ const performBulkDelete = async () => {
 
             {mode === 'ai_chat' && (
               <View style={[styles.callToActionContainer, { backgroundColor: '#f0fdf4', borderLeftColor: '#10b981' }]}>
-                <Bot size={32} color="#10b981" />
+                <Bot size={32} color={Colors.primary[500]} />
                 <Text style={styles.callToActionText}>
-                  Select a contact to start an AI-assisted conversation
+                  Let's clear the air. Pick a contact 🌿
                 </Text>
               </View>
             )}
@@ -680,7 +680,7 @@ const performBulkDelete = async () => {
                   <View key={invite.id} style={styles.inviteCard}>
                     <View style={styles.contactInfo}>
                       <View style={styles.avatar}>
-                        <UserPlus size={24} color="#f59e0b" />
+                        <UserPlus size={24} color={Colors.warning[500]} />
                       </View>
                       <View style={styles.contactDetails}>
                         <Text style={styles.contactName}>
@@ -716,7 +716,7 @@ const performBulkDelete = async () => {
                   <View key={profile.id} style={styles.resultCard}>
                     <View style={styles.contactInfo}>
                       <View style={styles.avatar}>
-                        <UserCheck size={24} color="#6366f1" />
+                        <UserCheck size={24} color={Colors.success[700]} />
                       </View>
                       <View style={styles.contactDetails}>
                         <Text style={styles.contactName}>
@@ -738,7 +738,7 @@ const performBulkDelete = async () => {
 
               {filteredContacts.length === 0 && !searchQuery.includes('@') ? (
                 <View style={styles.emptyState}>
-                  <Users size={48} color="#9ca3af" />
+                  <Users size={48} color={Colors.secondary[500]} />
                   <Text style={styles.emptyTitle}>
                     {searchQuery && !searchQuery.includes('@') ? 'No contacts found' : 'No contacts yet'}
                   </Text>
@@ -770,7 +770,7 @@ const performBulkDelete = async () => {
                   >
                     <View style={styles.contactInfo}>
                       <View style={styles.avatar}>
-                        <UserCheck size={24} color="#10b981" />
+                        <UserCheck size={24} color={Colors.success[700]} />
                       </View>
                       <View style={styles.contactDetails}>
                         <Text style={styles.contactName}>
@@ -783,7 +783,7 @@ const performBulkDelete = async () => {
                     </View>
                     {!multiSelectMode && (
                       <TouchableOpacity onPress={() => startChat(contact)} style={styles.chatIconContainer}>
-                        <MessageCircle size={24} color="#6366f1" />
+                        <MessageCircle size={24} color={Colors.secondary[600]} />
                       </TouchableOpacity>
                     )}
                   </TouchableOpacity>
@@ -873,7 +873,7 @@ const performBulkDelete = async () => {
                   <View key={profile.id} style={styles.resultCard}>
                     <View style={styles.contactInfo}>
                       <View style={styles.avatar}>
-                        <UserCheck size={24} color="#6366f1" />
+                        <UserCheck size={24} color={Colors.success[700]} />
                       </View>
                       <View style={styles.contactDetails}>
                         <Text style={styles.contactName}>
@@ -950,8 +950,8 @@ const styles = StyleSheet.create({
   },
   centeredContainer: {
     flex: 1,
-    paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
   },
   header: {
     marginBottom: Spacing.md,
@@ -966,22 +966,23 @@ const styles = StyleSheet.create({
     color: '#6b7280',
   },
   title: {
-    fontSize: Typography.fontSize['2xl'],
+    fontSize: Typography.fontSize.lg,
     fontWeight: Typography.fontWeight.bold,
-    color: '#0288D1',
+    color: Colors.secondary[700],
     textAlign: 'left',
-    marginBottom: Spacing.lg,
+    marginBottom: Spacing.sm,
+    letterSpacing: 0.2,
   },
   searchContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs,
     backgroundColor: Colors.surface,
     borderRadius: BorderRadius.lg,
     borderWidth: 1,
     borderColor: Colors.borderLight,
-    marginBottom: Spacing.lg,
+    marginBottom: Spacing.md,
     ...Shadows.small,
   },
   searchInputContainer: {
@@ -994,6 +995,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: Typography.fontSize.sm,
     color: Colors.text.primary,
+    fontWeight: Typography.fontWeight.medium,
   },
   scrollContent: {
     flex: 1,
@@ -1006,37 +1008,39 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#eef2ff',
-    padding: Spacing.md,
+    padding: Spacing.sm,
     borderRadius: BorderRadius.lg,
     borderLeftWidth: 4,
     borderLeftColor: '#6366f1',
-    gap: Spacing.sm,
+    gap: Spacing.xs,
     marginBottom: Spacing.lg,
   },
   callToActionText: {
     flex: 1,
     fontSize: Typography.fontSize.sm,
-    color: '#374151',
+    color: Colors.text.primary,
+    fontWeight: Typography.fontWeight.medium,
     lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
   },
   section: {
-    marginBottom: Spacing.lg,
+    marginBottom: Spacing.md,
   },
   sectionTitle: {
     fontSize: Typography.fontSize.base,
     fontWeight: Typography.fontWeight.bold,
-    color: '#0288D1',
-    marginBottom: Spacing.md,
+    color: Colors.secondary[700],
+    marginBottom: Spacing.sm,
+    letterSpacing: 0.1,
   },
   inviteCard: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     backgroundColor: Colors.warning[50],
-    borderRadius: BorderRadius.xl,
+    borderRadius: BorderRadius.lg,
     padding: Spacing.md,
     marginBottom: Spacing.sm,
-    borderWidth: 1,
+    borderWidth: 2,
     borderColor: Colors.warning[200],
     ...Shadows.small,
   },
@@ -1045,11 +1049,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     backgroundColor: Colors.surfaceElevated,
-    borderRadius: BorderRadius.xl,
+    borderRadius: BorderRadius.lg,
     padding: Spacing.md,
     marginBottom: Spacing.sm,
-    borderWidth: 1,
-    borderColor: Colors.borderLight,
+    borderWidth: 2,
+    borderColor: Colors.secondary[200],
     ...Shadows.small,
   },
   contactInfo: {
@@ -1071,13 +1075,14 @@ const styles = StyleSheet.create({
   },
   contactName: {
     fontSize: Typography.fontSize.sm,
-    fontWeight: Typography.fontWeight.semibold,
+    fontWeight: Typography.fontWeight.bold,
     color: Colors.text.primary,
-    marginBottom: Spacing.xs,
+    marginBottom: 1,
   },
   contactEmail: {
     fontSize: Typography.fontSize.xs,
-    color: Colors.text.secondary,
+    color: Colors.secondary[600],
+    fontWeight: Typography.fontWeight.medium,
   },
   inviteActions: {
     flexDirection: 'row',
@@ -1108,18 +1113,18 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.lg,
   },
   emptyTitle: {
-    fontSize: Typography.fontSize.lg,
-    fontWeight: Typography.fontWeight.semibold,
-    color: Colors.text.primary,
-    marginTop: Spacing.md,
-    marginBottom: Spacing.sm,
+    fontSize: Typography.fontSize.base,
+    fontWeight: Typography.fontWeight.bold,
+    color: Colors.secondary[700],
+    marginTop: Spacing.sm,
+    marginBottom: Spacing.xs,
   },
   emptyDescription: {
     fontSize: Typography.fontSize.sm,
     color: Colors.text.secondary,
     textAlign: 'center',
     lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
-    marginBottom: Spacing.lg,
+    marginBottom: Spacing.md,
   },
   startButton: {
     flexDirection: 'row',
@@ -1156,8 +1161,9 @@ const styles = StyleSheet.create({
   },
   modalTitle: {
     fontSize: Typography.fontSize.lg,
-    fontWeight: Typography.fontWeight.semibold,
-    color: Colors.text.primary,
+    fontWeight: Typography.fontWeight.bold,
+    color: Colors.secondary[700],
+    letterSpacing: 0.2,
   },
   placeholder: {
     width: 24,
@@ -1171,8 +1177,8 @@ const styles = StyleSheet.create({
   },
   inputLabel: {
     fontSize: Typography.fontSize.base,
-    fontWeight: Typography.fontWeight.semibold,
-    color: Colors.text.primary,
+    fontWeight: Typography.fontWeight.bold,
+    color: Colors.secondary[700],
     marginBottom: Spacing.sm,
   },
   modalSearchInput: {
@@ -1199,20 +1205,21 @@ const styles = StyleSheet.create({
   },
   resultsTitle: {
     fontSize: Typography.fontSize.base,
-    fontWeight: Typography.fontWeight.semibold,
-    color: Colors.text.primary,
-    marginBottom: Spacing.md,
+    fontWeight: Typography.fontWeight.bold,
+    color: Colors.secondary[700],
+    marginBottom: Spacing.sm,
+    letterSpacing: 0.1,
   },
   resultCard: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: Colors.surface,
+    backgroundColor: Colors.surfaceElevated,
     borderRadius: BorderRadius.lg,
     padding: Spacing.md,
     marginBottom: Spacing.sm,
-    borderWidth: 1,
-    borderColor: Colors.borderLight,
+    borderWidth: 2,
+    borderColor: Colors.secondary[200],
     ...Shadows.small,
   },
   chatButton: {
@@ -1280,7 +1287,17 @@ const styles = StyleSheet.create({
     color: Colors.warning[700],
   },
   chatIconContainer: {
-    padding: Spacing.sm,
+    padding: Spacing.xs,
+  },
+  chatIconBorder: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: Colors.secondary[100],
+    borderWidth: 2,
+    borderColor: Colors.secondary[300],
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   cancelButtonText: {
     fontSize: Typography.fontSize.sm,
