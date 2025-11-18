@@ -963,17 +963,14 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       const recipientId = String(row.recipient_id || "");
       console.log("🔍 Realtime subscription - Recipient ID from payload:", recipientId);
       console.log("🔍 Realtime subscription - Current User ID:", currentUserId);
+      
+      // ✅ Security check: Only proceed if options are for current user
+      // Silently ignore options for other user (no notice, no display)
       if (recipientId !== String(currentUserId)) {
-        console.warn("⚠️ SECURITY BLOCK: Realtime subscription recipient_id mismatch - ignoring", {
-          recipientIdFromPayload: recipientId,
-          currentUserId: currentUserId,
-          chatId: chatId,
-          optionId: row.id
-        });
-        return;
+        console.log("ℹ️ Options received for other user - silently ignoring (no notice)");
+        return; // Don't show anything to current user for other user's options
       }
-      console.log("✅ Realtime subscription recipient ID validated - proceeding");
-
+      
       const ctx = row.context_data || {};
       const optionsArray = Array.isArray(row.options) ? row.options : [];
       
@@ -1029,7 +1026,8 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           event: "INSERT",
           schema: "public",
           table: "message_options",
-          filter: `chat_id=eq.${chatId} AND recipient_id=eq.${currentUserId}`,
+          // ✅ FIX: Listen for ALL options in the chat (not just current user's)
+          filter: `chat_id=eq.${chatId}`,
         },
         handleOptionsUpdate
       )
@@ -1039,7 +1037,8 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           event: "UPDATE",
           schema: "public",
           table: "message_options",
-          filter: `chat_id=eq.${chatId} AND recipient_id=eq.${currentUserId}`,
+          // ✅ FIX: Listen for ALL options in the chat (not just current user's)
+          filter: `chat_id=eq.${chatId}`,
         },
         handleOptionsUpdate
       )
@@ -1049,13 +1048,19 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           event: "DELETE",
           schema: "public",
           table: "message_options",
-          filter: `chat_id=eq.${chatId} AND recipient_id=eq.${currentUserId}`,
+          // ✅ FIX: Listen for ALL options in the chat (not just current user's)
+          filter: `chat_id=eq.${chatId}`,
         },
         (payload) => {
-          if (String(payload.old?.recipient_id) !== String(currentUserId)) return;
+          const recipientId = String(payload.old?.recipient_id || "");
+          // ✅ Only handle deletions for current user
+          if (recipientId !== String(currentUserId)) {
+            console.log("ℹ️ Options deleted for other user - silently ignoring");
+            return; // Don't show anything to current user
+          }
           console.log("🧹 Options deleted for current user - waiting for regenerated set");
           lastOptionsSignatureRef.current = null;
-          enterWaitingForOptions(String(payload.old.recipient_id));
+          enterWaitingForOptions(recipientId);
         }
       )
       .subscribe((status) => {
@@ -1201,7 +1206,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             });
             const { data: chatCtx } = await supabase
               .from("chats")
-              .select("context_data, user_id, contact_id")
+              .select("context_data, user_id, contact_id, closure_state, user_a_smiley_sent, user_b_smiley_sent, conversation_phase")
               .eq("id", chatId)
               .single();
             const isCurrentUserA = currentUserId === chatCtx?.user_id;
@@ -1217,6 +1222,30 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             const thoughtsB = chatCtx?.context_data?.thoughts_b || "";
             const summaryToSend = isCurrentUserA ? summaryA : (summaryB || summaryA);
             const thoughtsToSend = isCurrentUserA ? thoughtsA : (thoughtsB || thoughtsA);
+            
+            // 🌙 Closure blending start
+            // Compute closure stage for progressive option blending
+            const closureState = chatCtx?.closure_state || 'active';
+            const userASmileySent = chatCtx?.user_a_smiley_sent || false;
+            const userBSmileySent = chatCtx?.user_b_smiley_sent || false;
+            const conversationPhaseFromCtx = chatCtx?.conversation_phase || conversationPhase;
+            const closureStage = computeClosureStage(
+              closureState,
+              userASmileySent,
+              userBSmileySent,
+              conversationPhaseFromCtx,
+              conversationHistory
+            );
+            console.log("🌙 Closure stage computed (message subscription):", {
+              closureState,
+              userASmileySent,
+              userBSmileySent,
+              conversationPhase: conversationPhaseFromCtx,
+              closureStage,
+              historyLength: conversationHistory.length
+            });
+            // 🌙 Closure blending end
+            
             console.log("📤 Generating options with FULL context:");
             console.log(" Original Issue (User A):", summaryA.substring(0, 60));
             console.log(" Recipient context:", summaryToSend.substring(0, 60));
@@ -1279,11 +1308,18 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                     conversationHistory,
                     contactCategory: contact?.category || "General",
                     orchestrationGuidance,
+                    // ✅ CRITICAL: Always pass hintFromB for context, but edge function MUST enforce perspective isolation based on recipientId
                     hintFromB: chatCtx?.context_data?.hint_from_b || "",
                     hintToContact: chatCtx?.context_data?.hint_to_contact || null,
                     conversationPhase,
                     lastMessage: newMsg.content || "",
                     isVeryFirstMessage: false,
+                    // 🌙 Closure blending start
+                    closureState: closureState,
+                    userASmileySent: userASmileySent,
+                    userBSmileySent: userBSmileySent,
+                    closureStage: closureStage,
+                    // 🌙 Closure blending end
                   },
                 }
               );
@@ -1317,6 +1353,61 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       supabase.removeChannel(channel);
     };
   };
+  // 🌙 Closure blending start
+  // Helper function to compute closure stage based on conversation state
+  const computeClosureStage = (
+    closureState: string | null | undefined,
+    userASmileySent: boolean,
+    userBSmileySent: boolean,
+    conversationPhase: string,
+    conversationHistory: Array<{ sender_id: string; content: string }>
+  ): "active" | "early_closure" | "mid_closure" | "final_closure" => {
+    // Default to active if uncertain
+    if (!closureState || closureState === 'active' || closureState === 'closed') {
+      return "active";
+    }
+
+    // Count closure-related signals in recent conversation history
+    const CLOSURE_SMILEYS = ["👍", "🙂", "🤝", "❤️", "😊", "💖", "🌟", "✨", "🙏"];
+    const recentMessages = conversationHistory.slice(-5); // Last 5 messages
+    const closureSignals = recentMessages.filter(msg => {
+      const content = msg.content?.trim() || "";
+      // Check for smileys
+      if (CLOSURE_SMILEYS.some(smiley => content === smiley)) return true;
+      // Check for closure-related phrases
+      const lower = content.toLowerCase();
+      if (lower.includes('thanks') || lower.includes('thank you') || 
+          lower.includes('appreciate') || lower.includes('grateful') ||
+          lower.includes('sounds good') || lower.includes('works for me') ||
+          lower.includes('all set') || lower.includes('resolved')) return true;
+      return false;
+    }).length;
+
+    // Determine stage based on closure state and signals
+    if (closureState === 'pending_user_a_smiley' || closureState === 'pending_user_b_smiley') {
+      // One user has sent a smiley - check how close we are
+      if (userASmileySent && userBSmileySent) {
+        // Both sent smileys but not closed yet - final stage
+        return "final_closure";
+      } else if (closureSignals >= 3 || conversationPhase === 'resolution') {
+        // Multiple closure signals or in resolution phase - mid stage
+        return "mid_closure";
+      } else {
+        // Early closure - one smiley sent but few signals
+        return "early_closure";
+      }
+    }
+
+    // If conversation phase suggests closure
+    if (conversationPhase === 'resolution' && closureSignals >= 2) {
+      return closureSignals >= 3 ? "mid_closure" : "early_closure";
+    }
+
+    // Default to active
+    return "active";
+  };
+  // 🌙 Closure blending end
+
   // ---- send message ----
   const sendMessage = async (messageContent: string) => {
     const content = messageContent.trim();
@@ -1545,7 +1636,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       if (!chatData) {
         const { data: fetched } = await supabase
           .from("chats")
-          .select("user_id, contact_id, context_data, ai_source_chat_id, session_name, ai_confidence_level, conversation_phase, is_resolved, user_a_smiley_sent, user_b_smiley_sent")
+          .select("user_id, contact_id, context_data, ai_source_chat_id, session_name, ai_confidence_level, conversation_phase, is_resolved, user_a_smiley_sent, user_b_smiley_sent, closure_state")
           .eq("id", currentChatId)
           .single();
         if (fetched) {
@@ -1592,6 +1683,28 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         sender_id: String(user?.id || ""),
         content,
       }) || []; // ✅ Ensure it's always an array
+      
+      // 🌙 Closure blending start
+      // Compute closure stage for progressive option blending
+      const closureState = (chatData as any).closure_state || 'active';
+      const userASmileySent = (chatData as any).user_a_smiley_sent || false;
+      const userBSmileySent = (chatData as any).user_b_smiley_sent || false;
+      const closureStage = computeClosureStage(
+        closureState,
+        userASmileySent,
+        userBSmileySent,
+        conversationPhase,
+        conversationHistory
+      );
+      console.log("🌙 Closure stage computed:", {
+        closureState,
+        userASmileySent,
+        userBSmileySent,
+        conversationPhase,
+        closureStage,
+        historyLength: conversationHistory.length
+      });
+      // 🌙 Closure blending end
       // ✅ FIX: Determine if current user is User A or User B to send correct context
       const isCurrentUserA = user?.id === chatData.user_id;
       // ✅ FIX: Use fresh context from database, not stale component state
@@ -1648,7 +1761,9 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               thoughts: recipientThoughts,
               summary_shared_neutral: summarySharedNeutral || "",
               thoughtsB: thoughtsB,
-              hintFromB: isRecipientUserA ? "" : (chatData.context_data?.hint_from_b || ""),
+              // ✅ CRITICAL: Always pass hintFromB for context, but edge function MUST enforce perspective isolation based on recipientId
+              // recipientId determines the perspective - hints are shared for empathy but POV remains locked
+              hintFromB: chatData.context_data?.hint_from_b || "",
               conversationHistory,
               contactCategory: contact?.category || "General",
               isInitial: false,
@@ -1673,20 +1788,26 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         {
           body: {
             chatId: currentChatId,
-            recipientId,
+            recipientId, // ✅ CRITICAL: This determines perspective isolation - edge function MUST use this to generate correct POV
             currentUserId: user?.id,
             currentMessage: String(content || ""), // ✅ CRITICAL: User's latest message for recipient to respond to
             summary: recipientSummary || "",
             thoughts: recipientThoughts || "",
             summary_shared_neutral: summarySharedNeutral || "",
             recipientSummary: recipientSummary || "",
-            hint_from_b: isRecipientUserA ? '' : (chatData.context_data?.hint_from_b || ''),
+            // ✅ CRITICAL: Always pass hintFromB for context, but edge function MUST enforce perspective isolation based on recipientId
+            // recipientId === chatData.user_id → User A perspective (acknowledge hint, express own side)
+            // recipientId === chatData.contact_id → User B perspective (use hint as own context)
+            hint_from_b: chatData.context_data?.hint_from_b || '',
             // ✅ CRITICAL: Always pass User A's original issue context (for backward compatibility only)
             originalIssue: {
               summary: chatData.context_data?.summary_a_perspective || chatData.context_data?.summary_a || chatData.context_data?.summary || "",
               thoughts: thoughtsA,
             },
-            hintFromB: isRecipientUserA ? "" : (chatData.context_data?.hint_from_b || ""),
+            // ✅ CRITICAL: Always pass hintFromB for context, but edge function MUST enforce perspective isolation based on recipientId
+            // recipientId === chatData.user_id → User A perspective (acknowledge hint, express own side)
+            // recipientId === chatData.contact_id → User B perspective (use hint as own context)
+            hintFromB: chatData.context_data?.hint_from_b || "",
             hintToContact: chatData.context_data?.hint_to_contact || null,
             thoughtsB: thoughtsB || "",
             conversationHistory: Array.isArray(conversationHistory) ? conversationHistory : [],
@@ -1694,6 +1815,12 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             contactCategory: contact?.category || "General",
             conversationPhase: conversationPhase,
             resolutionDetected: false,
+            // 🌙 Closure blending start
+            closureState: closureState,
+            userASmileySent: userASmileySent,
+            userBSmileySent: userBSmileySent,
+            closureStage: closureStage,
+            // 🌙 Closure blending end
             lastMessageTimestamp: data.created_at, // ⏰ For timing-aware context
             wordLimit: 15, // ✅ Pass word limit
           },
@@ -1730,6 +1857,17 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     triggerOptionSelectVisuals(index);
     setTimeout(() => {
       setShowSuggestedOptions(false);
+      
+      // ✅ FIX: Check if option is a single smiley - if so, send it alone without blending
+      const CLOSURE_SMILEYS = ["👍", "🙂", "🤝", "❤️", "😊", "💖", "🌟", "✨", "🙏"];
+      const isSingleSmiley = CLOSURE_SMILEYS.some(smiley => option.trim() === smiley);
+      
+      // If it's a single smiley, send it as-is without any acknowledgment text
+      if (isSingleSmiley) {
+        console.log('😊 Single smiley option detected - sending without acknowledgment');
+        sendMessage(option.trim());
+        return;
+      }
       
       // ✅ Lightweight blending layer: Get latest message from other person
       const otherPersonMessages = messages.filter(
@@ -2149,6 +2287,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     return String(pendingId) === String(target);
   }, [waitingForOptions, user?.id]);
   const isPendingForCurrentUser = computeIsPendingForUser();
+  // ✅ FIX: Show composing notice ONLY when waiting for current user's options AND it's their turn
   const shouldShowComposing = waitingForOptions && isPendingForCurrentUser && isUserTurn;
   const recentThreshold = Math.max(0, displayedMessages.length - 2);
 

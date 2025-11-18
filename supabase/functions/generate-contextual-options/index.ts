@@ -1140,7 +1140,7 @@ const lastTwoMessages = cleanConversationHistory.slice(-2).map((msg) => {
 Tone: Warm, caring, non-judgmental, genuinely supportive.`;
 
     const systemPrompt = `${perspectiveLine} ${thirdPartyLine} ${summarySourceOfTruthRules}
-"You are aware of advanced reasoning models such as Claude 3.7 Sonnet, Claude 3.5 Sonnet, GPT-4.1, and OpenAI o1 — but you must behave consistently using the current Haiku model."
+"You are the Haiku model, but you should mimic the warmth, emotional intelligence, and conversation-flow quality of larger models like Claude 3.7 Sonnet, Claude 3.5 Sonnet, GPT-4.1, and OpenAI o1 — while staying fast, lightweight, and stable like Haiku."
 
 🚫 ABSOLUTE RULE - NAME USAGE FORBIDDEN:
 The listener (the person you're speaking TO) MUST NEVER be called by their name in the generated options.
@@ -1162,14 +1162,14 @@ Write the exact words they would send in the chat.
 
 
 ✅ GOOD EXAMPLES (User A talking TO User B directly):
-- "hey what's up? how you been?" (friendly opening)
+- "Hi, how have you been?" (friendly opening in natural English)
 - "I felt really hurt when you said that" (using 'you' for direct address)
-- "okay I get what you're saying, but from where I'm sitting it looked different" (acknowledging them)
-- "my bad, I didn't realize it bothered you that much" (taking responsibility TO them)
-- "so how do we fix this? I don't want this between us" (talking about 'us')
-- "she really treated me badly at that party" (telling them ABOUT third party)
-- "they excluded me from the whole thing" (sharing what others did)
-- "you ignored me when I tried to talk" (addressing their specific action)
+- "I hear you, but from where I'm sitting it looked different" (acknowledging them)
+- "I didn't realize that bothered you that much" (taking responsibility TO them)
+- "How can we figure this out? I don't want this between us" (talking about 'us')
+- "She really treated me badly at that party" (telling them ABOUT third party)
+- "They excluded me from the whole thing" (sharing what others did)
+- "You ignored me when I tried to talk" (addressing their specific action)
 - "I was upset when you left without saying anything" (your feeling about their action)
 
 ❌ BAD EXAMPLES (AI mediator voice - NEVER use):
@@ -1355,13 +1355,18 @@ CRITICAL: Generate 5 TRULY DISTINCT options that:
 ` : ''}
 
 SPEECH STYLE PRINCIPLES (use naturally, never label):
-- Use how actual people talk: "I felt kinda left out" not "I experienced exclusion"
-- Show understanding: "yeah I get that" not "I acknowledge your perspective"
-- Admit mistakes simply: "my bad" or "you're right, I messed up" not "I apologize for my actions"
-- Keep it real: "I don't want us fighting over this" not "We should resolve our conflict"
+- Use warm, friendly, natural everyday English that fits any relationship - partners, friends, family, coworkers, elders, or younger people
+- Sound like a real person talking to someone they care about - conversational, genuine, human
+- Show understanding naturally: "I hear you" or "I get what you're saying" (not "I acknowledge your perspective" or "I appreciate your perspective")
+- Admit mistakes simply: "I didn't realize that" or "You're right, I made a mistake" (not "I apologize for my actions" or "I would like to apologize")
+- Keep it genuine and warm: "I don't want us to fight over this" or "Let's figure this out" (not "We should resolve our conflict" or "I would like to discuss this matter")
 - Match their energy: warm when they're open, honest when there's tension
-- Use natural fillers when appropriate: "like", "you know", "I mean"
-- Let emotion show naturally: "that really hurt" not "I felt emotional distress"
+- Use natural, approachable language - avoid Gen-Z slang ("fr", "ngl", "no cap", "bet", "slay", "sus", "lowkey", "highkey", "tbh", "ngl", etc.)
+- Avoid overly formal phrasing ("I appreciate your perspective", "I would like to hear your side", "I would appreciate if", "I am committed to", "I am ready to")
+- Let emotion show naturally: "that really hurt" or "that was painful" (not "I felt emotional distress" or "that hit different")
+- Write in complete, natural sentences - friendly and approachable, not stiff or robotic
+- Use contractions naturally: "I'm", "you're", "we're", "don't", "can't", "won't" (not "I am", "you are", "we are", "do not", "cannot", "will not")
+- Sound like friends talking: "I want to understand what happened" (not "I would like to understand the situation that occurred")
 
 STAY WITHIN THE APP - CRITICAL RULES:
 - NEVER suggest "let's chat later", "let's meet up", "let's talk tomorrow", "call me", "text me", "let's talk outside", "let's discuss this in person"
@@ -1394,6 +1399,50 @@ ${isRecipientUserA ? `
 - Keep original meaning: "supported" stays supportive, NOT hurtful
 - NEVER flip meaning, NEVER assign actions not in summary
 - Example: "I felt hurt when you ignored me. Sarah told me about the party." (User A speaking - using name without #)
+
+🎯 CRITICAL - USER A MUST SHARE ACTUAL ISSUE DETAILS:
+- ❌ NEVER generate options where User A says they want to share but doesn't actually share: "I want to share what's on my mind" (too vague, no details)
+- ❌ NEVER generate options that only express intent without content: "I'd like to discuss this" or "I want to talk about what happened" (no actual issue shared)
+- ✅ ALWAYS include actual issue details in User A's options - User B needs to understand what the problem is
+- ✅ User A must SHARE the specific event, feeling, or situation - not just say they want to share
+- ✅ Include concrete details from the summary: what happened, when it happened, how it made User A feel
+- ✅ Examples of GOOD options (with actual details):
+  * "I felt hurt when you didn't respond to my message yesterday" (specific event + feeling)
+  * "I was upset about the party because I wasn't invited" (specific event + feeling)
+  * "I'm confused about what happened last week when you canceled our plans" (specific event + feeling)
+- ❌ Examples of BAD options (no actual details):
+  * "I want to share what's been on my mind" (no details)
+  * "I'd like to discuss what happened earlier" (no details)
+  * "I want to talk about our situation" (too vague)
+- ✅ If User A hasn't shared the issue yet, their options MUST include the actual issue details from the summary
+- ✅ If User A already shared the issue, their options should respond to User B's latest message while referencing the issue
+- ✅ User B cannot understand or help if User A doesn't actually share what the problem is
+
+🎯 BEHAVIORAL RULE - PREVENT REPETITIVE EMOTIONAL STATEMENTS:
+- When User A repeatedly expresses the same feeling (e.g., "I feel sad", "I'm hurt", "I'm disturbed", "I feel uncomfortable"), acknowledge the feeling ONCE in warm, natural English
+- After acknowledging it, gently guide User A toward describing the actual situation or events behind those feelings
+- Do NOT produce options that cause User A to repeat the same emotional statement multiple times
+- Instead, help User A talk about what happened — the details, moments, incidents, or actions that led to the feeling
+- This is especially important when User B shows openness or asks what happened
+- Use warm, friendly, natural language appropriate for any relationship (partners, friends, family, coworkers, elders)
+- Do not use Gen-Z slang and do not use formal/corporate phrasing
+- Keep the language human, simple, and caring
+
+✅ GOOD EXAMPLES (guiding toward details):
+- "I hear that you're hurt. Can you help me understand what happened that made you feel that way?"
+- "I get that you're feeling uncomfortable. What was it that made you feel that way?"
+- "I understand you're disturbed. What happened that led to this feeling?"
+- "I hear you're sad about this. Can you tell me more about what happened?"
+
+❌ AVOID (repeating emotions without progress):
+- "I'm really hurt about this" (if User A already said they're hurt)
+- "I feel so sad" (if User A already expressed sadness)
+- "I'm very uncomfortable" (if User A already mentioned discomfort)
+
+✅ INSTEAD (guide toward details):
+- "I hear you're hurt. What happened that made you feel this way?"
+- "I understand you're sad. Can you help me see what led to this?"
+- "I get that you're uncomfortable. What was it that made you feel that way?"
 ` : ''}
 ${isRecipientUserB ? `
 🟢 GENERATING FOR USER B (Responder - Speaking TO User A):
@@ -1718,39 +1767,52 @@ ${shouldUseHint && isRecipientUserB ? `- If User B submitted a private hint, sub
 - Or use pronouns from entity registry: "she", "he", "they"
 - NEVER use "you/your" for third parties - only for the listener
 
-🎯 MANDATORY TONE REQUIREMENTS - ALL OPTIONS MUST BE POLITE, EMPATHETIC, HUMAN, NATURAL, AND FRIENDLY:
+🎯 MANDATORY TONE REQUIREMENTS - ALL OPTIONS MUST BE WARM, FRIENDLY, NATURAL, AND APPROACHABLE:
+
+**LANGUAGE STYLE (CRITICAL):**
+- Use warm, friendly, natural everyday English that fits any relationship - partners, friends, family, coworkers, elders, or younger people
+- Sound human and approachable - not formal, robotic, overly polite, or Gen-Z slang
+- Use natural everyday phrases: "I hear you", "I get what you're saying", "I didn't realize that", "I want to understand this better", "I'm listening", "Let's figure this out"
+- Avoid Gen-Z slang: "fr", "ngl", "no cap", "bet", "slay", "sus", "lowkey", "highkey", "tbh", "ngl", "hit different", etc.
+- Avoid overly formal phrasing: "I appreciate your perspective", "I would like to hear your side", "I would appreciate if", "I acknowledge your perspective"
+- Write in complete, natural sentences - friendly but not casual slang, warm but not stiff
 
 **POLITE & RESPECTFUL:**
-- Always use courteous, respectful language
-- ✅ GOOD: "I'd appreciate if you could help me understand", "I'd love to hear your side", "Could you help me see your perspective?"
+- Always use courteous, respectful language in natural English
+- ✅ GOOD: "I hear you", "I get what you're saying", "I want to understand this better", "Can you help me see your side?"
 - ❌ BAD: "I need you to", "You should", "Tell me", "What do you want"
+- ❌ AVOID: "I'd appreciate if you could help me understand" (too formal), "I'd love to hear your side" (too formal)
 
 **EMPATHETIC & CARING:**
 - Show genuine care and understanding for the other person's feelings
 - ✅ GOOD: "I can see why that would feel that way", "I care about how you're feeling", "I want to make sure you feel heard"
 - ❌ BAD: "I understand" (too cold), "I see" (dismissive), "Okay" (unfeeling)
+- ❌ AVOID: "I appreciate your perspective" (too formal)
 
 **HUMAN & NATURAL:**
 - Sound like a real person talking, not a robot or therapist
-- ✅ GOOD: "I've been thinking about what you said", "I want us to work through this together", "I appreciate you sharing that with me"
+- ✅ GOOD: "I've been thinking about what you said", "I want us to work through this together", "I'm listening"
 - ❌ BAD: "I acknowledge your perspective", "We should resolve our conflict", "I experienced exclusion"
+- ❌ AVOID: "I appreciate you sharing that with me" (too formal)
 
 **FRIENDLY & WARM:**
 - Be warm, approachable, and kind - like talking to someone you care about
-- ✅ GOOD: "Hey, I'd love to understand your side", "I'm here to listen", "Thanks for being open with me", "I want us to stay close"
+- ✅ GOOD: "I want to understand your side", "I'm listening", "I want us to stay close", "Let's figure this out"
 - ❌ BAD: "We need to talk", "This is a problem", "What's the issue", "Can you tell me more" (too generic)
+- ❌ AVOID: "Hey, I'd love to understand your side" (too casual), "Thanks for being open with me" (too formal)
 
 **GENTLE & SUPPORTIVE:**
 - Use soft, non-confrontational phrasing that shows you're on their side
-- ✅ GOOD: "I wonder if we could explore this together", "Would you be open to talking about this?", "I'm here to understand, not to judge"
+- ✅ GOOD: "I want to understand this better", "I'm listening", "Let's figure this out together"
 - ❌ BAD: "We need to discuss this", "You need to explain", "This needs to be resolved"
+- ❌ AVOID: "I wonder if we could explore this together" (too formal), "Would you be open to talking about this?" (too formal)
 
 **SPECIFIC EXAMPLES OF GOOD OPTIONS:**
-- "I'd love to understand what's been on your mind - can you help me see things from your perspective?"
+- "I hear you, and I want to understand this better"
+- "I get what you're saying - can you help me see things from your side?"
 - "I care about how you're feeling, and I want to make sure you feel heard"
-- "I appreciate you sharing that with me - it helps me understand where you're coming from"
-- "I'm here to listen and work through this together with you"
-- "Thanks for being open with me - I want us to stay connected"
+- "I'm listening - let's figure this out together"
+- "I didn't realize that - I want us to work through this"
 
 **SPECIFIC EXAMPLES OF BAD OPTIONS (NEVER GENERATE THESE):**
 - "Can you tell me more?" (too generic, not friendly)
@@ -1758,8 +1820,13 @@ ${shouldUseHint && isRecipientUserB ? `- If User B submitted a private hint, sub
 - "I understand" (cold, unfeeling)
 - "We need to resolve this" (demanding, confrontational)
 - "You should explain" (demanding, not polite)
+- "I appreciate your perspective" (too formal, robotic)
+- "I would like to hear your side" (too formal, stiff)
+- "fr fr that's valid" (Gen-Z slang)
+- "ngl I get it" (Gen-Z slang)
+- "no cap that hurt" (Gen-Z slang)
 
-CRITICAL: Every option must pass this test: "Would a caring friend say this to someone they care about?" If the answer is no, rewrite it to be warmer, more empathetic, and more friendly.
+CRITICAL: Every option must pass this test: "Would a caring friend say this to someone they care about in warm, natural everyday English?" If the answer is no, rewrite it to be warmer, more natural, and more approachable.
 
     ${isVeryFirstMessage ? `
       🌱 FIRST MESSAGE - SUMMARY-AWARE OPENINGS:
@@ -2032,6 +2099,19 @@ Ask clarifying questions, validate feelings, explore concerns.
 Ensure both sides feel truly heard before moving to closure.
 `}
 ` : ''}
+
+🎯 SMILEY DISTRIBUTION RULE (FOR REGULAR OPTIONS - NON-CLOSURE):
+- When generating ${isVeryFirstMessage ? '5' : '3'} regular options (NOT closure scenarios):
+  ${isVeryFirstMessage ? `
+  - Maximum 2 options should contain smiley + text
+  - The other 3 options must be text only, with no smileys
+  ` : `
+  - Maximum 1 option should contain smiley + text
+  - The other 2 options must be text only, with no smileys
+  `}
+- This rule applies ONLY to regular suggested options during conversation
+- Do NOT apply this rule to single-smiley closure options (those are handled separately above)
+- Regular options should primarily be text-based, with limited smiley usage for variety
 
 RELATIONSHIP-SPECIFIC TONE:
 - Friend: casual, use "dude", "bro", "man" if natural, informal language
@@ -3104,6 +3184,128 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     
     console.log("   Final normalized options:", normalizedOptions);
 
+    // ✅ FIX: Enforce smiley distribution rules for first set of 5 options
+    if (isVeryFirstMessage && normalizedOptions.length === 5) {
+      // Helper: Check if option contains any emoji/smiley
+      const hasEmoji = (text: string): boolean => {
+        if (!text || typeof text !== 'string') return false;
+        // Check for emoji characters (Unicode emoji ranges)
+        const emojiRegex = /[\p{Emoji}\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/u;
+        return emojiRegex.test(text);
+      };
+      
+      // Helper: Remove multiple stacked smileys, keep only single smiley
+      const normalizeSmileys = (text: string): string => {
+        if (!text || typeof text !== 'string') return text;
+        // Remove multiple consecutive smileys (like ":):):)" or "🙂🙂🙂")
+        // Keep only the first smiley if multiple exist
+        let normalized = text;
+        
+        // Remove repeated emoji characters (keep only first occurrence)
+        normalized = normalized.replace(/([\p{Emoji}\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}])\1+/gu, '$1');
+        
+        // Remove repeated text-based smileys like ":):):)" or "😊😊😊"
+        normalized = normalized.replace(/(:\)|:\(|:D|:P|:o|:O|😊|🙂|😁|😄|😃|😀|😉|😎|🤗|🤝|❤️|💙|🫂|✨|👍)\1+/gi, '$1');
+        
+        return normalized;
+      };
+      
+      // Helper: Remove all emojis from text
+      const removeAllEmojis = (text: string): string => {
+        if (!text || typeof text !== 'string') return text;
+        const emojiRegex = /[\p{Emoji}\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu;
+        return text.replace(emojiRegex, '').trim();
+      };
+      
+      // Step 1: Normalize all options (remove multiple stacked smileys)
+      normalizedOptions = normalizedOptions.map(opt => normalizeSmileys(opt));
+      
+      // Step 2: Identify which options currently have smileys
+      const optionsWithSmileys: number[] = [];
+      const optionsWithoutSmileys: number[] = [];
+      
+      normalizedOptions.forEach((opt, index) => {
+        if (hasEmoji(opt)) {
+          optionsWithSmileys.push(index);
+        } else {
+          optionsWithoutSmileys.push(index);
+        }
+      });
+      
+      // Step 3: Enforce placement rule - only positions 2 and 4 (indices 1 and 3) should have smileys
+      const targetSmileyPositions = [1, 3]; // Positions 2 and 4 (0-indexed: 1, 3)
+      const textOnlyPositions = [0, 2, 4]; // Positions 1, 3, 5 (0-indexed: 0, 2, 4)
+      
+      // Remove smileys from text-only positions (1, 3, 5)
+      textOnlyPositions.forEach(pos => {
+        if (normalizedOptions[pos] && hasEmoji(normalizedOptions[pos])) {
+          normalizedOptions[pos] = removeAllEmojis(normalizedOptions[pos]);
+          console.log(`   Removed smiley from position ${pos + 1} (text-only position)`);
+        }
+      });
+      
+      // Step 4: Ensure exactly 2 options have smileys (positions 2 and 4)
+      const currentSmileyCount = normalizedOptions.filter(opt => hasEmoji(opt)).length;
+      
+      if (currentSmileyCount > 2) {
+        // Too many smileys - remove from non-target positions
+        const currentSmileyIndices: number[] = [];
+        normalizedOptions.forEach((opt, index) => {
+          if (hasEmoji(opt)) {
+            currentSmileyIndices.push(index);
+          }
+        });
+        
+        // Keep smileys only in positions 2 and 4, remove from others
+        currentSmileyIndices.forEach(index => {
+          if (!targetSmileyPositions.includes(index)) {
+            normalizedOptions[index] = removeAllEmojis(normalizedOptions[index]);
+            console.log(`   Removed smiley from position ${index + 1} (not target position)`);
+          }
+        });
+      } else if (currentSmileyCount < 2) {
+        // Too few smileys - add single smiley to positions 2 and 4 if they don't have one
+        const smileyEmojis = ['🙂', '😊', '🤝', '❤️', '💙', '🫂', '✨', '👍'];
+        let addedCount = 0;
+        
+        targetSmileyPositions.forEach(pos => {
+          if (addedCount < (2 - currentSmileyCount) && !hasEmoji(normalizedOptions[pos])) {
+            const randomSmiley = smileyEmojis[Math.floor(Math.random() * smileyEmojis.length)];
+            // Add smiley at the end of the text
+            normalizedOptions[pos] = normalizedOptions[pos].trim() + ' ' + randomSmiley;
+            addedCount++;
+            console.log(`   Added smiley to position ${pos + 1}`);
+          }
+        });
+      }
+      
+      // Step 5: Final verification - ensure positions 1, 3, 5 are text-only
+      textOnlyPositions.forEach(pos => {
+        if (normalizedOptions[pos] && hasEmoji(normalizedOptions[pos])) {
+          normalizedOptions[pos] = removeAllEmojis(normalizedOptions[pos]);
+          console.log(`   Final cleanup: Removed smiley from position ${pos + 1}`);
+        }
+      });
+      
+      // Step 6: Final verification - ensure exactly 2 smileys in positions 2 and 4
+      const finalSmileyCount = normalizedOptions.filter(opt => hasEmoji(opt)).length;
+      const finalSmileyPositions = normalizedOptions
+        .map((opt, index) => hasEmoji(opt) ? index : -1)
+        .filter(index => index !== -1);
+      
+      console.log(`   ✅ Smiley distribution enforced: ${finalSmileyCount} smileys in positions [${finalSmileyPositions.map(p => p + 1).join(', ')}]`);
+      
+      // Final check: if we still have more than 2 smileys, remove extras
+      if (finalSmileyCount > 2) {
+        const extraSmileys = finalSmileyPositions.filter(pos => !targetSmileyPositions.includes(pos));
+        extraSmileys.forEach(pos => {
+          normalizedOptions[pos] = removeAllEmojis(normalizedOptions[pos]);
+          console.log(`   Removed extra smiley from position ${pos + 1}`);
+        });
+      }
+    }
+
+    console.log("   Final normalized options (after smiley enforcement):", normalizedOptions);
 
     // ✅ CLEANUP: Remove previous options for this chat + recipient to prevent stale flicker
     const { error: deleteError } = await supabase

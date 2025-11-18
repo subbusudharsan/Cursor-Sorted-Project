@@ -969,7 +969,35 @@ function SoulroomScreen() {
         .order('created_at', { ascending: false });
 
       if (error) throw error;
-      setEntries(data || []);
+      
+      // ✅ FIX 1: Separate chat-based and user-created reflections
+      const chatBasedReflections = (data || []).filter((entry) => 
+        entry.tags && Array.isArray(entry.tags) && 
+        entry.tags.some((tag: string) => typeof tag === 'string' && tag.startsWith('chat:'))
+      );
+      
+      const userCreatedReflections = (data || []).filter((entry) => 
+        !entry.tags || !Array.isArray(entry.tags) || 
+        !entry.tags.some((tag: string) => typeof tag === 'string' && tag.startsWith('chat:'))
+      );
+      
+      // ✅ Limit chat-based reflections to 10 most recent (already sorted by created_at descending)
+      const limitedChatBasedReflections = chatBasedReflections.slice(0, 10);
+      
+      // ✅ Combine: chat-based (limited to 10) + user-created (all)
+      const finalReflections = [
+        ...limitedChatBasedReflections,
+        ...userCreatedReflections
+      ];
+      
+      // ✅ Sort by created_at descending to maintain chronological order
+      finalReflections.sort((a, b) => {
+        const dateA = a.created_at ? new Date(a.created_at).getTime() : 0;
+        const dateB = b.created_at ? new Date(b.created_at).getTime() : 0;
+        return dateB - dateA;
+      });
+      
+      setEntries(finalReflections);
       await fetchConversationStats();
     } catch (error) {
       console.error('Error fetching entries:', error);
@@ -2162,6 +2190,7 @@ const base64ToUint8Array = (base64: string) => {
                         const contactIdFromTag = contactTag ? contactTag.split(':')[1] : null;
                         const chatTag = entry.tags?.find((tag) => tag.startsWith('chat:')) || null;
                         const chatIdFromTag = chatTag ? chatTag.split(':')[1] : null;
+                        const isChatBasedReflection = chatTag !== null; // ✅ FIX 2: Detect chat-based reflection
                         const displayTags = (entry.tags || [])
                           .map((tag) => {
                             if (tag.startsWith('contact:')) {
@@ -2175,6 +2204,7 @@ const base64ToUint8Array = (base64: string) => {
                             if (tag === 'closure') return 'Closure saved';
                             if (tag.startsWith('voice:')) return null;
                             if (tag.startsWith('mood:')) return null;
+                            if (tag.startsWith('chat:')) return null;
                             return tag.replace(/_/g, ' ');
                           })
                           .filter((label): label is string => Boolean(label));
@@ -2187,6 +2217,11 @@ const base64ToUint8Array = (base64: string) => {
 
                         const variant = REFLECTION_CARD_VARIANTS[index % REFLECTION_CARD_VARIANTS.length];
                         const isSelected = selectedReflectionIds.includes(entry.id);
+                        
+                        // ✅ FIX 2: Apply different background color based on reflection type
+                        const cardBackgroundStyle = isChatBasedReflection 
+                          ? { backgroundColor: Colors.secondary[100] } // Bright light blue for chat-based reflections (matches app theme)
+                          : variant.container; // Default variant for user-created reflections
 
                         return (
                           <View key={entry.id} style={styles.reflectionItem}>
@@ -2205,7 +2240,7 @@ const base64ToUint8Array = (base64: string) => {
                               <View
                                 style={[
                                   styles.entryCard,
-                                  variant.container,
+                                  cardBackgroundStyle, // ✅ Use the differentiated background
                                   reflectionMultiSelect && styles.entryCardMultiSelect,
                                   isSelected && styles.entryCardSelected,
                                 ]}

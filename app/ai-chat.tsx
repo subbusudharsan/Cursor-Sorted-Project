@@ -123,6 +123,9 @@ function AIChatScreen() {
   const [editedQAPairs, setEditedQAPairs] = useState<QAPair[]>([]);
   const [showGenerateSummaryButton, setShowGenerateSummaryButton] = useState(false);
   const [showSummaryNoticeModal, setShowSummaryNoticeModal] = useState(false);
+  // ✅ Cost optimization: Track original values when entering edit mode
+  const [originalQAPairsForEdit, setOriginalQAPairsForEdit] = useState<QAPair[]>([]);
+  const [originalAdditionalInfoForEdit, setOriginalAdditionalInfoForEdit] = useState("");
   const editScrollViewRef = useRef<ScrollView>(null);
   const contextDataRef = useRef<Record<string, any>>({});
 
@@ -3505,6 +3508,9 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
   const handleAddExtraInfo = () => {
     setShowEditMode(true);
     setEditedQAPairs([...qaPairs]);
+    // ✅ Cost optimization: Store original values to detect changes
+    setOriginalQAPairsForEdit([...qaPairs]);
+    setOriginalAdditionalInfoForEdit(additionalInfo);
 
     setTimeout(() => {
       editScrollViewRef.current?.scrollTo({ y: 0, animated: true });
@@ -3517,6 +3523,19 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
     setEditedQAPairs(updated);
   };
 
+  // ✅ Cost optimization: Helper function to compare QAPairs arrays
+  const areQAPairsEqual = (pairs1: QAPair[], pairs2: QAPair[]): boolean => {
+    if (pairs1.length !== pairs2.length) return false;
+    return pairs1.every((pair1, index) => {
+      const pair2 = pairs2[index];
+      return (
+        pair1.question === pair2.question &&
+        pair1.answer?.trim() === pair2.answer?.trim() &&
+        pair1.answerType === pair2.answerType
+      );
+    });
+  };
+
   const handleRegenerateSummary = async () => {
     setLoading(true);
     setSummaryJustRegenerated(true);
@@ -3525,6 +3544,47 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
       if (!currentChatId) {
         throw new Error('No chat ID available');
       }
+
+      // ✅ COST OPTIMIZATION: Check if any changes were made
+      const qaPairsChanged = !areQAPairsEqual(editedQAPairs, originalQAPairsForEdit);
+      const additionalInfoChanged = additionalInfo.trim() !== originalAdditionalInfoForEdit.trim();
+      const hasChanges = qaPairsChanged || additionalInfoChanged;
+
+      if (!hasChanges) {
+        // ✅ No changes detected - restore existing summary and skip API call
+        console.log('✅ No changes detected in edit mode - restoring existing summary (cost optimization)');
+        
+        // Restore existing summary from contextDataRef or state
+        const existingSummary = contextDataRef.current?.summary_a_perspective || summary || '';
+        const existingThoughts = contextDataRef.current?.thoughts_a || thoughts || '';
+        const existingNeutralSummary = contextDataRef.current?.summary_shared_neutral || '';
+        
+        setSummary(existingSummary);
+        setThoughts(existingThoughts);
+        
+        // Update contextDataRef to ensure consistency
+        contextDataRef.current = {
+          ...contextDataRef.current,
+          summary: existingSummary,
+          summary_a: existingSummary,
+          summary_a_perspective: existingSummary,
+          summary_shared_neutral: existingNeutralSummary,
+          thoughts_a: existingThoughts,
+        };
+        
+        // Update qaPairs (in case editedQAPairs was modified but reverted)
+        setQAPairs(editedQAPairs);
+        
+        setTimeout(() => {
+          setSummaryJustRegenerated(false);
+        }, 500);
+        
+        setLoading(false);
+        return; // ✅ Skip API call - cost optimization
+      }
+
+      // ✅ Changes detected - proceed with normal regeneration
+      console.log('✅ Changes detected - regenerating summary via API');
 
       // Relaxed during edit: allow brief/typos; only block if empty or pure symbols
       if (additionalInfo.trim()) {
@@ -3717,6 +3777,34 @@ Return exactly two sections in this exact format (start directly with emoji head
 
 💡 My Thoughts
 <1–2 complete sentences describing what User A hopes, plans, or feels about the situation. This section is REQUIRED and must never be empty. Must end with proper punctuation.>
+
+🎯 PRONOUN ACCURACY FOR THOUGHTS (CRITICAL):
+- Thoughts must always be written strictly from User A's perspective
+- Use 'I', 'me', 'my', 'I think', 'I feel', 'I didn't expect…' for User A
+- Use 'you' or the @tag ONLY when User A refers to User B
+- Use the exact #tags or names the user gave for third parties
+- Do NOT invent new names, labels, or pronouns
+
+POV CONSISTENCY:
+- Do not switch into User B's perspective
+- Do not describe what User B feels unless User A explicitly said it
+
+LANGUAGE STYLE:
+- Use warm, natural, everyday English (not formal and not Gen-Z slang)
+- Keep it simple, human, caring, and easy to read
+- Thoughts should feel like User A is quietly reflecting to themselves
+
+✅ GOOD EXAMPLES:
+- "I didn't expect that from you."
+- "I think I could have explained myself better."
+- "I still care about this and want things to be okay."
+- "I didn't know #Dad said that."
+
+❌ AVOID:
+- Incorrect POV ('You must be upset', 'We feel…', 'They probably…')
+- Formal phrases ('I acknowledge…', 'I appreciate your perspective')
+- Gen-Z slang ('lowkey', 'fr', 'no cap')
+- Added assumptions User A never shared
 
 CRITICAL: 
 - ALWAYS generate BOTH sections. Never leave "My Thoughts" empty.

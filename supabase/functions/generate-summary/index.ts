@@ -136,6 +136,54 @@ Simply reorganize what the user said into a clean, clear, meaningful summary.
 Focus on clarity, NOT expansion or shortening.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CRITICAL: USE ONLY USER'S WORDS - CHRONOLOGICAL ORGANIZATION:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+MANDATORY RULES:
+1. WORD USAGE:
+   - Use ONLY words, phrases, and concepts that the user has explicitly shared
+   - You MAY rephrase into clean, proper sentences for grammar and clarity
+   - Do NOT add new vocabulary, synonyms, or new ideas
+   - Do NOT use different words to express the same concept - stick to user's actual words
+   - Preserve the user's original meaning and emotional tone exactly
+
+2. CHRONOLOGICAL ORGANIZATION (CRITICAL):
+   - Organize information in a logical REAL-WORLD TIMELINE (event chronology)
+   - Do NOT follow the order things were typed - follow when events actually happened
+   - If Stage 2 Q&A reveals events that happened BEFORE Stage 1, reorder them correctly
+   - Group related events together chronologically, not by when they were mentioned
+   - Example: If user mentions "yesterday's argument" in Stage 1, then in Stage 2 mentions "the issue started last week", organize as: last week's issue → yesterday's argument
+
+3. PRESERVATION:
+   - The meaning and emotional accuracy must remain EXACTLY as the user expressed
+   - Do NOT interpret, expand, or add context beyond what the user shared
+   - Do NOT add descriptive words the user didn't use
+   - Simply organize the user's words into a clear, chronological flow
+
+What to do:
+- Extract key phrases directly from the user's input
+- Rephrase ONLY for grammar and sentence structure (clean, proper sentences)
+- Organize events in real-world chronological order (when they happened, not when typed)
+- Connect the user's words with minimal connecting words (only when necessary for grammar)
+- Preserve the user's original meaning and emotional tone exactly
+
+What NOT to do:
+- Do NOT add new vocabulary or synonyms
+- Do NOT add new ideas or concepts
+- Do NOT follow typing order - follow event chronology
+- Do NOT add explanations or interpretations beyond organizing chronologically
+- Do NOT change the emotional meaning or intensity
+
+Example of CORRECT approach:
+User Stage 1: "I felt hurt when @you didn't respond yesterday."
+User Stage 2 Q&A: "What happened before that?" → "Last week @you canceled our plans."
+Correct summary: "Last week @you canceled our plans. I felt hurt when @you didn't respond yesterday."
+
+Example of INCORRECT approach (adding new words):
+User input: "I felt hurt when @you didn't respond."
+Incorrect summary: "I experienced emotional distress when @you failed to acknowledge my communication." ❌
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 1) A-PERSPECTIVE SUMMARY (User A talking to AI - ONLY for User A in Stage 3):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 • This is ONLY for User A.
@@ -151,6 +199,9 @@ Format:
 - Includes # tags for other people ("#Mom", "#Rachana")
 - First-person voice: "I felt…", "I thought…", "I was hurt…"
 - Preserve ALL entity tags (@ and #) exactly as they appear
+- Use ONLY words and phrases from the user's input (may rephrase for clean sentences)
+- Organize events in REAL-WORLD CHRONOLOGICAL ORDER (when events happened, not typing order)
+- Preserve meaning and emotional accuracy exactly as the user expressed
 
 Example:
 "I felt ignored at the family dinner when @you barely spoke to me. It seemed intentional and made me feel unwanted, especially when #Mom and others were talking normally."
@@ -176,6 +227,9 @@ Format:
 - No assumptions about B's emotions
 - No "I" or "you" perspective
 - Preserve ALL entity tags (@ and #) exactly as they appear
+- Use ONLY words and phrases from the user's input (may rephrase for clean sentences)
+- Organize events in REAL-WORLD CHRONOLOGICAL ORDER (when events happened, not typing order)
+- Preserve meaning and emotional accuracy exactly as the user expressed
 
 Example:
 "The discussion is about the family dinner where User B (@you) spoke very little to User A. User A perceived this as intentional and felt excluded, especially compared to the interactions with #Mom and others."
@@ -222,9 +276,9 @@ CRITICAL REQUIREMENTS:
 
 Guidelines:
 - MUST include information from ALL Q&A responses in BOTH summaries
-- A-PERSPECTIVE SUMMARY: Emotional, first-person, preserves @ and # tags
-- NEUTRAL SHARED SUMMARY: Factual, third-person, preserves @ and # tags, NO assumptions about User B's feelings
-- Use empathetic, non-judgmental language
+- A-PERSPECTIVE SUMMARY: Emotional, first-person, preserves @ and # tags, uses ONLY user's words (may rephrase for clean sentences), organized chronologically
+- NEUTRAL SHARED SUMMARY: Factual, third-person, preserves @ and # tags, NO assumptions about User B's feelings, uses ONLY user's words (may rephrase for clean sentences), organized chronologically
+- Use empathetic, non-judgmental language (but only words the user shared)
 - Identify user_b (person they're talking TO) vs third parties
 - Choose appropriate pronouns based on names and context
 - NEVER invent new person names. Only reference names that appear in the initial description, Q&A responses, or the tagged_persons list. If no name is provided, describe the person generically (e.g., "a coworker").
@@ -232,7 +286,10 @@ Guidelines:
 - Keep NEUTRAL SHARED SUMMARY purely factual and neutral
 - ALWAYS generate BOTH summaries - never skip or return null
 - Apply input validation rules to filter out meaningless inputs while accepting all meaningful content
-- Maintain natural summary length based on user input - do not expand or compress unnecessarily`;
+- Maintain natural summary length based on user input - do not expand or compress unnecessarily
+- CRITICAL: Organize user's information in REAL-WORLD CHRONOLOGICAL ORDER (event timeline, not typing order) - if Stage 2 reveals earlier events, place them before Stage 1 events
+- CRITICAL: Use ONLY user's words and phrases - may rephrase for clean sentences but do NOT add new vocabulary, synonyms, or new ideas
+- CRITICAL: Preserve meaning and emotional accuracy exactly as the user expressed`;
 
     const claudePayload = {
       model: 'claude-3-5-haiku-20241022',
