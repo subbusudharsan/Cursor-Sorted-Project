@@ -1740,10 +1740,13 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           );
         }
       }
-      // 😊 Mutual smiley detection for proper closure
-      const CLOSURE_SMILEYS = ["👍", "🙂", "🤝", "❤️", "😊", "💖", "🌟", "✨", "🙏", "💞"];
-      const isSmiley = CLOSURE_SMILEYS.some(smiley => content.trim() === smiley);
-      if (isSmiley) {
+      // 😊 Mutual emoji detection for proper closure - ANY emoji triggers closure, not just closure smileys
+      // Check if the message is emoji-only (any emoji)
+      const isEmojiOnly = /^[\p{Emoji_Presentation}\p{Emoji}\u200d\ufe0f\s]+$/u.test(content.trim()) && 
+                          content.trim().length > 0 &&
+                          !/[a-zA-Z0-9]/.test(content.trim()); // Ensure no letters/numbers
+      
+      if (isEmojiOnly) {
         const { data: chatData } = await supabase
           .from("chats")
           .select("user_id, contact_id, context_data, user_a_smiley_sent, user_b_smiley_sent, closure_state")
@@ -1778,7 +1781,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             updateData.closure_state = isUserA
               ? 'pending_user_b_smiley'
               : 'pending_user_a_smiley';
-            console.log(`⏳ Waiting for ${isUserA ? 'User B' : 'User A'} to send closure smiley`);
+            console.log(`⏳ Waiting for ${isUserA ? 'User B' : 'User A'} to send emoji`);
             showNotification('info', 'Closure Pending', 'Waiting for the other person to confirm completion');
           }
           await supabase
@@ -2080,13 +2083,17 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     setTimeout(() => {
       setShowSuggestedOptions(false);
       
-      // ✅ FIX: Check if option is a single smiley - if so, send it alone without blending
+      // ✅ FIX: Check if option is emoji-only (ANY emoji, not just closure smileys) - send without blending
       const trimmedOption = option.trim();
-      const CLOSURE_SMILEYS = ["👍", "🙂", "🤝", "❤️", "😊", "💖", "🌟", "✨", "🙏", "💞"];
-      const isSingleSmiley = CLOSURE_SMILEYS.includes(trimmedOption);
       
-      if (isSingleSmiley) {
-        console.log('😊 Single smiley option detected - sending without acknowledgment:', trimmedOption);
+      // Check if the message is ONLY emoji(s) - no text characters
+      // This regex matches Unicode emoji characters (including variations, modifiers, and zero-width joiners)
+      const isEmojiOnly = /^[\p{Emoji_Presentation}\p{Emoji}\u200d\ufe0f\s]+$/u.test(trimmedOption) && 
+                          trimmedOption.trim().length > 0 &&
+                          !/[a-zA-Z0-9]/.test(trimmedOption); // Ensure no letters/numbers
+      
+      if (isEmojiOnly) {
+        console.log('😊 Emoji-only message detected - sending without acknowledgment:', trimmedOption);
         sendMessage(trimmedOption);
         return;
       }
