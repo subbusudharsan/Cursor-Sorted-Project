@@ -1388,7 +1388,7 @@ const styles = StyleSheet.create({
   },
 
   activeTabText: {
-    color: Colors.primary[600],
+    color: Colors.primary[500], // ✅ Brighter yellow (#FFEB3B) for better visibility on blue background
     fontWeight: Typography.fontWeight.bold,
   },
 

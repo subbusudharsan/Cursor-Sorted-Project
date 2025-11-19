@@ -69,23 +69,9 @@ const fetchConversations = useCallback(async () => {
   .throwOnError();
   
       // ✅ Filter out empty sessions (no meaningful content)
-      const validChats = (chatsData || []).filter((chat) => {
-        const ctx = chat.context_data;
-        if (!ctx) return false;
-        
-        const flowStage = ctx.flowStage || 'welcome';
-        const hasInitialDescription = ctx.initial_description && ctx.initial_description.trim().length > 0;
-        const hasQAPairs = ctx.qa_pairs && ctx.qa_pairs.length > 0;
-        const hasSummary = ctx.summary && ctx.summary.trim().length > 0;
-        
-        // Only include chats with meaningful content
-        return (
-          (flowStage === 'welcome' && hasInitialDescription) ||
-          (flowStage === 'qa' && hasQAPairs) ||
-          (flowStage === 'summary' && hasQAPairs && hasSummary) ||
-          (flowStage === 'ready' && hasQAPairs && hasSummary)
-        );
-      });
+      // Show all AI assistant chats for this user
+const validChats = chatsData || [];
+
       
       console.log(`✅ Filtered ${(chatsData || []).length} chats to ${validChats.length} valid chats`);
 
@@ -131,12 +117,13 @@ const fetchConversations = useCallback(async () => {
         }
       }
 
-      // ✅ FIX: Show saved sessions (session_promoted === true) but exclude only active pending sessions
+      // ✅ FIX: Only hide sessions that have been sent to contact
       const filteredChats = validChats.filter((chat) => {
         if (!chat.context_data) return true;
-        // Exclude only if it's an initial pending session that hasn't been saved
-        if (chat.context_data.initial_pending === true && chat.context_data.session_promoted !== true) return false;
-        // Include all saved sessions (session_promoted === true) and non-pending sessions
+        // ✅ CRITICAL: Only exclude sessions that have been sent to contact
+        // Do NOT filter by is_resolved - that's for contact chats, not AI assistant sessions
+        if (chat.context_data.sent_to_contact === true) return false;
+        // Include everything else (pending, promoted, etc.)
         return true;
       });
 

@@ -1991,66 +1991,279 @@ ${shouldUseHint && isRecipientUserB ? `- If User B submitted a private hint, sub
 - Or use pronouns from entity registry: "she", "he", "they"
 - NEVER use "you/your" for third parties - only for the listener
 
-🎯 MANDATORY TONE REQUIREMENTS - ALL OPTIONS MUST BE WARM, FRIENDLY, NATURAL, AND APPROACHABLE:
+### 🎯 NATURAL HUMAN TONE (MANDATORY FOR ALL OPTIONS)
 
-**LANGUAGE STYLE (CRITICAL):**
-- Use warm, friendly, natural everyday English that fits any relationship - partners, friends, family, coworkers, elders, or younger people
-- Sound human and approachable - not formal, robotic, overly polite, or Gen-Z slang
-- Show understanding naturally using: "I get what you mean", "that makes sense", "oh okay I understand" (NEVER "I hear you"). Use other natural everyday phrases: "I didn't realize that", "I want to understand this better", "I'm listening", "Let's figure this out"
-- Avoid Gen-Z slang: "fr", "ngl", "no cap", "bet", "slay", "sus", "lowkey", "highkey", "tbh", "ngl", "hit different", etc.
-- Avoid overly formal phrasing: "I appreciate your perspective", "I would like to hear your side", "I would appreciate if", "I acknowledge your perspective"
-- Write in complete, natural sentences - friendly but not casual slang, warm but not stiff
+Use warm, friendly, everyday English.  
 
-**POLITE & RESPECTFUL:**
-- Always use courteous, respectful language in natural English
-- ✅ GOOD: "I hear you", "I get what you're saying", "I want to understand this better", "Can you help me see your side?"
-- ❌ BAD: "I need you to", "You should", "Tell me", "What do you want"
-- ❌ AVOID: "I'd appreciate if you could help me understand" (too formal), "I'd love to hear your side" (too formal)
+Tone must fit **ALL relationships**: partners, friends, family, coworkers, elders, juniors.
 
-**EMPATHETIC & CARING:**
-- Show genuine care and understanding for the other person's feelings
-- ✅ GOOD: "I can see why that would feel that way", "I care about how you're feeling", "I want to make sure you feel heard"
-- ❌ BAD: "I understand" (too cold), "I see" (dismissive), "Okay" (unfeeling)
-- ❌ AVOID: "I appreciate your perspective" (too formal)
+Use natural phrases:
 
-**HUMAN & NATURAL:**
-- Sound like a real person talking, not a robot or therapist
-- ✅ GOOD: "I've been thinking about what you said", "I want us to work through this together", "I'm listening"
-- ❌ BAD: "I acknowledge your perspective", "We should resolve our conflict", "I experienced exclusion"
-- ❌ AVOID: "I appreciate you sharing that with me" (too formal)
+- "I get what you mean"
 
-**FRIENDLY & WARM:**
-- Be warm, approachable, and kind - like talking to someone you care about
-- ✅ GOOD: "I want to understand your side", "I'm listening", "I want us to stay close", "Let's figure this out"
-- ❌ BAD: "We need to talk", "This is a problem", "What's the issue", "Can you tell me more" (too generic)
-- ❌ AVOID: "Hey, I'd love to understand your side" (too casual), "Thanks for being open with me" (too formal)
+- "that makes sense"
 
-**GENTLE & SUPPORTIVE:**
-- Use soft, non-confrontational phrasing that shows you're on their side
-- ✅ GOOD: "I want to understand this better", "I'm listening", "Let's figure this out together"
-- ❌ BAD: "We need to discuss this", "You need to explain", "This needs to be resolved"
-- ❌ AVOID: "I wonder if we could explore this together" (too formal), "Would you be open to talking about this?" (too formal)
+- "oh okay, I understand"
 
-**SPECIFIC EXAMPLES OF GOOD OPTIONS:**
-- "I hear you, and I want to understand this better"
-- "I get what you're saying - can you help me see things from your side?"
-- "I care about how you're feeling, and I want to make sure you feel heard"
-- "I'm listening - let's figure this out together"
-- "I didn't realize that - I want us to work through this"
+- "I didn't realize that"
 
-**SPECIFIC EXAMPLES OF BAD OPTIONS (NEVER GENERATE THESE):**
-- "Can you tell me more?" (too generic, not friendly)
-- "What do you want to talk about?" (rude, dismissive)
-- "I understand" (cold, unfeeling)
-- "We need to resolve this" (demanding, confrontational)
-- "You should explain" (demanding, not polite)
-- "I appreciate your perspective" (too formal, robotic)
-- "I would like to hear your side" (too formal, stiff)
-- "fr fr that's valid" (Gen-Z slang)
-- "ngl I get it" (Gen-Z slang)
-- "no cap that hurt" (Gen-Z slang)
+- "I want to understand this better"
 
-CRITICAL: Every option must pass this test: "Would a caring friend say this to someone they care about in warm, natural everyday English?" If the answer is no, rewrite it to be warmer, more natural, and more approachable.
+- "I'm listening"
+
+- "let's figure this out"
+
+Use contractions → I'm, you're, we're, didn't, can't  
+
+Be human, warm, caring — not formal, robotic, or therapist-like.
+
+---
+
+### 🚫 NEVER USE (FORMAL / ROBOTIC / THERAPIST LANGUAGE)
+
+No matter what tone the conversation has, **never** generate:
+
+- "I hear you"
+
+- "I acknowledge your perspective"
+
+- "I appreciate your perspective"
+
+- "I would like to hear your side"
+
+- "I understand your situation"
+
+- "I appreciate you being open with me"
+
+- "I would appreciate if…"
+
+- Generic robotic lines like "I understand." (alone)
+
+- Therapist-like language ("your perspective is valid")
+
+---
+
+### 🎭 EMOTIONAL TONE MATCHING (STRICT)
+
+Match the emotional tone of the latest message:
+
+- **Sad** → gentle: "I get what you mean, that must have been hard"
+
+- **Angry** → calm: "okay, I see what you mean"
+
+- **Confused** → clarifying: "oh okay, I get it now"
+
+- **Neutral** → warm: "yeah, that makes sense"
+
+- **Grateful** → soft: "you're welcome"
+
+- **Apologetic** → kind: "okay, I understand"
+
+---
+
+### 🔒 STRICT PRONOUN RULES (NO LOGIC CHANGE)
+
+Speaker uses **I/me/my**  
+
+Listener uses **you/your**  
+
+❌ Never use names of User A or User B  
+
+Third parties → exact names or pronouns from entity registry  
+
+(NO CHANGE TO YOUR PRONOUN ENGINE — this is only guidance)
+
+---
+
+# 🚫 CRITICAL: NO REPEATING ISSUES (NEW RULES INCLUDED)
+
+### **1️⃣ User A must NOT repeat their core issue multiple times**
+
+- If User A already expressed the core issue →  
+
+  ✔ Acknowledge → **move forward**  
+
+  ❌ Do NOT generate options where User A repeats the same problem again  
+
+  ❌ No "I felt hurt when you did X" again and again  
+
+  ✔ Only clarify if User B misunderstood  
+
+---
+
+### **2️⃣ User B must NOT repeat their explanation multiple times**
+
+- If User B already explained their side / used hint →  
+
+  ✔ Respond → don't restate  
+
+  ❌ No "let me explain again"  
+
+  ❌ No restating of the same reasoning  
+
+  ✔ Only provide small clarifications if needed  
+
+---
+
+### **3️⃣ No asking the other person to re-explain**
+
+❌ Do NOT generate:  
+
+- "Can you explain again?"  
+
+- "Can you tell me again?"  
+
+- "Can you explain better?"  
+
+- "Can you explain your side again?"  
+
+- "Let me explain again"  
+
+- "I want to explain again"  
+
+✔ Instead:  
+
+- Respond directly to what they said  
+
+- Ask meaningful, specific follow-ups ONLY if needed  
+
+- Keep conversation moving forward
+
+---
+
+# 🌟 NEW RULE: ALL OPTIONS IN A SET MUST BE EQUALLY STRONG
+
+### **4️⃣ ALL options must match the SAME situation (VERY IMPORTANT)**
+
+Every option:
+
+- Must answer the **exact same latest message**
+
+- Must stay on **the same topic**
+
+- Must express **the same core meaning**, but in different styles:
+
+  - Direct  
+
+  - Soft  
+
+  - Caring  
+
+  - Friendly  
+
+❌ Do NOT mix unrelated ideas  
+
+❌ Do NOT generate 1 good option + 2 weak/unrelated ones  
+
+❌ Do NOT drift to a different topic  
+
+✔ ALL 3 (or 5 for first message) must be:
+
+- Perfectly relevant  
+
+- Well-written  
+
+- Natural human tone  
+
+- Same meaning → different approaches  
+
+- Equally strong choices  
+
+- Hard for the user to pick because all are good  
+
+---
+
+### 🎯 ON-TOPIC REQUIREMENT (STRICT)
+
+- Must respond DIRECTLY to the latest message  
+
+- Use words/phrases from that message  
+
+- Must remain inside the current topic  
+
+- No vague questions  
+
+- No topic shifts  
+
+- No generic filler ("can you tell me more")
+
+---
+
+### 🌈 CLOSURE LOGIC (Follows your existing system)
+
+- High closure → single emoji options only  
+
+- Moderate closure → text + emoji mix  
+
+- Low closure → text only  
+
+(Your closure code controls this. Prompt only describes tone rules.)
+
+---
+
+### 🧠 EXAMPLES OF GOOD TONE
+
+- "I get what you mean, and I want to sort this out together."
+
+- "yeah, that makes sense — let's talk it through."
+
+- "I understand why you'd feel that way, thanks for telling me."
+
+- "oh okay, I get it — I didn't realize it felt like that."
+
+---
+
+### ❌ BAD EXAMPLES (NEVER GENERATE)
+
+- "Can you explain again?"
+
+- "Let me explain again."
+
+- "What do you want to talk about?"
+
+- "I hear you."
+
+- "I acknowledge your perspective."
+
+- "I appreciate your perspective."
+
+- "I understand."  
+
+- Therapist-sounding lines  
+
+- Gen-Z slang  
+
+- Extremely formal writing  
+
+---
+
+### 📌 STRUCTURE FOR EACH OPTION SET
+
+**Each option must be:**
+
+- One single complete sentence  
+
+- 8–20 words (flexible if meaningful)  
+
+- Same meaning, different tone/style  
+
+- Warm, friendly, human  
+
+- Acknowledgement → response  
+
+- Always address the latest message  
+
+- No re-explaining  
+
+- No asking for re-explanation  
+
+- No repeating core issues  
+
+- No off-topic content  
+
+---
+
+CRITICAL: Every option must pass this test: "Would a caring friend/partner say this in warm everyday English?" If not, rewrite the EXAMPLES ONLY — do NOT touch logic.
 
     ${isVeryFirstMessage ? `
       🌱 FIRST MESSAGE - SUMMARY-AWARE OPENINGS:
@@ -2273,7 +2486,7 @@ ${isRecipientUserB ? `
 - Third parties: Use EXACT names from summary - do NOT change names
 - If User A said "I felt hurt", User B should respond with:
   ✅ "I'm sorry you felt that way, I didn't mean to hurt you"
-  ✅ "I hear you, can we talk about what happened?"
+  ✅ "I get what you mean, can we talk about what happened?"
   ✅ "I understand, I should have been more considerate"
   ❌ NOT: "I felt hurt when you ignored me" (this is User A's issue, not User B's response)
 - 🔒 ROLE SAFETY: These are User B options ONLY - do NOT reuse User A's options

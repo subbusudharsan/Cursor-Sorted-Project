@@ -259,6 +259,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
   const hasSentMessage = useRef(false); // ← NEW
   // 🌈 NEW — closure resolution indicator + animation
   const [isResolved, setIsResolved] = useState(false);
+  const [isChatClosed, setIsChatClosed] = useState(false); // Track if chat is closed/resolved
   const closureAnim = useRef(new Animated.Value(0)).current;
   const showNotification = (type: 'success' | 'error' | 'info' | 'warning', title: string, message?: string) => {
     setNotification({ visible: true, type, title, message });
@@ -279,42 +280,53 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     try {
       const { data, error } = await supabase
         .from("chats")
-        .select("context_data, user_id, contact_id, ai_confidence_level, conversation_phase, is_resolved, ai_source_chat_id, session_name, user_a_smiley_sent, user_b_smiley_sent")
+        .select("context_data, user_id, contact_id, ai_confidence_level, conversation_phase, is_resolved, closure_state, ai_source_chat_id, session_name, user_a_smiley_sent, user_b_smiley_sent")
         .eq("id", cid)
         .maybeSingle();
-      if (!error && data?.context_data) {
-        setChatContext(data);
-        // Set User A's context
-        setChatSummary(String(data.context_data.summary_a || data.context_data.summary || ""));
-        setChatThoughts(String(data.context_data.thoughts_a || data.context_data.thoughts || ""));
-        // 💬 Show hint banner if current user is User B
-        if (user?.id === data.contact_id && data.context_data.hint_to_contact) {
-          setHintToContact(data.context_data.hint_to_contact);
-          setShowHintBanner(true);
+      if (!error && data) {
+        // ✅ CRITICAL: Check if chat is closed/resolved and hide options
+        const chatIsClosed = data.is_resolved === true && data.closure_state === 'closed';
+        setIsChatClosed(chatIsClosed);
+        if (chatIsClosed) {
+          console.log("🛑 Chat is closed/resolved - hiding options");
+          setShowSuggestedOptions(false);
+          setSuggestedOptions([]);
         }
-        // 🌟 Only show tip box if User B hasn't provided hint yet AND hasn't seen/dismissed it before
-        if (user?.id === data.contact_id && !data.context_data.hint_from_b && !hasSeenHintBoxRef.current) {
-          setShowTipBox(true);
-          hasSeenHintBoxRef.current = true; // Mark as seen
-        }
-        // 🎯 Update AI confidence and phase
-        setAiConfidence(data.ai_confidence_level || "high");
-        setConversationPhase(data.conversation_phase || "opening");
-        // 🌈 If chat already resolved, show closure banner with fade-in/out
-        if (data?.is_resolved) {
-          setIsResolved(true);
-          Animated.timing(closureAnim, {
-            toValue: 1,
-            duration: 600,
-            useNativeDriver: true,
-          }).start();
-          setTimeout(() => {
+        
+        if (data.context_data) {
+          setChatContext(data);
+          // Set User A's context
+          setChatSummary(String(data.context_data.summary_a || data.context_data.summary || ""));
+          setChatThoughts(String(data.context_data.thoughts_a || data.context_data.thoughts || ""));
+          // 💬 Show hint banner if current user is User B
+          if (user?.id === data.contact_id && data.context_data.hint_to_contact) {
+            setHintToContact(data.context_data.hint_to_contact);
+            setShowHintBanner(true);
+          }
+          // 🌟 Only show tip box if User B hasn't provided hint yet AND hasn't seen/dismissed it before
+          if (user?.id === data.contact_id && !data.context_data.hint_from_b && !hasSeenHintBoxRef.current) {
+            setShowTipBox(true);
+            hasSeenHintBoxRef.current = true; // Mark as seen
+          }
+          // 🎯 Update AI confidence and phase
+          setAiConfidence(data.ai_confidence_level || "high");
+          setConversationPhase(data.conversation_phase || "opening");
+          // 🌈 If chat already resolved, show closure banner with fade-in/out
+          if (data?.is_resolved) {
+            setIsResolved(true);
             Animated.timing(closureAnim, {
-              toValue: 0,
-              duration: 800,
+              toValue: 1,
+              duration: 600,
               useNativeDriver: true,
-            }).start(() => setIsResolved(false));
-          }, 5000);
+            }).start();
+            setTimeout(() => {
+              Animated.timing(closureAnim, {
+                toValue: 0,
+                duration: 800,
+                useNativeDriver: true,
+              }).start(() => setIsResolved(false));
+            }, 5000);
+          }
         }
       }
     } catch (e) {
@@ -752,6 +764,12 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         }
       }
       lastOptionsSignatureRef.current = signature;
+      // ✅ CRITICAL: Don't apply options if chat is closed
+      if (isChatClosed) {
+        console.log("🛑 Chat is closed - not applying options");
+        resolveWaitingForOptions(userId);
+        return;
+      }
       const cleanedOptions = cleanOptionsForDisplay(data[0].options || [], contact?.full_name || null);
       console.log("✅ Applying initial options:", cleanedOptions);
       setSuggestedOptions(cleanedOptions);
@@ -819,6 +837,12 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               const retrySignature = `${retryData[0].id || ""}|${JSON.stringify(retryData[0].options || [])}`;
               if (retrySignature !== lastOptionsSignatureRef.current) {
                 lastOptionsSignatureRef.current = retrySignature;
+                // ✅ CRITICAL: Don't apply options if chat is closed
+                if (isChatClosed) {
+                  console.log("🛑 Chat is closed - not applying options from retry");
+                  resolveWaitingForOptions(userId);
+                  return;
+                }
                 const retryCleanedOptions = cleanOptionsForDisplay(retryData[0].options || [], contact?.full_name || null);
                 setSuggestedOptions(retryCleanedOptions);
                 setShowSuggestedOptions(true);
@@ -929,6 +953,12 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         console.log("✅ ensureInitialOptions recipient ID validated - proceeding to apply options");
         
         lastOptionsSignatureRef.current = signature;
+        // ✅ CRITICAL: Don't apply options if chat is closed
+        if (isChatClosed) {
+          console.log("🛑 Chat is closed - not applying options from ensureInitialOptions");
+          resolveWaitingForOptions(String(user.id));
+          return;
+        }
         const cleanedOptions = cleanOptionsForDisplay(data[0].options || [], contact?.full_name || null);
         console.log("✅ Applying valid options from ensureInitialOptions:", cleanedOptions);
         setSuggestedOptions(cleanedOptions);
@@ -1011,6 +1041,12 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       });
       lastOptionsSignatureRef.current = `${row.id || ""}|${JSON.stringify(row.options || [])}`;
 
+      // ✅ CRITICAL: Don't apply options if chat is closed
+      if (isChatClosed) {
+        console.log("🛑 Chat is closed - not applying options from realtime subscription");
+        resolveWaitingForOptions(recipientId);
+        return;
+      }
       const cleanedOptions = cleanOptionsForDisplay(optionsArray, contact?.full_name || null);
       setSuggestedOptions(cleanedOptions);
       setShowSuggestedOptions(true);
@@ -1095,6 +1131,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           if (updatedChat.closure_state === 'closed' && updatedChat.is_resolved) {
             console.log("🎉 Both smileys detected → showing closure banner");
             // ✅ FIX: Immediately hide options when chat closes
+            setIsChatClosed(true);
             setShowSuggestedOptions(false);
             setSuggestedOptions([]);
             resolveWaitingForOptions(String(user?.id || ''));
@@ -1477,7 +1514,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     // Check if conversation is already resolved
     const { data: chatCheck } = await supabase
       .from("chats")
-      .select("is_resolved, closure_state, user_id, contact_id, user_a_smiley_sent, user_b_smiley_sent")
+      .select("is_resolved, closure_state, user_id, contact_id, user_a_smiley_sent, user_b_smiley_sent, ai_source_chat_id")
       .eq("id", currentChatId)
       .single();
     if (chatCheck?.is_resolved && chatCheck?.closure_state === 'closed') {
@@ -1519,6 +1556,41 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       console.warn("⚠️ Using fallback recipientId (chatCheck not available):", recipientId);
     }
     try {
+      // ✅ CRITICAL: Check if this will be the first message and mark source AI chat
+      let isFirstMessage = false;
+      if (chatCheck) {
+        const { count: existingMessageCount } = await supabase
+          .from("messages")
+          .select("*", { count: "exact", head: true })
+          .eq("chat_id", currentChatId);
+        
+        isFirstMessage = (existingMessageCount || 0) === 0;
+        
+        // If this will be the first message and there's a source AI chat, mark it
+        if (isFirstMessage && chatCheck.ai_source_chat_id) {
+          const { data: sourceChat } = await supabase
+            .from("chats")
+            .select("context_data")
+            .eq("id", chatCheck.ai_source_chat_id)
+            .eq("chat_type", "ai_assistant")
+            .single();
+          
+          if (sourceChat?.context_data) {
+            await supabase
+              .from("chats")
+              .update({
+                context_data: {
+                  ...sourceChat.context_data,
+                  sent_to_contact: true, // ✅ Mark as sent when first message is sent
+                },
+              })
+              .eq("id", chatCheck.ai_source_chat_id)
+              .eq("chat_type", "ai_assistant");
+            console.log("✅ Marked source AI chat as sent_to_contact: true");
+          }
+        }
+      }
+
       const { data, error } = await supabase
         .from("messages")
         .insert({
@@ -3074,7 +3146,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           </View>
         )}
         </ScrollView>
-        {showSuggestedOptions && suggestedOptions.length > 0 && !manualInputMode && !waitingForOptions && (
+        {showSuggestedOptions && suggestedOptions.length > 0 && !manualInputMode && !waitingForOptions && !isChatClosed && (
           <Animated.View
             style={[
               styles.suggestedOptionsContainer,
