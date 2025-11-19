@@ -344,9 +344,24 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
   }, [user, contactId]);
   useEffect(() => {
     let unsubscribeOptions: (() => void) | undefined;
+    let unsubscribeMessages: (() => void) | undefined;
+    let unsubscribeClosure: (() => void) | undefined;
+    
     if (user && chatId) {
       const id = chatId as string;
       console.log('🚀 CONTACT CHAT INITIALIZATION:', { chatId: id, userId: user.id });
+      
+      // ✅ CRITICAL: Clean up any existing subscriptions first
+      if (messageSubscriptionRef.current) {
+        console.log('🧹 Cleaning up existing message subscription before setting up new one');
+        try {
+          supabase.removeChannel(messageSubscriptionRef.current);
+        } catch (e: any) {
+          console.warn('⚠️ Error cleaning up old message subscription:', e.message);
+        }
+        messageSubscriptionRef.current = null;
+      }
+      
       try {
         setCurrentChatId(id);
         fetchChatContext(id).catch(err => console.error('⚠️ fetchChatContext error:', err));
@@ -358,20 +373,37 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         fetchInitialOptions(id, user.id);
         unsubscribeOptions = subscribeToOptions(id, user.id);
         ensureInitialOptions(id);
-        subscribeToMessages(id, user.id);
-        subscribeToClosureState(id);
+        unsubscribeMessages = subscribeToMessages(id, user.id);
+        unsubscribeClosure = subscribeToClosureState(id);
       } catch (err) {
         console.error('❌ Contact chat initialization error:', err);
         showNotification('error', 'Initialization Failed', 'Could not start conversation');
         setInitialLoading(false);
       }
     }
-    // ✅ FIX: Cleanup timeout on unmount
+    
+    // ✅ FIX: Cleanup all subscriptions on unmount or chatId change
     return () => {
+      console.log('🧹 Cleaning up subscriptions for chatId:', chatId);
       if (typeof unsubscribeOptions === 'function') {
         unsubscribeOptions();
       }
-      isAutoScrollingRef.current = false; // ← ADD: Reset scroll guard on exit (stops orphans)
+      if (typeof unsubscribeMessages === 'function') {
+        unsubscribeMessages();
+      }
+      if (typeof unsubscribeClosure === 'function') {
+        unsubscribeClosure();
+      }
+      // Also clean up message subscription ref
+      if (messageSubscriptionRef.current) {
+        try {
+          supabase.removeChannel(messageSubscriptionRef.current);
+        } catch (e: any) {
+          console.warn('⚠️ Error cleaning up message subscription in cleanup:', e.message);
+        }
+        messageSubscriptionRef.current = null;
+      }
+      isAutoScrollingRef.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, chatId]);
@@ -1168,10 +1200,15 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
   };
   // ---- realtime: messages ----
   const subscribeToMessages = (chatId: string, currentUserId: string) => {
-    // ✅ FIX: Prevent duplicate subscriptions
+    // ✅ CRITICAL: Clean up existing subscription if it exists (for different chatId)
     if (messageSubscriptionRef.current) {
-      console.log("ℹ️ Using existing message subscription");
-      return;
+      console.log("🧹 Cleaning up existing message subscription before creating new one");
+      try {
+        supabase.removeChannel(messageSubscriptionRef.current);
+      } catch (e: any) {
+        console.warn("⚠️ Error cleaning up existing subscription:", e.message);
+      }
+      messageSubscriptionRef.current = null;
     }
 
     console.log("\n" + "🔔".repeat(30));

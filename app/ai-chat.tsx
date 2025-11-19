@@ -2790,7 +2790,7 @@ Minimum 2 questions answered. Consider sufficient if we understand: what happene
     }
   };
 
-  const MAX_STAGE2_QUESTION_WORDS = 12;
+  const MAX_STAGE2_QUESTION_WORDS = 10; // Medium length: 6-10 words for single sentence questions
   const sanitizeQuestion = (text: string) => text.replace(/\s+/g, " ").trim();
   const countWords = (text: string) =>
     text
@@ -2867,7 +2867,8 @@ ${conversationHistory}${thirdPersonContext}
 - Ask only about new emotional insight, motivation, or next-step clarity.
 ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${thirdPersonEntities.map((e: any) => e.entity_name || e.name).join(', ')}). You MUST ask a question about one of these third parties - their role, relationship, or what happened involving them, if not yet clear from previous answers.` : ''}
 - Avoid repeating questions or asking for information that's already clear.
-- Ask ONLY ONE question. Do NOT ask multiple questions in a single response. Ask just ONE short, natural question (5–8 words max).
+- Ask ONLY ONE question in a SINGLE sentence. Do NOT ask multiple questions or use compound sentences.
+- Medium length: 6-10 words (one complete sentence, not too short, not too long).
 - Keep it caring and human — not robotic.`;
 
 

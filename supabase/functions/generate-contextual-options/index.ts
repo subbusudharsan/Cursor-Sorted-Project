@@ -2681,32 +2681,95 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       totalLength: userPrompt.length
     });
 
-    const anthropicResponse = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": CLAUDE_API_KEY,
-        "anthropic-version": "2023-06-01"
-      },
-      body: JSON.stringify({
-        model: "claude-3-5-haiku-20241022",
-        max_tokens: 2500,  // ✅ Increased from 200 to allow complete responses
-        temperature: 0.7,  // ✅ Increased from 0.5 for more natural responses
-        system: `${systemPrompt}\n\n${compassionateSystemPrompt}`,
-        messages: [
-          {
-            role: "user",
-            content: userPrompt
+    // ✅ Helper function for retry with exponential backoff (429 rate limit only)
+    const callAnthropicAPI = async (payload: any, maxRetries = 3): Promise<Response> => {
+      let lastError: Error | null = null;
+      
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          const response = await fetch("https://api.anthropic.com/v1/messages", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-api-key": CLAUDE_API_KEY,
+              "anthropic-version": "2023-06-01"
+            },
+            body: JSON.stringify(payload)
+          });
+
+          // ✅ If rate limit error (429), retry with exponential backoff
+          if (response.status === 429) {
+            const retryAfter = response.headers.get('retry-after');
+            const waitTime = retryAfter 
+              ? parseInt(retryAfter) * 1000 
+              : Math.min(1000 * Math.pow(2, attempt), 10000); // Max 10 seconds
+            
+            console.warn(`⚠️ Rate limit (429) on attempt ${attempt + 1}/${maxRetries}. Waiting ${waitTime}ms before retry...`);
+            
+            if (attempt < maxRetries - 1) {
+              await new Promise(resolve => setTimeout(resolve, waitTime));
+              continue; // Retry
+            } else {
+              // Last attempt failed
+              const errorText = await response.text();
+              console.error("Anthropic API error (429 - rate limit):", errorText);
+              throw new Error(`Anthropic API rate limit exceeded after ${maxRetries} attempts`);
+            }
           }
-        ]
-      })
+
+          // ✅ For other errors, throw immediately
+          if (!response.ok) {
+            const errorText = await response.text();
+            console.error("Anthropic API error:", errorText);
+            throw new Error(`Anthropic API failed: ${response.status}`);
+          }
+
+          // ✅ Success
+          return response;
+          
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+          
+          // ✅ If it's a rate limit error and we have retries left, continue
+          if (lastError.message.includes('429') || lastError.message.includes('rate limit')) {
+            if (attempt < maxRetries - 1) {
+              const waitTime = Math.min(1000 * Math.pow(2, attempt), 10000);
+              console.warn(`⚠️ Rate limit error caught, retrying in ${waitTime}ms...`);
+              await new Promise(resolve => setTimeout(resolve, waitTime));
+              continue;
+            }
+          }
+          
+          // ✅ For other errors or final attempt, throw
+          throw lastError;
+        }
+      }
+      
+      throw lastError || new Error("Failed to call Anthropic API");
+    };
+
+    // ✅ Log prompt length before API call
+    const systemPromptText = `${systemPrompt}\n\n${compassionateSystemPrompt}`;
+    console.log("📊 PROMPT LENGTH CHECK:", {
+      systemPromptLength: systemPromptText.length,
+      userPromptLength: userPrompt.length,
+      totalLength: systemPromptText.length + userPrompt.length,
+      estimatedTokens: Math.ceil((systemPromptText.length + userPrompt.length) / 4) // Rough estimate: ~4 chars per token
     });
 
-    if (!anthropicResponse.ok) {
-      const errorText = await anthropicResponse.text();
-      console.error("Anthropic API error:", errorText);
-      throw new Error(`Anthropic API failed: ${anthropicResponse.status}`);
-    }
+    // ✅ Use retry helper function
+    const anthropicResponse = await callAnthropicAPI({
+      model: "claude-3-5-haiku-20241022",
+      max_tokens: 2500,  // ✅ Increased from 200 to allow complete responses
+      temperature: 0.7,  // ✅ Increased from 0.5 for more natural responses
+      system: systemPromptText,
+      messages: [
+        {
+          role: "user",
+          content: userPrompt
+        }
+      ]
+    });
 
     const anthropicData = await anthropicResponse.json();
     const responseText = anthropicData.content[0].text;
@@ -3006,8 +3069,10 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     // ✅ CRITICAL: Final cleanup to remove ANY remaining @ or # symbols
     const stripTagSymbols = (str: string): string => {
       if (!str || typeof str !== 'string') return str;
-      // Remove @ symbols followed by word characters
-      let cleaned = str.replace(/@(\w+)/g, '$1');
+      // ✅ FIX: Aggressively remove @Name patterns (including spaces, apostrophes, any case)
+      let cleaned = str.replace(/@\s*([A-Za-z][A-Za-z\s'’-]*)/gi, '$1');
+      // Remove any remaining @ symbols (catch-all)
+      cleaned = cleaned.replace(/@/g, '');
       // Remove # symbols followed by word characters
       cleaned = cleaned.replace(/#(\w+)/g, '$1');
       return cleaned;
@@ -3027,6 +3092,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
         const escaped = escapeRegex(variant);
         const hasSpace = /\s/.test(variant);
 
+        // Replace plain name references (without @)
         cleaned = cleaned.replace(new RegExp(`\\b${escaped}'s\\b`, 'gi'), (match, offset, source) =>
           applySentenceCase('your', offset, source)
         );
@@ -3037,14 +3103,28 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
           applySentenceCase('you', offset, source)
         );
 
-        if (!hasSpace) {
-          cleaned = cleaned.replace(new RegExp(`@${escaped}'s\\b`, 'gi'), (match, offset, source) =>
+        // ✅ FIX: Handle @ patterns with optional space, any case, including names with spaces
+        // Pattern: @<variant>, @ <variant>, @<variant>'s, @<variant>s
+        if (hasSpace) {
+          // For names with spaces: @John Smith, @ John Smith, @John Smith's
+          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'s\\b`, 'gi'), (match, offset, source) =>
             applySentenceCase('your', offset, source)
           );
-          cleaned = cleaned.replace(new RegExp(`@${escaped}'\\b`, 'gi'), (match, offset, source) =>
+          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'\\b`, 'gi'), (match, offset, source) =>
             applySentenceCase('your', offset, source)
           );
-          cleaned = cleaned.replace(new RegExp(`@${escaped}\\b`, 'gi'), (match, offset, source) =>
+          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}\\b`, 'gi'), (match, offset, source) =>
+            applySentenceCase('you', offset, source)
+          );
+        } else {
+          // For single-word names: @John, @ John, @John's, @Johns
+          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'s\\b`, 'gi'), (match, offset, source) =>
+            applySentenceCase('your', offset, source)
+          );
+          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'\\b`, 'gi'), (match, offset, source) =>
+            applySentenceCase('your', offset, source)
+          );
+          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}\\b`, 'gi'), (match, offset, source) =>
             applySentenceCase('you', offset, source)
           );
         }
@@ -3708,9 +3788,24 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     // This is a safety net to ensure NO names slip through, even from fallbacks
     // Applied to ALL options before database insertion - runs for EVERY turn
     let normalizedOptions = Array.isArray(finalOptionsToUse) && finalOptionsToUse.length > 0
-      ? finalOptionsToUse.map((opt: string) => 
-          capitalizeFirstLetter(fixPronounMistakes(removeListenerName(stripTagSymbols(String(opt)))))
-        )
+      ? finalOptionsToUse.map((opt: string) => {
+          let cleaned = String(opt);
+          // ✅ FIX: Final aggressive @ cleanup - catch any remaining @Name patterns (case-insensitive)
+          const listenerVariants = buildNameVariants(isRecipientUserA ? userBName : userAName);
+          // Remove @ followed by any name pattern
+          cleaned = cleaned.replace(/@\s*([A-Za-z][A-Za-z\s'’-]*)/gi, (match, name) => {
+            // Check if name matches any listener variant (case-insensitive)
+            const isListenerName = listenerVariants.some(variant => 
+              name.toLowerCase().trim() === variant.toLowerCase()
+            );
+            // If it's the listener name, replace with "you", else just remove @
+            return isListenerName ? 'you' : name;
+          });
+          // Remove any remaining @ symbols (catch-all)
+          cleaned = cleaned.replace(/@/g, '');
+          // Apply existing cleanup pipeline
+          return capitalizeFirstLetter(fixPronounMistakes(removeListenerName(stripTagSymbols(cleaned))));
+        })
       : [capitalizeFirstLetter(fixPronounMistakes(removeListenerName(stripTagSymbols("Can we talk about this?"))))];
     
     // ✅ Final name leak check before saving (should catch any remaining issues)
