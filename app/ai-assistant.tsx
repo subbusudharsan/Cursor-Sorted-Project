@@ -131,10 +131,12 @@ const fetchConversations = useCallback(async () => {
         }
       }
 
+      // ✅ FIX: Show saved sessions (session_promoted === true) but exclude only active pending sessions
       const filteredChats = validChats.filter((chat) => {
         if (!chat.context_data) return true;
-        if (chat.context_data.initial_pending === false) return false;
-        if (chat.context_data.session_promoted === true) return false;
+        // Exclude only if it's an initial pending session that hasn't been saved
+        if (chat.context_data.initial_pending === true && chat.context_data.session_promoted !== true) return false;
+        // Include all saved sessions (session_promoted === true) and non-pending sessions
         return true;
       });
 
@@ -931,41 +933,53 @@ const styles = StyleSheet.create({
   },
   limitSection: {
     marginBottom: Spacing.md,
+    alignItems: 'center',
   },
   limitCard: {
     backgroundColor: Colors.surfaceElevated,
     borderRadius: BorderRadius.md,
-    padding: Spacing.xs,
+    paddingVertical: 4,
+    paddingHorizontal: Spacing.md,
     borderWidth: 1,
     borderColor: Colors.secondary[200],
     ...Shadows.small,
+  
+    width: '70%',         // 🔥 70% horizontal width
+    alignSelf: 'center',  // 🔥 centered horizontally
   },
+  
+  
   limitTitle: {
     fontSize: Typography.fontSize.xs,
     fontWeight: Typography.fontWeight.bold,
     color: Colors.secondary[700],
-    marginBottom: 1,
+    marginBottom: 0,
     textAlign: 'center',
+    lineHeight: Typography.fontSize.xs * 1.2,
   },
   limitProgress: {
     alignItems: 'center',
-    marginBottom: 1,
+    marginBottom: 0,
+    marginTop: 2,
   },
   limitNumber: {
     fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.bold,
     color: Colors.secondary[600],
+    lineHeight: Typography.fontSize.sm * 1.1,
   },
   limitLabel: {
     fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
-    marginTop: 1,
+    marginTop: 0,
+    lineHeight: Typography.fontSize.xs * 1.1,
   },
   progressBar: {
-    height: 8,
+    height: 6,
     backgroundColor: Colors.neutral[200],
     borderRadius: BorderRadius.full,
     overflow: 'hidden',
+    marginTop: 4,
   },
   progressFill: {
     height: '100%',

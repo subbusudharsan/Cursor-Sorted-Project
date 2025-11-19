@@ -55,6 +55,13 @@ function SignInScreen() {
       return;
     }
 
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email.trim())) {
+      showNotification('error', 'Invalid Email', 'Please enter a valid email address');
+      return;
+    }
+
     setLoading(true);
     try {
       await signIn(email.trim(), password);
@@ -63,7 +70,39 @@ function SignInScreen() {
       router.replace('/(tabs)/chats');
       }, 1000);
     } catch (error: any) {
-      showNotification('error', 'Sign In Failed', error.message || 'Please check your credentials and try again');
+      // Handle specific error cases
+      const errorMessage = error.message || '';
+      const errorLower = errorMessage.toLowerCase();
+      
+      // Check for unregistered user (authenticated but no profile)
+      if (errorMessage === 'UNREGISTERED_USER') {
+        showNotification('error', 'Account Not Registered', 'This email is not registered. Please sign up to create a new account.');
+      } 
+      // Check for deleted account or invalid credentials
+      else if (errorMessage === 'INVALID_CREDENTIALS_OR_DELETED') {
+        showNotification('error', 'Sign In Failed', 'The email or password is incorrect. Please check your credentials and try again.');
+      }
+      // Check for email not confirmed
+      else if (errorLower.includes('email not confirmed') || errorLower.includes('email_not_confirmed')) {
+        showNotification('error', 'Email Not Confirmed', 'Please check your email and click the confirmation link before signing in.');
+      }
+      // Check for invalid login credentials (wrong email or password)
+      else if (errorLower.includes('invalid login credentials') || 
+               errorLower.includes('invalid credentials') ||
+               errorLower.includes('incorrect password') ||
+               errorLower.includes('wrong password')) {
+        showNotification('error', 'Incorrect Credentials', 'The email or password you entered is incorrect. Please check and try again.');
+      }
+      // Check for user not found / email doesn't exist
+      else if (errorLower.includes('user not found') || 
+               errorLower.includes('email not found') ||
+               errorLower.includes('no user found')) {
+        showNotification('error', 'Account Not Found', 'No account found with this email. Please sign up to create a new account.');
+      }
+      // Generic error fallback
+      else {
+        showNotification('error', 'Sign In Failed', errorMessage || 'Please check your credentials and try again');
+      }
     } finally {
       setLoading(false);
     }

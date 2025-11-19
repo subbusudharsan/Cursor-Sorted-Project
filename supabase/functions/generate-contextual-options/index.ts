@@ -168,6 +168,98 @@ Deno.serve(async (req) => {
     const isRecipientUserB = recipientId === chatData?.contact_id;
     const shouldUseHint = isRecipientUserB && hintFromB;
 
+    // ✅ Extract context data early to avoid initialization errors
+    const contextData = chatData?.context_data || {};
+    const summarySharedNeutral = summary_shared_neutral || contextData.summary_shared_neutral || '';
+    
+    // ✅ Extract thoughts and session data early
+    const thoughtsA = contextData.thoughts_a || contextData.thoughts || thoughts || '';
+    const thoughtsBFromContext = contextData.thoughts_b || thoughtsB || '';
+    const sessionStartedAtIso = contextData.session_started_at;
+    const sessionStartedAtMs = sessionStartedAtIso ? Date.parse(sessionStartedAtIso) : NaN;
+
+    // ❗ HARD GUARD: We cannot generate contextual options without a neutral summary
+    if (!summarySharedNeutral || !summarySharedNeutral.trim()) {
+      console.error('❌ Missing summary_shared_neutral – cannot generate contextual options.', {
+        chatId,
+        recipientId,
+        currentUserId,
+      });
+
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: 'Missing summary_shared_neutral – cannot generate contextual options.',
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        }
+      );
+    }
+
+    // ✅ REFINED FIX 2: Detect if User B can ask "Can I explain?"
+    // User B can ask "Can I explain?" ONLY when:
+    // 1. User A has NOT yet shared the actual core issue
+    // 2. User B has NOT submitted a hint yet
+    // 3. User B has NOT already explained through a message
+
+    // Check if User A has shared the actual core issue
+    const hasUserASharedCoreIssue = (() => {
+      // Check summary_shared_neutral (factual, third-person summary)
+      const neutralSummary = summarySharedNeutral || '';
+      // Check originalIssue summary (User A's original issue)
+      const originalSummary = originalIssue?.summary || '';
+      // Check if either has meaningful content (not empty, not placeholder)
+      const hasMeaningfulContent = (text: string) => {
+        const trimmed = text.trim();
+        if (trimmed.length < 20) return false; // Too short to be meaningful
+        // Check for placeholder patterns
+        const placeholderPatterns = [
+          /not specified/i,
+          /n\/a/i,
+          /no summary/i,
+          /placeholder/i,
+          /example/i,
+          /test/i,
+        ];
+        return !placeholderPatterns.some(pattern => pattern.test(trimmed));
+      };
+      return hasMeaningfulContent(neutralSummary) || hasMeaningfulContent(originalSummary);
+    })();
+
+    // Check if User B has submitted a hint
+    const hasUserBSubmittedHint = shouldUseHint;
+
+    // Check if User B has already explained through a message
+    const hasUserBExplainedInChat = isRecipientUserB && safeConversationHistory.some((msg: any) => {
+      const content = typeof msg === 'object' ? String(msg.content || '') : String(msg || '');
+      const lower = content.toLowerCase();
+      // Detect explanation patterns from User B (check if sender is User B)
+      const senderId = typeof msg === 'object' ? String(msg.sender_id || '') : '';
+      const isFromUserB = senderId === String(chatData?.contact_id);
+      if (!isFromUserB) return false;
+      // Check for explanation patterns
+      return lower.includes('i felt') || 
+             lower.includes('i was') || 
+             lower.includes('i thought') ||
+             lower.includes('from my side') ||
+             lower.includes('my perspective') ||
+             lower.includes('what happened was') ||
+             lower.includes('the reason') ||
+             lower.includes('because i') ||
+             (lower.includes('explain') && (lower.includes('i') || lower.includes('my')));
+    });
+
+    // User B can ask "Can I explain?" ONLY when all three conditions are met:
+    const canUserBAskToExplain = isRecipientUserB && 
+                                  !hasUserASharedCoreIssue && 
+                                  !hasUserBSubmittedHint && 
+                                  !hasUserBExplainedInChat;
+
+    // User B has already explained if they submitted hint OR explained in chat
+    const hasUserBExplained = hasUserBSubmittedHint || hasUserBExplainedInChat;
+
     // ✅ DETECT: Has the other user already sent a smiley?
     const otherUserSentSmiley = isRecipientUserA 
       ? chatData?.user_b_smiley_sent 
@@ -292,12 +384,33 @@ Deno.serve(async (req) => {
       .eq('chat_id', chatId)
       .order('created_at', { ascending: true });
 
-// 🗣️ Pronoun Tone Context Injection (User A ↔ User B mapping)
-const userA = entities?.find(e => e.role_in_conversation === 'User A');
-const userB = entities?.find(e => e.role_in_conversation === 'User B');
+    // ✅ Filter structured answers by session start time
+    const filteredStructuredAnswers =
+      !Number.isNaN(sessionStartedAtMs)
+        ? (structuredAnswers || []).filter((answer) => {
+            const createdAtMs = answer?.created_at ? Date.parse(answer.created_at) : NaN;
+            return !Number.isNaN(createdAtMs) && createdAtMs >= sessionStartedAtMs;
+          })
+        : (structuredAnswers || []);
 
-const userAName = userA?.entity_name || '';
-const userBName = userB?.entity_name || '';
+    // 🗣️ Pronoun Tone Context Injection (User A ↔ User B mapping)
+    const userA = entities?.find(e => e.role_in_conversation === 'User A');
+    const userB = entities?.find(e => e.role_in_conversation === 'User B');
+
+    const userAName = userA?.entity_name || '';
+    const userBName = userB?.entity_name || '';
+
+    console.log("📋 Context data extraction:", {
+      hasSummarySharedNeutral: !!summarySharedNeutral,
+      hasThoughtsA: !!thoughtsA,
+      hasThoughtsB: !!thoughtsBFromContext,
+      summarySharedNeutralLength: summarySharedNeutral.length,
+      recipientIsUserA: isRecipientUserA,
+      recipientIsUserB: isRecipientUserB,
+      userAName,
+      userBName,
+      note: "summary_shared_neutral is the only summary used for option generation"
+    });
 
 const escapeRegex = (value: string): string =>
   value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -386,55 +499,13 @@ const TALK_PATTERNS = [
 const containsTalkPhrase = (text: string): boolean => TALK_PATTERNS.some(pattern => pattern.test(text));
 
 // ✅ Extract NEUTRAL summary and thoughts from context_data
-const contextData = chatData?.context_data || {};
+// Note: summarySharedNeutral, thoughtsA, thoughtsBFromContext, and sessionStartedAtMs 
+// are already declared earlier to avoid initialization errors
 
 // ❗ SINGLE SOURCE OF TRUTH for summaries inside this function:
 // summary_shared_neutral = the ONLY summary used for option generation
-const summarySharedNeutral = summary_shared_neutral || contextData.summary_shared_neutral || '';
-const thoughtsA = contextData.thoughts_a || contextData.thoughts || thoughts || '';
-const thoughtsBFromContext = contextData.thoughts_b || thoughtsB || '';
-const sessionStartedAtIso = contextData.session_started_at;
-const sessionStartedAtMs = sessionStartedAtIso ? Date.parse(sessionStartedAtIso) : NaN;
-
-// ❗ HARD GUARD: We cannot generate contextual options without a neutral summary
-if (!summarySharedNeutral || !summarySharedNeutral.trim()) {
-  console.error('❌ Missing summary_shared_neutral – cannot generate contextual options.', {
-    chatId,
-    recipientId,
-    currentUserId,
-  });
-
-  return new Response(
-    JSON.stringify({
-      success: false,
-      error: 'Missing summary_shared_neutral – cannot generate contextual options.',
-    }),
-    {
-      status: 400,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    }
-  );
-}
-
-const filteredStructuredAnswers =
-  !Number.isNaN(sessionStartedAtMs)
-    ? (structuredAnswers || []).filter((answer) => {
-        const createdAtMs = answer?.created_at ? Date.parse(answer.created_at) : NaN;
-        return !Number.isNaN(createdAtMs) && createdAtMs >= sessionStartedAtMs;
-      })
-    : (structuredAnswers || []);
-
-console.log("📋 Context data extraction:", {
-  hasSummarySharedNeutral: !!summarySharedNeutral,
-  hasThoughtsA: !!thoughtsA,
-  hasThoughtsB: !!thoughtsBFromContext,
-  summarySharedNeutralLength: summarySharedNeutral.length,
-  recipientIsUserA: isRecipientUserA,
-  recipientIsUserB: isRecipientUserB,
-  userAName,
-  userBName,
-  note: "summary_shared_neutral is the only summary used for option generation"
-});
+// (summarySharedNeutral already declared above, guard moved to after variable declarations)
+// (filteredStructuredAnswers and console.log moved inside try block)
 
 // ✅ CRITICAL: BOTH User A and User B MUST ALWAYS use summary_shared_neutral for option generation
 // ❌ NEVER use summary_a_perspective for options - that's ONLY for Stage 3 UI
@@ -850,6 +921,12 @@ const rawSummaryText = summarySharedNeutral || '';
 const allRawSummaries = rawSummaryText;
 const thirdPartyNamesInSummary = extractThirdPartyNamesFromSummary(allRawSummaries);
 
+// ✅ FIX: Filter unregisteredEntities to ONLY include names that are in the current summary
+const validThirdPartyNames = thirdPartyNamesInSummary.map(n => n.toLowerCase());
+const filteredUnregisteredEntities = unregisteredEntities.filter(t => {
+  const tagName = t.tag.replace('#', '').toLowerCase();
+  return validThirdPartyNames.includes(tagName);
+});
 
     // Build tag context for AI with pronoun guidance
     let tagContext = '';
@@ -858,9 +935,9 @@ const thirdPartyNamesInSummary = extractThirdPartyNamesFromSummary(allRawSummari
       tagContext += registeredContacts.map(t => `- ${t.tag} (role: ${t.role}) - Has been replaced with "you/your" in the text you see`).join('\n');
       tagContext += '\n  → You will NOT see @ tags in the text - they are already "you/your"';
     }
-    if (unregisteredEntities.length > 0) {
+    if (filteredUnregisteredEntities.length > 0) {
       tagContext += `\n\n📋 THIRD PARTIES (being DISCUSSED, not in conversation):\n`;
-      tagContext += unregisteredEntities.map(t => {
+      tagContext += filteredUnregisteredEntities.map(t => {
   const cleanTag = t.tag.replace('#', '').toLowerCase();
   const name = t.tag.replace('#', ''); // Get name without # prefix
   const pronouns =
@@ -1368,6 +1445,87 @@ SPEECH STYLE PRINCIPLES (use naturally, never label):
 - Use contractions naturally: "I'm", "you're", "we're", "don't", "can't", "won't" (not "I am", "you are", "we are", "do not", "cannot", "will not")
 - Sound like friends talking: "I want to understand what happened" (not "I would like to understand the situation that occurred")
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FRIENDLY, NATURAL TONE ONLY - MANDATORY FOR ALL OPTIONS:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🚫 NEVER USE (formal, robotic, therapeutic):
+- "I hear you" → Use: "I get it" or "I get what you mean"
+- "I appreciate your perspective" → Use: "thanks for saying that" or "that makes sense"
+- "I understand your situation" → Use: "I didn't know that" or "oh okay"
+- "I acknowledge your perspective" → Use: "I get that" or "yeah I see"
+- "I would like to" → Use: "I want to" or "can we"
+- "I apologize for" → Use: "sorry about that" or "my bad"
+- "I would appreciate if" → Use: "can you" or "would you"
+- "I am committed to" → Use: "I'll" or "I'm going to"
+- "I am ready to" → Use: "I'm ready" or "let's"
+- "We should resolve" → Use: "let's figure this out" or "can we work through this"
+- "I would like to discuss" → Use: "can we talk about" or "I want to talk about"
+- "I would like to understand" → Use: "I want to understand" or "help me understand"
+- "I appreciate you being open" → Use: "thanks for telling me" or "thanks for sharing that"
+- "I acknowledge that" → Use: "I get that" or "yeah"
+- "I understand where you're coming from" → Use: "I get it" or "that makes sense"
+- "I hear what you're saying" → Use: "I get it" or "I see what you mean"
+- "I appreciate your honesty" → Use: "thanks for being honest" or "thanks for telling me"
+- "I would like to hear your side" → Use: "can you help me understand" or "what's your side"
+- "I am here to support you" → Use: "I'm here for you" or "I've got your back"
+- "I want to ensure" → Use: "I want to make sure" or "let me make sure"
+- "I would be happy to" → Use: "I'd be happy to" or "sure"
+- "I am willing to" → Use: "I'm willing to" or "I'll"
+- "I would be open to" → Use: "I'm open to" or "sure"
+
+✅ ALWAYS USE (warm, natural, human):
+- "I get it" / "I get what you mean" / "I get that"
+- "I didn't know that" / "I didn't realize"
+- "sorry about that" / "my bad" / "I'm sorry"
+- "that makes sense" / "that makes sense to me"
+- "thanks for saying that" / "thanks for telling me" / "thanks for sharing"
+- "oh okay" / "oh I see" / "ah I get it"
+- "yeah I get it" / "yeah I see" / "yeah that makes sense"
+- "hey" / "hi" (natural greetings)
+- "can we" / "can you" / "would you"
+- "I want to" / "I need to" / "I'd like to"
+- "let's" / "let me" / "let's figure this out"
+- "I'm" / "I'll" / "I'd" / "that's" / "it's" / "we're" / "you're" (contractions)
+- "I see" / "I understand" / "got it"
+- "help me understand" / "can you help me see"
+- "what happened" / "what was that about"
+- "I'm here for you" / "I've got your back"
+- "I want to make sure" / "let me make sure"
+- "sure" / "of course" / "absolutely"
+
+TONE REQUIREMENTS:
+- Sound like real people talking: partners, friends, siblings, coworkers
+- Use contractions often: "I'm", "I didn't", "I'll", "that's", "it's", "we're", "you're", "don't", "can't", "won't"
+- Use softeners: "hey", "oh okay", "yeah I get it", "my bad", "I get that"
+- Keep sentences short, warm, human, friendly
+- Avoid repeating acknowledgment every turn - vary responses
+- Not professional, not robotic, not therapeutic
+- Natural flow: "hey, I get it" not "I acknowledge your perspective"
+- Casual but caring: "sorry about that" not "I apologize for my actions"
+- Direct but warm: "can we talk about this?" not "I would like to discuss this matter"
+
+EXAMPLES OF GOOD TONE:
+- "I get it, that must have been hard"
+- "I didn't realize that, thanks for telling me"
+- "Sorry about that, my bad"
+- "That makes sense, I can see why you felt that way"
+- "Thanks for saying that, I appreciate it"
+- "Oh okay, I get what you mean"
+- "Yeah I get it, that makes sense"
+- "Hey, can we talk about what happened?"
+- "I want to understand what happened"
+- "Let's figure this out together"
+- "I'm here for you, let's work through this"
+
+EXAMPLES OF BAD TONE (NEVER USE):
+- "I hear you, and I appreciate your perspective" ❌
+- "I acknowledge your perspective and would like to understand your situation" ❌
+- "I would like to discuss this matter with you" ❌
+- "I am committed to resolving this conflict" ❌
+- "I appreciate you being open with me about this situation" ❌
+- "I understand where you're coming from and I would like to hear your side" ❌
+
 STAY WITHIN THE APP - CRITICAL RULES:
 - NEVER suggest "let's chat later", "let's meet up", "let's talk tomorrow", "call me", "text me", "let's talk outside", "let's discuss this in person"
 - NEVER suggest scheduling or coordinating outside this conversation
@@ -1418,6 +1576,20 @@ ${isRecipientUserA ? `
 - ✅ If User A already shared the issue, their options should respond to User B's latest message while referencing the issue
 - ✅ User B cannot understand or help if User A doesn't actually share what the problem is
 
+🎯 CONVERSATIONAL FLOW - USER A EXPRESSES ISSUE ONCE:
+- User A should express the issue naturally ONLY ONCE - no repeating vague lines
+- ❌ NEVER generate options that repeat vague statements like:
+  * "something is bothering me" (if already said)
+  * "I want to share what's on my mind" (if already said)
+  * "there's something I need to talk about" (if already said)
+  * "I have something to discuss" (if already said)
+- ✅ If User A already shared the issue, their options should:
+  * Respond to User B's latest message
+  * Reference the issue naturally (not repeat vague intent)
+  * Move the conversation forward toward understanding
+- ✅ Full flow: User A softly shares issue → User B responds → User B explains once → conversation moves toward understanding → closure
+- After User A shares the issue, focus on responding to User B, not re-expressing vague intent
+
 🎯 BEHAVIORAL RULE - PREVENT REPETITIVE EMOTIONAL STATEMENTS:
 - When User A repeatedly expresses the same feeling (e.g., "I feel sad", "I'm hurt", "I'm disturbed", "I feel uncomfortable"), acknowledge the feeling ONCE in warm, natural English
 - After acknowledging it, gently guide User A toward describing the actual situation or events behind those feelings
@@ -1428,20 +1600,20 @@ ${isRecipientUserA ? `
 - Do not use Gen-Z slang and do not use formal/corporate phrasing
 - Keep the language human, simple, and caring
 
-✅ GOOD EXAMPLES (guiding toward details):
-- "I hear that you're hurt. Can you help me understand what happened that made you feel that way?"
-- "I get that you're feeling uncomfortable. What was it that made you feel that way?"
-- "I understand you're disturbed. What happened that led to this feeling?"
-- "I hear you're sad about this. Can you tell me more about what happened?"
+✅ GOOD EXAMPLES (guiding toward details - friendly tone):
+- "I get that you're hurt. Can you help me understand what happened that made you feel that way?"
+- "I see you're feeling uncomfortable. What was it that made you feel that way?"
+- "I get it, you're disturbed. What happened that led to this feeling?"
+- "I get that you're sad about this. Can you tell me more about what happened?"
 
 ❌ AVOID (repeating emotions without progress):
 - "I'm really hurt about this" (if User A already said they're hurt)
 - "I feel so sad" (if User A already expressed sadness)
 - "I'm very uncomfortable" (if User A already mentioned discomfort)
 
-✅ INSTEAD (guide toward details):
-- "I hear you're hurt. What happened that made you feel this way?"
-- "I understand you're sad. Can you help me see what led to this?"
+✅ INSTEAD (guide toward details - friendly tone):
+- "I get that you're hurt. What happened that made you feel this way?"
+- "I see you're sad. Can you help me see what led to this?"
 - "I get that you're uncomfortable. What was it that made you feel that way?"
 ` : ''}
 ${isRecipientUserB ? `
@@ -1625,6 +1797,36 @@ GENERATE OPTIONS THAT:
 
 PERSISTENCE RULE:
 The hint doesn't "expire" after first response. User B's feelings and perspective from the hint remain RELEVANT and ACTIVE throughout the ENTIRE conversation. Keep incorporating this context into EVERY set of options generated for User B.
+
+${hasUserBExplained && isRecipientUserB ? `
+🚫 CRITICAL - USER B HAS ALREADY EXPLAINED:
+- User B has already shared their perspective (via hint or previous message)
+- ❌ NEVER generate options that invite User B to explain AGAIN:
+  * "Can I explain better?"
+  * "Can I explain again?"
+  * "Let me explain again"
+  * "I'd like to explain myself again."
+  * "Can I share my perspective again?"
+  * "Let me explain my side"
+  * "I want to explain what happened"
+  * "Can I explain my side?"
+  * "I'd like to explain"
+  * "Can we talk more about what happened?"
+- ✅ INSTEAD, generate options that:
+  * Respond to User A's latest message
+  * Provide light clarification if needed
+  * Show empathy and understanding
+  * Move the conversation forward
+  * Soft self-defense (if appropriate)
+- User B's explanation is DONE - focus on RESPONDING, not re-explaining
+` : ''}
+
+${!canUserBAskToExplain && isRecipientUserB && hasUserASharedCoreIssue ? `
+🚫 CRITICAL - USER A HAS ALREADY SHARED THE CORE ISSUE:
+- User A has already shared the actual core issue in the summary
+- ❌ Do NOT generate options asking User B to explain when User A has already shared the issue
+- ✅ INSTEAD, generate options that help User B respond to User A's shared issue
+` : ''}
 
 USER B SPEAKING TO USER A - STRICT PRONOUN GUIDANCE:
 User B is having a direct conversation WITH User A (not talking ABOUT them):
@@ -2033,7 +2235,8 @@ ${isRecipientUserB ? `
 ${shouldUseHint && isRecipientUserB ? `9. MANDATORY (USER B ONLY): Strongly incorporate User B's hint perspective in EVERY option - this is their core truth and authentic voice
 10. CRITICAL (USER B ONLY): Maintain absolute consistency with hint's emotional context and subject matter across ALL conversation turns
 11. PERSISTENT (USER B ONLY): The hint is active throughout the ENTIRE conversation - incorporate it in turn 1, turn 5, turn 10, etc.
-⚠️ REMEMBER: This hint is PRIVATE to User B and NEVER shown to User A` : ''}
+⚠️ REMEMBER: This hint is PRIVATE to User B and NEVER shown to User A
+${hasUserBExplained ? `🚫 CRITICAL: User B has ALREADY explained their side - do NOT generate options asking them to explain again. Focus on RESPONDING to User A's messages, not re-explaining.` : ''}` : ''}
 
 CRITICAL: Each option must be a FULL, COMPLETE sentence that makes sense on its own. 
 Keep options natural and meaningful - not lengthy or verbose, but complete enough to convey your message clearly. 
@@ -2707,38 +2910,52 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
         return output;
       };
       
-      // Common patterns where "her/his/their" should be "your" when addressing listener
-      // Pattern: "her stuff", "her things", "her comment", "her behavior", etc.
-      // This is a conservative fix - only for possessive forms
-      if (isRecipientUserA) {
-        // User A speaking TO User B - fix references to User B
-        // Pattern: "jealous of her stuff" → "jealous of your stuff"
-        // But be careful - "Sarah told her" should stay as is (third party)
-        // We'll use a conservative pattern that only matches possessive forms
-        fixed = fixed.replace(/\bjealous of her\b/gi, 'jealous of your');
-        fixed = fixed.replace(/\bof her stuff\b/gi, 'of your stuff');
-        fixed = fixed.replace(/\bof her things\b/gi, 'of your things');
-        fixed = fixed.replace(/\bher comment\b/gi, 'your comment');
-        fixed = fixed.replace(/\bher behavior\b/gi, 'your behavior');
-        fixed = fixed.replace(/\bher actions\b/gi, 'your actions');
-        fixed = fixed.replace(/\bher words\b/gi, 'your words');
-
-        fixed = fixed.replace(/\bher\s+((?:own\s+|new\s+)?)(car|cars|house|houses|home|apartment|place|stuff|things|comment|comments|behavior|actions|words|tone|attitude|approach|support|help|effort|job|promotion|success|wins|achievements|accomplishments|relationship|friendship|situation|perspective|view|plan|plans|idea|ideas|response|reaction)\b/gi,
-          (match, qualifier, noun, offset, source) => {
-            const qualifierWord = qualifier ? `${qualifier.trim().toLowerCase()} ` : '';
-            const replacement = `your ${qualifierWord}${noun}`;
-            return applySentenceCaseToPhrase(replacement.trim(), offset, source);
+      // ✅ FIX: Comprehensive pronoun fixes - replace "her/his/their" with "your" when addressing listener
+      // Pattern: "her stuff", "his comment", "their behavior", etc.
+      // This catches all possessive forms that refer to the listener
+      const possessiveNouns = [
+        'stuff', 'things', 'comment', 'comments', 'behavior', 'actions', 'words', 'tone', 'attitude',
+        'approach', 'support', 'help', 'effort', 'job', 'promotion', 'success', 'wins', 'achievements',
+        'accomplishments', 'relationship', 'friendship', 'situation', 'perspective', 'view', 'plan',
+        'plans', 'idea', 'ideas', 'response', 'reaction', 'side', 'feelings', 'thoughts', 'needs',
+        'opinion', 'opinions', 'feedback', 'choices', 'life', 'world', 'experience', 'experiences'
+      ];
+      
+      if (isRecipientUserA || isRecipientUserB) {
+        // ✅ FIX: Replace "her/his/their + noun" with "your + noun" for all possessive patterns
+        possessiveNouns.forEach(noun => {
+          // Pattern: "her noun", "his noun", "their noun" → "your noun"
+          fixed = fixed.replace(new RegExp(`\\b(her|his|their)\\s+${noun}\\b`, 'gi'), (match, pronoun, offset, source) => {
+            return applySentenceCaseToPhrase(`your ${noun}`, offset, source);
           });
-        fixed = applyListenerPhraseFixes(fixed);
-      } else if (isRecipientUserB) {
-        // User B speaking TO User A - fix references to User A
-        fixed = fixed.replace(/\bjealous of her\b/gi, 'jealous of your');
-        fixed = fixed.replace(/\bof her stuff\b/gi, 'of your stuff');
-        fixed = fixed.replace(/\bof her things\b/gi, 'of your things');
-        fixed = fixed.replace(/\bher comment\b/gi, 'your comment');
-        fixed = fixed.replace(/\bher behavior\b/gi, 'your behavior');
-        fixed = fixed.replace(/\bher actions\b/gi, 'your actions');
-        fixed = fixed.replace(/\bher words\b/gi, 'your words');
+          
+          // Pattern: "her own noun", "his own noun", "their own noun" → "your own noun"
+          fixed = fixed.replace(new RegExp(`\\b(her|his|their)\\s+own\\s+${noun}\\b`, 'gi'), (match, pronoun, offset, source) => {
+            return applySentenceCaseToPhrase(`your own ${noun}`, offset, source);
+          });
+        });
+        
+        // ✅ FIX: Replace common phrases with "her/his/their" referring to listener
+        const commonPhrases = [
+          { pattern: /\bjealous of (her|his|their)\b/gi, replacement: 'jealous of your' },
+          { pattern: /\bof (her|his|their) stuff\b/gi, replacement: 'of your stuff' },
+          { pattern: /\bof (her|his|their) things\b/gi, replacement: 'of your things' },
+          { pattern: /\b(her|his|their) comment\b/gi, replacement: 'your comment' },
+          { pattern: /\b(her|his|their) behavior\b/gi, replacement: 'your behavior' },
+          { pattern: /\b(her|his|their) actions\b/gi, replacement: 'your actions' },
+          { pattern: /\b(her|his|their) words\b/gi, replacement: 'your words' },
+          { pattern: /\b(her|his|their) side\b/gi, replacement: 'your side' },
+          { pattern: /\b(her|his|their) perspective\b/gi, replacement: 'your perspective' },
+          { pattern: /\b(her|his|their) feelings\b/gi, replacement: 'your feelings' },
+          { pattern: /\b(her|his|their) thoughts\b/gi, replacement: 'your thoughts' },
+        ];
+        
+        commonPhrases.forEach(({ pattern, replacement }) => {
+          fixed = fixed.replace(pattern, (match, offset, source) => {
+            return applySentenceCaseToPhrase(replacement, offset, source);
+          });
+        });
+        
         fixed = applyListenerPhraseFixes(fixed);
       }
       
@@ -2775,6 +2992,9 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     const finalOptions = options.slice(0, Math.min(expectedCount, options.length))
       .map((opt: string) => processOption(opt));
 
+    // ✅ DECLARE enhancedOptions BEFORE addOptionIfMissing to avoid temporal dead zone
+    let enhancedOptions = [...finalOptions];
+
     const addOptionIfMissing = (raw: string | null | undefined) => {
       if (!raw || typeof raw !== 'string') return;
       const processed = processOption(raw);
@@ -2783,8 +3003,6 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
         enhancedOptions.push(processed);
       }
     };
-
-    let enhancedOptions = [...finalOptions];
 
     const issueSource = isRecipientUserA
       ? (cleanOriginalIssueSummary || cleanSummary || '')
@@ -2814,6 +3032,86 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     const hintPerspective = shouldUseHint && !isRecipientUserA ? cleanPerspective(hintFromB || '') : '';
     const hintKeywords = shouldUseHint && !isRecipientUserA ? extractKeywords(hintPerspective, 12) : [];
 
+    // ✅ REFINED FIX 2: Block explanation-invitation options based on refined logic
+    if (isRecipientUserB && !isVeryFirstMessage) {
+      const explanationInvitationPatterns = [
+        /can i explain/i,
+        /let me explain/i,
+        /i'd like to explain/i,
+        /i want to explain/i,
+        /can i share my perspective/i,
+        /can we talk more about/i,
+        /i'd like to share my side/i,
+        /let me share my perspective/i,
+        /can i explain my side/i,
+        /i'd like to explain myself/i,
+        /i want to explain what happened/i,
+      ];
+      
+      // Separate patterns for "explain again" (always blocked if User B has explained)
+      const reExplanationPatterns = [
+        /explain again/i,
+        /explain myself again/i,
+        /explain better/i,
+        /explain more/i,
+        /share my perspective again/i,
+        /share my side again/i,
+      ];
+      
+      // ✅ Use temporary variable to avoid scope/closure issues with reassignment
+      const filteredOptions = enhancedOptions.filter(opt => {
+        const lower = opt.toLowerCase();
+        
+        // Always block re-explanation patterns if User B has already explained
+        if (hasUserBExplained) {
+          const isReExplanation = reExplanationPatterns.some(pattern => pattern.test(lower));
+          if (isReExplanation) {
+            console.log(`   🚫 Blocked re-explanation option: "${opt.substring(0, 50)}"`);
+            return false;
+          }
+        }
+        
+        // Block ALL explanation invitations if User B has already explained
+        if (hasUserBExplained) {
+          const isInvitation = explanationInvitationPatterns.some(pattern => pattern.test(lower));
+          if (isInvitation) {
+            console.log(`   🚫 Blocked explanation-invitation option (User B already explained): "${opt.substring(0, 50)}"`);
+            return false;
+          }
+        }
+        
+        // Block explanation invitations if User A has shared core issue (even if User B hasn't explained yet)
+        // EXCEPT allow "Can I explain?" if User B hasn't explained and User A hasn't shared issue
+        if (hasUserASharedCoreIssue && !canUserBAskToExplain) {
+          const isInvitation = explanationInvitationPatterns.some(pattern => pattern.test(lower));
+          if (isInvitation) {
+            console.log(`   🚫 Blocked explanation-invitation option (User A already shared issue): "${opt.substring(0, 50)}"`);
+            return false;
+          }
+        }
+        
+        return true;
+      });
+      
+      // ✅ FIX: Replace array contents instead of reassigning the variable to avoid const reassignment error
+      enhancedOptions.length = 0;
+      enhancedOptions.push(...filteredOptions);
+      
+      // If we filtered out options, add replacement options that respond instead of explaining
+      if (enhancedOptions.length < 3 && !isVeryFirstMessage) {
+        const responseOptions = [
+          "I hear you, and I want to make sure we're on the same page.",
+          "I understand. Can we talk about how to move forward?",
+          "I get what you're saying. What would help us resolve this?",
+        ];
+        responseOptions.forEach(opt => {
+          if (!enhancedOptions.some(existing => existing.toLowerCase().includes(opt.toLowerCase().substring(0, 20)))) {
+            addOptionIfMissing(opt);
+          }
+        });
+      }
+    }
+
     if (
       !isVeryFirstMessage &&
       !finalClosureDetected &&
@@ -2830,7 +3128,10 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
         const hintSnippet = getPrimaryStatement(hintPerspective || hintFromB || '');
         if (hintSnippet) {
           const fallbackHintOption = hintSnippet.endsWith('.') ? hintSnippet : `${hintSnippet}.`;
-          addOptionIfMissing(`I want you to understand ${fallbackHintOption}`);
+          // ✅ REFINED FIX 2: Only add explanation invitation if User B can ask to explain
+          if (canUserBAskToExplain) {
+            addOptionIfMissing(`I want you to understand ${fallbackHintOption}`);
+          }
         }
       }
     }
@@ -2973,7 +3274,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       return b.score - a.score;
     });
 
-    const selected: string[] = [];
+    let selected: string[] = [];
     let talkOptionUsed = false;
 
     const primaryPool = scoredOptions.filter(candidate => candidate.latestMatches > 0);
@@ -3060,9 +3361,59 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
         return snippet ? snippet.replace(/[.?!]+$/, "") : "";
       })();
 
+      // ✅ FRIENDLY TONE POST-PROCESSING: Replace formal phrases with natural ones
+      const makeFriendlyAndNatural = (text: string): string => {
+        let friendly = text;
+        
+        // Replace formal acknowledgments
+        friendly = friendly.replace(/\bI hear you\b/gi, "I get it");
+        friendly = friendly.replace(/\bI appreciate your perspective\b/gi, "thanks for saying that");
+        friendly = friendly.replace(/\bI understand your situation\b/gi, "I didn't know that");
+        friendly = friendly.replace(/\bI acknowledge your perspective\b/gi, "I get that");
+        friendly = friendly.replace(/\bI would like to\b/gi, "I want to");
+        friendly = friendly.replace(/\bI apologize for\b/gi, "sorry about");
+        friendly = friendly.replace(/\bI would appreciate if\b/gi, "can you");
+        friendly = friendly.replace(/\bI am committed to\b/gi, "I'll");
+        friendly = friendly.replace(/\bI am ready to\b/gi, "I'm ready to");
+        friendly = friendly.replace(/\bWe should resolve\b/gi, "let's figure this out");
+        friendly = friendly.replace(/\bI would like to discuss\b/gi, "can we talk about");
+        friendly = friendly.replace(/\bI would like to understand\b/gi, "I want to understand");
+        friendly = friendly.replace(/\bI appreciate you being open\b/gi, "thanks for telling me");
+        friendly = friendly.replace(/\bI acknowledge that\b/gi, "I get that");
+        friendly = friendly.replace(/\bI understand where you're coming from\b/gi, "I get it");
+        friendly = friendly.replace(/\bI hear what you're saying\b/gi, "I get it");
+        friendly = friendly.replace(/\bI appreciate your honesty\b/gi, "thanks for being honest");
+        friendly = friendly.replace(/\bI would like to hear your side\b/gi, "can you help me understand");
+        friendly = friendly.replace(/\bI am here to support you\b/gi, "I'm here for you");
+        friendly = friendly.replace(/\bI want to ensure\b/gi, "I want to make sure");
+        friendly = friendly.replace(/\bI would be happy to\b/gi, "I'd be happy to");
+        friendly = friendly.replace(/\bI am willing to\b/gi, "I'm willing to");
+        friendly = friendly.replace(/\bI would be open to\b/gi, "I'm open to");
+        friendly = friendly.replace(/\bI really appreciate\b/gi, "thanks for");
+        friendly = friendly.replace(/\bI appreciate\b/gi, "thanks for");
+        friendly = friendly.replace(/\bCould we\b/gi, "can we");
+        
+        // Ensure contractions are used
+        friendly = friendly.replace(/\bI am\b/gi, "I'm");
+        friendly = friendly.replace(/\bI will\b/gi, "I'll");
+        friendly = friendly.replace(/\bI would\b/gi, "I'd");
+        friendly = friendly.replace(/\bthat is\b/gi, "that's");
+        friendly = friendly.replace(/\bit is\b/gi, "it's");
+        friendly = friendly.replace(/\bwe are\b/gi, "we're");
+        friendly = friendly.replace(/\byou are\b/gi, "you're");
+        friendly = friendly.replace(/\bdo not\b/gi, "don't");
+        friendly = friendly.replace(/\bcannot\b/gi, "can't");
+        friendly = friendly.replace(/\bwill not\b/gi, "won't");
+        
+        return friendly;
+      };
+      
+      // Apply friendly tone processing to all selected options
+      selected = selected.map(opt => makeFriendlyAndNatural(opt));
+
       const fallbackLatestRaw = primaryFocus
-        ? `I really appreciate what you shared about ${primaryFocus}. Could we talk it through together?`
-        : `I appreciate what you just shared. Could we talk it through together?`;
+        ? `Thanks for sharing that about ${primaryFocus}. Can we talk it through?`
+        : `Thanks for sharing that. Can we talk it through?`;
 
       selected[0] = processOption(fallbackLatestRaw);
     }

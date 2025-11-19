@@ -123,6 +123,8 @@ function ContactChatScreen() {
   // Add local state for the tip box
   const [showTipBox, setShowTipBox] = useState(false);
   const [tipText, setTipText] = useState("");
+  // ✅ FIX 1: Track if hint box has been seen/dismissed to prevent re-showing
+  const hasSeenHintBoxRef = useRef(false);
   // Tagging state for hint submission
   const [hintTaggedEntities, setHintTaggedEntities] = useState<TaggedEntity[]>([]);
   const [hintShowTagDropdown, setHintShowTagDropdown] = useState<'@' | '#' | null>(null);
@@ -165,6 +167,7 @@ function ContactChatScreen() {
 const hasAutoScrolledInitially = useRef(false);
 const pendingOptionsRecipientRef = useRef<string | null>(null);
 const pendingOptionsSinceRef = useRef<number | null>(null);
+const messageSubscriptionRef = useRef<RealtimeChannel | null>(null);
 
   const optionShimmerLoopRef = useRef<Animated.CompositeAnimation | null>(null);
   const [showFullHistory, setShowFullHistory] = useState(false);
@@ -289,9 +292,10 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           setHintToContact(data.context_data.hint_to_contact);
           setShowHintBanner(true);
         }
-        // 🌟 Only show tip box if User B hasn't provided hint yet
-        if (user?.id === data.contact_id && !data.context_data.hint_from_b) {
+        // 🌟 Only show tip box if User B hasn't provided hint yet AND hasn't seen/dismissed it before
+        if (user?.id === data.contact_id && !data.context_data.hint_from_b && !hasSeenHintBoxRef.current) {
           setShowTipBox(true);
+          hasSeenHintBoxRef.current = true; // Mark as seen
         }
         // 🎯 Update AI confidence and phase
         setAiConfidence(data.ai_confidence_level || "high");
@@ -1090,6 +1094,10 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           // FIX: Removed duplicate if-block; consolidated logic
           if (updatedChat.closure_state === 'closed' && updatedChat.is_resolved) {
             console.log("🎉 Both smileys detected → showing closure banner");
+            // ✅ FIX: Immediately hide options when chat closes
+            setShowSuggestedOptions(false);
+            setSuggestedOptions([]);
+            resolveWaitingForOptions(String(user?.id || ''));
             setIsResolved(true);
             showNotification('success', 'Conversation Closed', '🌈 This conversation has peacefully concluded.');
             // FIX: Stop before new anim to clear native state
@@ -1123,6 +1131,12 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
   };
   // ---- realtime: messages ----
   const subscribeToMessages = (chatId: string, currentUserId: string) => {
+    // ✅ FIX: Prevent duplicate subscriptions
+    if (messageSubscriptionRef.current) {
+      console.log("ℹ️ Using existing message subscription");
+      return;
+    }
+
     console.log("\n" + "🔔".repeat(30));
     console.log("📡 SETTING UP MESSAGE SUBSCRIPTION");
     console.log(" Chat ID:", chatId);
@@ -1199,16 +1213,37 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             console.log("📤 CONTACT REPLIED - GENERATING OPTIONS FOR CURRENT USER");
             console.log("=".repeat(60));
             console.log("📬 Contact's message (currentMessage):", newMsg.content.substring(0, 80));
-            enterWaitingForOptions(currentUserId);
-            const conversationHistory = buildHistory({
-              sender_id: String(newMsg.sender_id),
-              content: String(newMsg.content || ""),
-            });
+            
+            // ✅ FIX: Fetch chat context FIRST to determine recipient before entering waiting state
             const { data: chatCtx } = await supabase
               .from("chats")
               .select("context_data, user_id, contact_id, closure_state, user_a_smiley_sent, user_b_smiley_sent, conversation_phase")
               .eq("id", chatId)
               .single();
+            
+            // ✅ FIX: Determine recipient based on who sent the message (NOT currentUserId)
+            const senderId = String(newMsg.sender_id);
+            const recipientIdForOptions =
+              senderId === String(chatCtx?.contact_id)
+                ? String(chatCtx?.user_id)      // User B sent → options for User A
+                : String(chatCtx?.contact_id);  // User A sent → options for User B
+
+            console.log("🔍 Corrected Recipient:", {
+              senderId,
+              chatUserA: chatCtx?.user_id,
+              chatUserB: chatCtx?.contact_id,
+              recipientIdForOptions
+            });
+            
+            // ✅ CRITICAL FIX: Enter waiting state with recipientIdForOptions, not currentUserId
+            // This ensures the correct user sees the composing notice and receives options
+            enterWaitingForOptions(recipientIdForOptions);
+            
+            const conversationHistory = buildHistory({
+              sender_id: String(newMsg.sender_id),
+              content: String(newMsg.content || ""),
+            });
+            
             const isCurrentUserA = currentUserId === chatCtx?.user_id;
             console.log("💾 Context data being sent to validation:");
             console.log(" Role:", isCurrentUserA ? "User A" : "User B");
@@ -1258,7 +1293,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                 {
                   body: {
                     chatId,
-                    recipientId: currentUserId,
+                    recipientId: recipientIdForOptions, // ✅ FIX: Use recipientIdForOptions instead of currentUserId
                     currentUserId: currentUserId,
                     currentMessage: String(newMsg.content || ""), // ✅ CRITICAL: Latest message from contact
                     summary: summaryToSend,
@@ -1299,10 +1334,11 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                 {
                   body: {
                     chatId,
-                    recipientId: currentUserId,
+                    recipientId: recipientIdForOptions, // ✅ FIX: Use recipientIdForOptions instead of currentUserId
                     currentUserId,
                     summary: summaryToSend,
                     thoughts: thoughtsToSend,
+                    summary_shared_neutral: chatCtx?.context_data?.summary_shared_neutral || "",
                     summaryB,
                     thoughtsB,
                     conversationHistory,
@@ -1326,31 +1362,55 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               if (error) {
                 console.error("❌ Failed to generate options:", error);
                 showNotification('error', 'Options Failed', 'Could not generate response options. You can type manually.');
-                resolveWaitingForOptions(currentUserId);
+                resolveWaitingForOptions(recipientIdForOptions); // ✅ FIX: Use recipientIdForOptions
               } else {
                 console.log("✅ Options generation request sent with original issue context");
               }
             } catch (generationError) {
               console.error("💥 ERROR generating options:", generationError);
               showNotification('error', 'Options Failed', 'Could not generate response options. Please try again.');
-              resolveWaitingForOptions(currentUserId);
+              resolveWaitingForOptions(recipientIdForOptions); // ✅ FIX: Use recipientIdForOptions
             }
           }
         }
       )
-      .subscribe((status) => {
-        console.log("📡 MESSAGE SUBSCRIPTION STATUS:", status);
-        if (status === 'SUBSCRIBED') {
-          console.log("✅ Successfully subscribed to messages for chat:", chatId);
-        } else if (status === 'CHANNEL_ERROR') {
-          console.error("❌ Message subscription error for chat:", chatId);
-        } else if (status === 'TIMED_OUT') {
-          console.error("⏱️ Message subscription timed out for chat:", chatId);
+      .subscribe((status: string) => {
+        switch (status) {
+          case "SUBSCRIBED":
+            console.log("📡 Messages connected");
+            break;
+
+          case "CHANNEL_ERROR":
+            console.warn("⚠️ Real-time channel error (dev only). App continues normally.");
+            break;
+
+          case "TIMED_OUT":
+            console.warn("⏱️ Real-time timeout (dev only). Auto-reconnect will handle.");
+            break;
+
+          case "CLOSED":
+            console.warn("🔌 Real-time closed (dev only). Auto-reconnect pending.");
+            messageSubscriptionRef.current = null;
+            break;
+
+          default:
+            console.log("📡 Status:", status);
         }
       });
+    
+    // ✅ FIX: Store channel reference
+    messageSubscriptionRef.current = channel;
+    
     return () => {
-      console.log("🔌 UNSUBSCRIBING from messages for chat:", chatId);
-      supabase.removeChannel(channel);
+      if (messageSubscriptionRef.current) {
+        try {
+          supabase.removeChannel(messageSubscriptionRef.current);
+          console.log("🧹 Cleaned up message subscription");
+        } catch (e: any) {
+          console.warn("⚠️ Cleanup error (dev only):", e.message);
+        }
+      }
+      messageSubscriptionRef.current = null;
     };
   };
   // 🌙 Closure blending start
@@ -1368,7 +1428,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     }
 
     // Count closure-related signals in recent conversation history
-    const CLOSURE_SMILEYS = ["👍", "🙂", "🤝", "❤️", "😊", "💖", "🌟", "✨", "🙏"];
+    const CLOSURE_SMILEYS = ["👍", "🙂", "🤝", "❤️", "😊", "💖", "🌟", "✨", "🙏", "💞"];
     const recentMessages = conversationHistory.slice(-5); // Last 5 messages
     const closureSignals = recentMessages.filter(msg => {
       const content = msg.content?.trim() || "";
@@ -1531,7 +1591,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         }
       }
       // 😊 Mutual smiley detection for proper closure
-      const CLOSURE_SMILEYS = ["👍", "🙂", "🤝", "❤️", "😊", "💖", "🌟", "✨", "🙏"];
+      const CLOSURE_SMILEYS = ["👍", "🙂", "🤝", "❤️", "😊", "💖", "🌟", "✨", "🙏", "💞"];
       const isSmiley = CLOSURE_SMILEYS.some(smiley => content.trim() === smiley);
       if (isSmiley) {
         const { data: chatData } = await supabase
@@ -1558,6 +1618,10 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             updateData.is_resolved = true;
             updateData.closure_achieved_at = new Date().toISOString();
             console.log("✅ Both users sent smileys - conversation closed!");
+            // ✅ FIX: Immediately hide options and stop generating new ones
+            setShowSuggestedOptions(false);
+            setSuggestedOptions([]);
+            resolveWaitingForOptions(String(user?.id || ''));
             // Notify both via Supabase trigger — don't show banner here yet
           } else {
             // 🕊 One user sent smiley → only mark pending, no closure yet
@@ -1735,6 +1799,14 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         console.log("   Note: summary_b removed - both users now use summary_shared_neutral");
       }
       
+      // ✅ FIX: Check if chat is closed before generating options
+      if (chatData.is_resolved && chatData.closure_state === 'closed') {
+        console.log("🛑 Chat is closed - skipping option generation");
+        setLoading(false);
+        resolveWaitingForOptions(recipientId || '');
+        return;
+      }
+
       console.log("💾 Context data being sent to edge function:", {
         currentUserRole: isCurrentUserA ? "User A" : "User B",
         recipientRole: isRecipientUserA ? "User A" : "User B",
@@ -1859,13 +1931,13 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       setShowSuggestedOptions(false);
       
       // ✅ FIX: Check if option is a single smiley - if so, send it alone without blending
-      const CLOSURE_SMILEYS = ["👍", "🙂", "🤝", "❤️", "😊", "💖", "🌟", "✨", "🙏"];
-      const isSingleSmiley = CLOSURE_SMILEYS.some(smiley => option.trim() === smiley);
+      const trimmedOption = option.trim();
+      const CLOSURE_SMILEYS = ["👍", "🙂", "🤝", "❤️", "😊", "💖", "🌟", "✨", "🙏", "💞"];
+      const isSingleSmiley = CLOSURE_SMILEYS.includes(trimmedOption);
       
-      // If it's a single smiley, send it as-is without any acknowledgment text
       if (isSingleSmiley) {
-        console.log('😊 Single smiley option detected - sending without acknowledgment');
-        sendMessage(option.trim());
+        console.log('😊 Single smiley option detected - sending without acknowledgment:', trimmedOption);
+        sendMessage(trimmedOption);
         return;
       }
       
@@ -1875,45 +1947,49 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       );
       const latestOtherMessage = otherPersonMessages[otherPersonMessages.length - 1];
       
-      // ✅ Helper function to rewrite option for smooth flow with acknowledgment
-      const rewriteForFlow = (acknowledgment: string, originalOption: string): string => {
-        const ackLower = acknowledgment.toLowerCase().trim();
+      // ✅ Helper function to blend acknowledgment with option naturally
+      // Format: "Acknowledgment. Main suggestion."
+      const blendAcknowledgment = (acknowledgment: string, originalOption: string): string => {
+        const ackTrimmed = acknowledgment.trim();
         const optionTrimmed = originalOption.trim();
-        const optionLower = optionTrimmed.toLowerCase();
         
-        // If option already starts with "I", "I'm", "I've", etc., keep it
-        if (/^i['\s]/.test(optionTrimmed)) {
-          // Option already has first-person start - just prepend acknowledgment
-          return `${acknowledgment}${optionTrimmed}`;
+        // Ensure acknowledgment ends with proper punctuation
+        let ack = ackTrimmed;
+        if (!/[.!]$/.test(ack)) {
+          ack = ack + '.';
         }
         
-        // If option starts with lowercase, capitalize after acknowledgment
-        if (/^[a-z]/.test(optionTrimmed)) {
-          const capitalized = optionTrimmed.charAt(0).toUpperCase() + optionTrimmed.slice(1);
-          return `${acknowledgment}${capitalized}`;
+        // Capitalize option if needed
+        let opt = optionTrimmed;
+        if (/^[a-z]/.test(opt)) {
+          opt = opt.charAt(0).toUpperCase() + opt.slice(1);
         }
         
-        // Default: just prepend acknowledgment
-        return `${acknowledgment}${optionTrimmed}`;
+        // Blend: "Acknowledgment. Main suggestion."
+        return `${ack} ${opt}`;
       };
       
-      // ✅ Determine appropriate acknowledgment based on latest message
+      // ✅ Determine natural acknowledgment based on emotional tone of latest message
       let finalMessage = option;
       if (latestOtherMessage && latestOtherMessage.content) {
         const prevMessage = latestOtherMessage.content.trim();
         const prevMessageLower = prevMessage.toLowerCase();
         
-        // Check if option already has acknowledgment
+        // Check if option already has natural acknowledgment
         const optionLower = option.toLowerCase();
         const hasAcknowledgment = (
-          optionLower.startsWith('i hear') ||
-          optionLower.startsWith('i understand') ||
+          optionLower.startsWith('yeah') ||
+          optionLower.startsWith('that makes sense') ||
+          optionLower.startsWith('oh okay') ||
+          optionLower.startsWith('got it') ||
+          optionLower.startsWith('i see') ||
+          optionLower.startsWith('thanks for') ||
+          optionLower.startsWith('okay') ||
+          optionLower.startsWith('alright') ||
           optionLower.startsWith('i get') ||
-          optionLower.startsWith('i appreciate') ||
-          optionLower.startsWith('thanks') ||
-          optionLower.startsWith('thank you') ||
-          optionLower.includes('i see') ||
-          optionLower.includes('got it') ||
+          optionLower.startsWith('i understand') ||
+          optionLower.startsWith('makes sense') ||
+          optionLower.startsWith('that helps') ||
           /^(ok|okay|sure|yeah|yes),/i.test(option.trim())
         );
         
@@ -1921,31 +1997,80 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         if (!hasAcknowledgment) {
           let acknowledgment = '';
           
-          // Determine acknowledgment based on message type
-          if (prevMessageLower.includes('how are you') || prevMessageLower.includes('how are')) {
-            acknowledgment = "I'm okay, but ";
-          } else if (prevMessageLower.includes('thank') || prevMessageLower.includes('appreciate')) {
-            acknowledgment = "You're welcome. ";
-          } else if (prevMessageLower.includes('sorry') || prevMessageLower.includes('apologize')) {
-            acknowledgment = "I hear you. ";
-          } else if (prevMessageLower.includes('?')) {
-            // Question detected
+          // ✅ Detect emotional tone of the message
+          const isSad = /(sad|hurt|upset|disappointed|frustrated|down|depressed|lonely|broken|heartbroken|tears|crying|painful|pain)/i.test(prevMessage);
+          const isAngry = /(angry|mad|furious|annoyed|irritated|pissed|rage|hate|resent|fuming)/i.test(prevMessage);
+          const isConfused = /(confused|don't understand|don't get|unclear|not sure|what do you mean|huh|puzzled|confusing)/i.test(prevMessage);
+          const isGrateful = /(thank|thanks|appreciate|grateful|means a lot)/i.test(prevMessage);
+          const isApologetic = /(sorry|apologize|my bad|forgive|regret)/i.test(prevMessage);
+          const isQuestion = prevMessage.includes('?');
+          const isHowAreYou = /(how are you|how are|how're)/i.test(prevMessage);
+          
+          // ✅ Select natural acknowledgment based on tone (NO robotic phrases)
+          if (isHowAreYou) {
+            acknowledgment = "I'm okay, but";
+          } else if (isGrateful) {
+            acknowledgment = "You're welcome";
+          } else if (isApologetic) {
+            // Response to apology - soft and accepting
+            acknowledgment = "Okay, I understand";
+          } else if (isSad) {
+            // Response to sadness - soft and reassuring
+            const sadAcks = [
+              "I get what you mean",
+              "That makes sense",
+              "Thanks for sharing that",
+              "I see what you mean"
+            ];
+            acknowledgment = sadAcks[Math.floor(Math.random() * sadAcks.length)];
+          } else if (isAngry) {
+            // Response to anger - grounded and calm
+            const angryAcks = [
+              "Okay, I see what you mean",
+              "Got it",
+              "I understand",
+              "Alright, that helps"
+            ];
+            acknowledgment = angryAcks[Math.floor(Math.random() * angryAcks.length)];
+          } else if (isConfused) {
+            // Response to confusion - clarifying
+            const confusedAcks = [
+              "Oh okay, I get it now",
+              "I see what you mean",
+              "Got it",
+              "Okay, I understand"
+            ];
+            acknowledgment = confusedAcks[Math.floor(Math.random() * confusedAcks.length)];
+          } else if (isQuestion) {
+            // Response to question
             if (prevMessageLower.match(/^(what|why|when|where|how|who|can|could|would|will|do|did|does)/)) {
-              acknowledgment = "Thanks for asking. ";
+              acknowledgment = "Thanks for asking";
             } else {
-              acknowledgment = "I hear you. ";
+              acknowledgment = "Oh okay, I get it";
             }
           } else {
-            // Default acknowledgment for statements
-            acknowledgment = "I hear you. ";
+            // Default for normal messages - neutral and warm
+            const normalAcks = [
+              "Yeah, I get what you mean",
+              "That makes sense",
+              "Oh okay, I understand",
+              "Got it",
+              "I see what you mean",
+              "Makes sense",
+              "Okay, I see",
+              "I understand",
+              "That helps"
+            ];
+            acknowledgment = normalAcks[Math.floor(Math.random() * normalAcks.length)];
           }
           
-          // Rewrite for smooth flow
-          finalMessage = rewriteForFlow(acknowledgment, option);
+          // ✅ Blend acknowledgment with option using natural structure: "Acknowledgment. Main suggestion."
+          finalMessage = blendAcknowledgment(acknowledgment, option);
           
-          console.log('🔄 Blended option with acknowledgment:', {
+          console.log('🔄 Blended option with natural acknowledgment:', {
             originalOption: option,
             previousMessage: prevMessage.substring(0, 50),
+            emotionalTone: isSad ? 'sad' : isAngry ? 'angry' : isConfused ? 'confused' : isGrateful ? 'grateful' : isApologetic ? 'apologetic' : isQuestion ? 'question' : 'normal',
             acknowledgment,
             finalMessage: finalMessage.substring(0, 80)
           });
@@ -2781,7 +2906,10 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               <View style={styles.tipBoxActions}>
                 <TouchableOpacity
                   style={styles.tipBoxSkipButton}
-                  onPress={() => setShowTipBox(false)}
+                  onPress={() => {
+                    setShowTipBox(false);
+                    hasSeenHintBoxRef.current = true; // Mark as seen when dismissed
+                  }}
                 >
                   <Text style={styles.tipBoxSkipText}>Skip</Text>
                 </TouchableOpacity>
@@ -3668,7 +3796,7 @@ const styles = StyleSheet.create({
   hintBannerText: {
     flex: 1,
     fontSize: Typography.fontSize.sm,
-    color: Colors.primary[700],
+    color: Colors.secondary[500], // Bright blue matching app theme
     fontWeight: Typography.fontWeight.medium,
     lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
   },
@@ -3957,13 +4085,13 @@ notificationContainer: {
   marginVertical: 8,
   marginHorizontal: 16,
   borderRadius: BorderRadius.lg,
-  backgroundColor: Colors.primary[50],
+  backgroundColor: '#E3F2FD', // Bright blue background (light blue-50)
   borderWidth: 1,
-  borderColor: Colors.primary[200],
+  borderColor: '#90CAF9', // Bright blue border (blue-300)
   alignItems: 'center',
 },
 notificationText: {
-  color: Colors.primary[700],
+  color: '#1565C0', // Bright blue text (blue-800)
   fontSize: Typography.fontSize.sm,
   fontStyle: 'italic',
   textAlign: 'center',

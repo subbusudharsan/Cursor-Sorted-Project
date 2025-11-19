@@ -234,7 +234,52 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       password,
     });
     console.log("🛬 signIn result:", data, error);
-    if (error) throw error;
+    
+    if (error) {
+      // Check for specific error cases
+      const errorMessage = error.message?.toLowerCase() || '';
+      const errorCode = error.status || error.code;
+      
+      // Deleted account or invalid credentials - Supabase returns same error for both
+      // We'll throw a specific error that the UI can handle
+      if (errorMessage.includes('invalid login credentials') || 
+          errorMessage.includes('invalid credentials') ||
+          errorCode === 400) {
+        // This could be wrong password OR deleted account
+        // The UI will show a message covering both cases
+        const customError: any = new Error('INVALID_CREDENTIALS_OR_DELETED');
+        customError.originalError = error;
+        throw customError;
+      }
+      
+      // Email not confirmed
+      if (errorMessage.includes('email not confirmed')) {
+        throw error;
+      }
+      
+      // Other errors
+      throw error;
+    }
+    
+    // After successful sign-in, check if profile exists (for unregistered user detection)
+    if (data?.user) {
+      const { data: profileData, error: profileError } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('id', data.user.id)
+        .single();
+      
+      if (profileError || !profileData) {
+        // User is authenticated but profile doesn't exist - unregistered user
+        console.warn('⚠️ User authenticated but profile not found - unregistered user');
+        // Sign out the user since they can't use the app without a profile
+        await supabase.auth.signOut();
+        const customError: any = new Error('UNREGISTERED_USER');
+        customError.userId = data.user.id;
+        throw customError;
+      }
+    }
+    
     return data;
   };
 

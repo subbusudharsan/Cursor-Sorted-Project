@@ -79,7 +79,7 @@ Deno.serve(async (req) => {
 
     const personsText = tagged_persons && tagged_persons.length > 0
       ? `\n\nPeople involved:\n${tagged_persons.map((p: any) =>
-          `- ${p.name}${p.is_user_b ? ' (person I need to talk to)' : ''}${p.relationship ? ` (${p.relationship})` : ''}`
+          `- ${p.name}${p.is_user_b ? ' (person I need to talk to)' : ''}${p.relationship ? ` (${p.relationship})` : ''}${p.preferred_pronouns ? ` [pronouns: ${p.preferred_pronouns}]` : ''}`
         ).join('\n')}`
       : '';
 
@@ -131,57 +131,79 @@ The model must NOT make the summaries significantly longer or shorter than the n
 
 Do NOT add new ideas.
 Do NOT compress away meaning.
-Simply reorganize what the user said into a clean, clear, meaningful summary.
+Simply GROUP what the user said in Stage 1 and Stage 2 together using their EXACT words - no rephrasing.
 
 Focus on clarity, NOT expansion or shortening.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CRITICAL: USE ONLY USER'S WORDS - CHRONOLOGICAL ORGANIZATION:
+CRITICAL: USE USER'S EXACT WORDS - GROUP ONLY, NO REPHRASING:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 MANDATORY RULES:
-1. WORD USAGE:
-   - Use ONLY words, phrases, and concepts that the user has explicitly shared
-   - You MAY rephrase into clean, proper sentences for grammar and clarity
-   - Do NOT add new vocabulary, synonyms, or new ideas
-   - Do NOT use different words to express the same concept - stick to user's actual words
-   - Preserve the user's original meaning and emotional tone exactly
+1. EXACT WORD USAGE (CRITICAL - NO REPHRASING):
+   - Use ONLY the user's EXACT words, phrases, and sentences
+   - Do NOT rephrase, rewrite, or change any words
+   - Do NOT add new vocabulary, synonyms, or different words
+   - Do NOT use different words to express the same concept - use user's EXACT words
+   - Preserve the user's original wording, phrasing, and emotional tone EXACTLY as written
+   - Only add minimal connecting words (like "and", "when", "because") to group sentences together
+   - Keep the user's original sentence structure and word choice
 
-2. CHRONOLOGICAL ORGANIZATION (CRITICAL):
+2. GROUPING ONLY (NO REPHRASING):
+   - Simply GROUP the user's information from Stage 1 and Stage 2 together
+   - Connect the user's exact words with minimal connecting words (only "and", "when", "because", etc.)
+   - Do NOT change sentence structure
+   - Do NOT change word order within sentences
+   - Do NOT replace words with synonyms
+   - Just combine what the user said in Stage 1 and Stage 2 into a grouped summary
+
+3. CHRONOLOGICAL ORGANIZATION (CRITICAL):
    - Organize information in a logical REAL-WORLD TIMELINE (event chronology)
    - Do NOT follow the order things were typed - follow when events actually happened
    - If Stage 2 Q&A reveals events that happened BEFORE Stage 1, reorder them correctly
    - Group related events together chronologically, not by when they were mentioned
    - Example: If user mentions "yesterday's argument" in Stage 1, then in Stage 2 mentions "the issue started last week", organize as: last week's issue → yesterday's argument
+   - BUT: Use the user's EXACT words when grouping - don't rephrase
 
-3. PRESERVATION:
+4. PRESERVATION:
    - The meaning and emotional accuracy must remain EXACTLY as the user expressed
    - Do NOT interpret, expand, or add context beyond what the user shared
    - Do NOT add descriptive words the user didn't use
-   - Simply organize the user's words into a clear, chronological flow
+   - Simply GROUP the user's exact words into a chronological flow
 
 What to do:
-- Extract key phrases directly from the user's input
-- Rephrase ONLY for grammar and sentence structure (clean, proper sentences)
+- Extract the user's EXACT words and phrases from Stage 1 and Stage 2
+- GROUP them together with minimal connecting words (only "and", "when", "because", etc.)
 - Organize events in real-world chronological order (when they happened, not when typed)
-- Connect the user's words with minimal connecting words (only when necessary for grammar)
-- Preserve the user's original meaning and emotional tone exactly
+- Connect the user's exact words with minimal connecting words (only when necessary for grouping)
+- Preserve the user's original wording, sentence structure, and emotional tone EXACTLY
 
 What NOT to do:
+- Do NOT rephrase or rewrite any words
+- Do NOT change sentence structure
 - Do NOT add new vocabulary or synonyms
 - Do NOT add new ideas or concepts
 - Do NOT follow typing order - follow event chronology
-- Do NOT add explanations or interpretations beyond organizing chronologically
+- Do NOT add explanations or interpretations beyond grouping chronologically
 - Do NOT change the emotional meaning or intensity
+- Do NOT "improve" grammar or "clean up" sentences - use EXACT words
 
-Example of CORRECT approach:
+Example of CORRECT approach (using exact words, just grouping):
 User Stage 1: "I felt hurt when @you didn't respond yesterday."
 User Stage 2 Q&A: "What happened before that?" → "Last week @you canceled our plans."
 Correct summary: "Last week @you canceled our plans. I felt hurt when @you didn't respond yesterday."
+(Using EXACT words, just grouped chronologically)
 
-Example of INCORRECT approach (adding new words):
+Example of INCORRECT approach (rephrasing):
 User input: "I felt hurt when @you didn't respond."
 Incorrect summary: "I experienced emotional distress when @you failed to acknowledge my communication." ❌
+(Changed "felt hurt" to "experienced emotional distress", changed "didn't respond" to "failed to acknowledge" - this is WRONG)
+
+Example of CORRECT approach (exact words, just grouped):
+User Stage 1: "I was upset about the party."
+User Stage 2: "I wasn't invited and felt left out."
+Correct summary: "I was upset about the party. I wasn't invited and felt left out."
+(Using EXACT words, just grouped together)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 1) A-PERSPECTIVE SUMMARY (User A talking to AI - ONLY for User A in Stage 3):
@@ -199,12 +221,15 @@ Format:
 - Includes # tags for other people ("#Mom", "#Rachana")
 - First-person voice: "I felt…", "I thought…", "I was hurt…"
 - Preserve ALL entity tags (@ and #) exactly as they appear
-- Use ONLY words and phrases from the user's input (may rephrase for clean sentences)
+- Use ONLY the user's EXACT words and phrases (NO rephrasing - just group them together)
 - Organize events in REAL-WORLD CHRONOLOGICAL ORDER (when events happened, not typing order)
-- Preserve meaning and emotional accuracy exactly as the user expressed
+- Preserve meaning, wording, and emotional accuracy EXACTLY as the user expressed
 
-Example:
-"I felt ignored at the family dinner when @you barely spoke to me. It seemed intentional and made me feel unwanted, especially when #Mom and others were talking normally."
+Example (using user's EXACT words, just grouped):
+User Stage 1: "I felt ignored at the family dinner when @you barely spoke to me."
+User Stage 2: "It seemed intentional and made me feel unwanted, especially when #Mom and others were talking normally."
+Summary: "I felt ignored at the family dinner when @you barely spoke to me. It seemed intentional and made me feel unwanted, especially when #Mom and others were talking normally."
+(Using EXACT words from user, just grouped together)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 2) NEUTRAL SHARED SUMMARY (FACT for BOTH A & B during chat):
@@ -227,12 +252,91 @@ Format:
 - No assumptions about B's emotions
 - No "I" or "you" perspective
 - Preserve ALL entity tags (@ and #) exactly as they appear
-- Use ONLY words and phrases from the user's input (may rephrase for clean sentences)
+- Use ONLY the user's EXACT words and phrases (NO rephrasing - just convert "I" to "User A" and "@you" to "User B (@you)", keep all other words EXACT)
 - Organize events in REAL-WORLD CHRONOLOGICAL ORDER (when events happened, not typing order)
-- Preserve meaning and emotional accuracy exactly as the user expressed
+- Preserve meaning, wording, and emotional accuracy EXACTLY as the user expressed
 
-Example:
-"The discussion is about the family dinner where User B (@you) spoke very little to User A. User A perceived this as intentional and felt excluded, especially compared to the interactions with #Mom and others."
+Example (using user's EXACT words, just converted to third-person):
+User Stage 1: "I felt ignored at the family dinner when @you barely spoke to me."
+User Stage 2: "It seemed intentional and made me feel unwanted, especially when #Mom and others were talking normally."
+Summary: "The discussion is about the family dinner where User B (@you) barely spoke to User A. It seemed intentional and made User A feel unwanted, especially when #Mom and others were talking normally."
+(Using user's EXACT words - only converting "I" to "User A" and "@you" to "User B (@you)", keeping all other words EXACT)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3) 💡 My Thoughts (User A internal reflection - ONLY for User A in Stage 3):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• This is ONLY for User A.
+• This is User A's internal reflection, talking to the AI assistant.
+• This should feel like User A is quietly reflecting to themselves.
+
+🎯 CRITICAL PURPOSE OF THOUGHTS:
+- Thoughts MUST focus on HOW TO TAKE THIS CONVERSATION FORWARD with the person to RESOLVE THE ISSUE
+- Thoughts should be about NEXT STEPS, APPROACH, STRATEGY for the conversation
+- Thoughts should reflect User A's INTENTION and PLAN for moving forward
+- DO NOT repeat the same content from the summary (what happened, how they feel about past events)
+- Instead, focus on: how to approach the conversation, what to say, how to communicate, what outcome they want
+
+Format:
+- First-person voice: "I think…", "I feel…", "I want to…", "I should…", "I'll try to…"
+- Focus on forward-looking actions and conversation strategy
+- Warm, natural, everyday English (not formal, not Gen-Z slang)
+- Keep it simple, human, caring, and easy to read
+
+What Thoughts SHOULD Include:
+✅ "I want to approach [@contact name] calmly and explain my side"
+✅ "I think I should listen to [@contact name]'s perspective first"
+✅ "I'll try to keep the conversation focused on finding a solution"
+✅ "I want to make sure [@contact name] understands how I felt"
+✅ "I should be open to hearing [@contact name]'s side of things"
+✅ "I want to work together to resolve this"
+
+What Thoughts SHOULD NOT Include (avoid repeating summary):
+❌ "I felt hurt when [@contact name] did X" (this belongs in summary, not thoughts)
+❌ "Last week [@contact name] canceled our plans" (this is summary content)
+❌ "I was upset about the party" (this is summary content)
+❌ Repeating events or feelings already described in the summary
+
+🎯 CRITICAL PRONOUN RULES FOR THOUGHTS:
+- When referring to User B (the @contact): Use their **NAME** OR their **PRONOUNS** (from preferred_pronouns field)
+  ✅ CORRECT: "I want to talk to [Name] calmly" (using their actual name from tagged_persons)
+  ✅ CORRECT: "I think I should hear her side" (if preferred_pronouns = "she/her")
+  ✅ CORRECT: "I feel bad for how things went with him" (if preferred_pronouns = "he/him")
+  ✅ CORRECT: "I want to approach them calmly" (if preferred_pronouns = "they/them")
+  ❌ WRONG: "I want to talk to you calmly" (if "you" refers to @contact - "you" means AI assistant)
+  ❌ WRONG: "I think you might be upset" (if "you" refers to @contact)
+  ❌ WRONG: "I want to approach them calmly" (if "them" is NOT their actual pronoun - use name instead)
+
+- When referring to third parties (#tagged people): Use their **NAME** (from #tag) OR their **PRONOUNS**
+  ✅ CORRECT: "I think #Mom was right" (using #tag)
+  ✅ CORRECT: "I'm worried about what she said" (if #Mom's pronouns = "she/her")
+  ✅ CORRECT: "I want to approach [@contact name] calmly, but I'm concerned about #John's reaction"
+
+- If preferred_pronouns is not provided: Use the person's name (from tagged_persons or #tag)
+
+IMPORTANT:
+- NEVER use "you" or "your" when referring to the @contact in thoughts
+- NEVER hardcode names - use the actual names from tagged_persons
+- If pronouns are unclear, use the person's name instead
+- "you" in thoughts refers to the AI assistant, not the @contact
+
+Examples:
+✅ CORRECT (forward-looking thoughts about conversation strategy):
+- "I want to approach [@contact name] calmly and explain my side so we can work through this together."
+- "I think I should hear her side first before sharing my perspective." (if @contact's pronouns = "she/her")
+- "I'll try to keep the conversation focused on finding a solution that works for both of us."
+- "I want to make sure [@contact name] understands how I felt, but I'm also open to hearing their perspective."
+
+✅ CORRECT (referring to #third party in forward-looking context):
+- "I'm concerned about how #Mom might react, but I still want to have this conversation with [@contact name]."
+
+❌ WRONG (repeating summary content - avoid these):
+- "I felt hurt when [@contact name] did X" ❌ (this is summary content)
+- "Last week [@contact name] canceled our plans" ❌ (this is summary content)
+- "I was upset about the party" ❌ (this is summary content)
+
+❌ WRONG (using "you" for @contact):
+- "I want to talk to you calmly" (if "you" = @contact) ❌
+- "I think you might be upset" (if "you" = @contact) ❌
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -253,6 +357,8 @@ Return ONLY valid JSON with this structure:
     "summary_a_perspective": "same as summary_a_perspective above",
     "summary_shared_neutral": "NEUTRAL SHARED SUMMARY (factual, third-person)",
     "key_points": ["same as above"],
+    "thoughts": "💡 My Thoughts section (User A's internal reflection focusing on HOW TO TAKE THE CONVERSATION FORWARD to resolve the issue - NOT repeating summary content - use @contact's NAME or PRONOUNS, never 'you' or generic 'them')",
+    "thoughts_a": "Same as thoughts above",
     "all_qa_pairs": "Include the full question_responses array for reference",
     "pronoun_map": {
       "user_b": "you/your" (if talking TO someone directly),
@@ -276,8 +382,8 @@ CRITICAL REQUIREMENTS:
 
 Guidelines:
 - MUST include information from ALL Q&A responses in BOTH summaries
-- A-PERSPECTIVE SUMMARY: Emotional, first-person, preserves @ and # tags, uses ONLY user's words (may rephrase for clean sentences), organized chronologically
-- NEUTRAL SHARED SUMMARY: Factual, third-person, preserves @ and # tags, NO assumptions about User B's feelings, uses ONLY user's words (may rephrase for clean sentences), organized chronologically
+- A-PERSPECTIVE SUMMARY: Emotional, first-person, preserves @ and # tags, uses ONLY user's EXACT words (NO rephrasing - just group them), organized chronologically
+- NEUTRAL SHARED SUMMARY: Factual, third-person, preserves @ and # tags, NO assumptions about User B's feelings, uses ONLY user's EXACT words (NO rephrasing - just group them), organized chronologically
 - Use empathetic, non-judgmental language (but only words the user shared)
 - Identify user_b (person they're talking TO) vs third parties
 - Choose appropriate pronouns based on names and context
@@ -288,7 +394,7 @@ Guidelines:
 - Apply input validation rules to filter out meaningless inputs while accepting all meaningful content
 - Maintain natural summary length based on user input - do not expand or compress unnecessarily
 - CRITICAL: Organize user's information in REAL-WORLD CHRONOLOGICAL ORDER (event timeline, not typing order) - if Stage 2 reveals earlier events, place them before Stage 1 events
-- CRITICAL: Use ONLY user's words and phrases - may rephrase for clean sentences but do NOT add new vocabulary, synonyms, or new ideas
+- CRITICAL: Use ONLY user's EXACT words and phrases - NO rephrasing, just group them together. Do NOT add new vocabulary, synonyms, or new ideas
 - CRITICAL: Preserve meaning and emotional accuracy exactly as the user expressed`;
 
     const claudePayload = {

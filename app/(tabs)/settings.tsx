@@ -424,8 +424,6 @@ function SettingsScreen() {
 
             {/* Title */}
             <View style={styles.titleSection}>
-            <View style={{ height: 10 }} />
-
               <Text style={styles.title}>Settings</Text>
             </View>
           
@@ -498,11 +496,11 @@ const styles = StyleSheet.create({
   content: { flex: 1 },
   centeredContainer: {
     flex: 1,
-    justifyContent: 'center', // centers everything vertically
+    justifyContent: 'flex-start', // start from top instead of center
     alignItems: 'center',      // keeps all content nicely aligned
     paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.sm,
-    transform: [{ translateY: -1 }], // slightly scale down content to fit comfortably
+    paddingTop: Spacing.xs, // reduced top padding
+    paddingBottom: Spacing.xs, // reduced bottom padding
   },
   
   
@@ -520,54 +518,53 @@ const styles = StyleSheet.create({
   },
 
   titleSection: {
-    marginBottom: Spacing.xs,
+    marginBottom: Spacing.sm, // increased spacing
   },
 
   title: {
-    fontSize: Typography.fontSize['2xl'],
+    fontSize: Typography.fontSize.xl, // reduced from 2xl
     fontWeight: Typography.fontWeight.bold,
     color: '#0288D1',
     textAlign: 'left',
-    transform: [{ translateY: -1 }], 
   },
 
   profileSection: {
     flexDirection: 'column',
     alignItems: 'center',
-    marginBottom: Spacing.lg,
+    marginBottom: Spacing.md, // increased spacing between profile and settings
   },
 
   userName: {
-    fontSize: Typography.fontSize.lg,
+    fontSize: Typography.fontSize.base, // reduced from lg
     fontWeight: Typography.fontWeight.semibold,
     color: '#0288D1',
-    marginTop: Spacing.sm,
+    marginTop: Spacing.xs, // reduced from sm
     textAlign: 'center',
   },
 
   userEmail: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs, // reduced from sm
     color: '#0277BD',
     textAlign: 'center',
-    marginTop: Spacing.xs,
+    marginTop: 2, // reduced from Spacing.xs
   },
 
   avatarContainer: {
-    marginBottom: Spacing.xs,
+    marginBottom: 0, // removed margin
   },
   avatar: { width: 48, height: 48, borderRadius: BorderRadius.xxl },
   
 
   settingsList: {
-    marginBottom: Spacing.xs,
+    marginBottom: Spacing.md, // increased spacing before sign out
   },
   
 
   settingItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: Spacing.sm,
-    marginBottom: Spacing.sm,
+    padding: Spacing.xs, // reduced from sm
+    marginBottom: Spacing.xs, // reduced from sm
     backgroundColor: '#ffffff',
     borderRadius: BorderRadius.lg,
     borderWidth: 2,
@@ -591,20 +588,19 @@ const styles = StyleSheet.create({
   settingContent: { flex: 1 },
 
   settingTitle: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs, // reduced from sm
     fontWeight: Typography.fontWeight.semibold,
     color: '#0288D1',
   },
 
-  settingSubtitle: { fontSize: Typography.fontSize.xs, color: '#0277BD' },
-  settingDescription: { fontSize: Typography.fontSize.xs, color: '#546E7A' },
+  settingSubtitle: { fontSize: Typography.fontSize.xs, color: '#0277BD', lineHeight: Typography.fontSize.xs * 1.2 },
+  settingDescription: { fontSize: Typography.fontSize.xs, color: '#546E7A', lineHeight: Typography.fontSize.xs * 1.2 },
 
   signOutContainer: {
-    marginTop: Spacing.xs,
+    marginTop: Spacing.sm, // added spacing from settings list
     paddingHorizontal: Spacing.sm,
-    paddingBottom: Spacing.sm,
+    paddingBottom: Spacing.md, // increased bottom padding for visibility
     alignItems: 'center',
-    transform: [{ translateY: -10}],
   },
   
   
@@ -628,7 +624,7 @@ const styles = StyleSheet.create({
   justifyContent: 'center',
   alignItems: 'center',
   alignSelf: 'center',
-  marginBottom: 8,
+  marginBottom: 4, // reduced from 8
 },
 
 });

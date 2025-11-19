@@ -2278,8 +2278,10 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
       return;
     }
     
-    // Optional: Validate meaningfulness for longer answers
-    if (answer.trim().length >= 10) {
+    // Optional: Validate meaningfulness for longer answers (only if >= 20 tokens)
+    const words = answer.trim().split(/\s+/).filter(Boolean);
+    const tokensUsed = Math.round(words.length * (20/15));
+    if (tokensUsed >= 20) {
       const isMeaningful = await validateMeaningfulness(answer);
       if (!isMeaningful) {
         Alert.alert(
@@ -2322,8 +2324,10 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
       return;
     }
     
-    // Optional: Validate meaningfulness for longer answers
-    if (answerText.trim().length >= 10) {
+    // Optional: Validate meaningfulness for longer answers (only if >= 20 tokens)
+    const words = answerText.trim().split(/\s+/).filter(Boolean);
+    const tokensUsed = Math.round(words.length * (20/15));
+    if (tokensUsed >= 20) {
       const isMeaningful = await validateMeaningfulness(answerText);
       if (!isMeaningful) {
         Alert.alert(
@@ -2480,6 +2484,9 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
         initial_description: initialDescription,
         taggedEntities: taggedEntities,
         questionCount: qaPairs.length,
+        // ✅ FIX: Ensure saved sessions are visible in Sorted Assistant
+        initial_pending: false, // Mark as not pending (saved session)
+        session_promoted: false, // Don't mark as promoted to keep it visible
       };
       
       // Stage 1 (welcome): Save title, description, taggedEntities
@@ -2903,7 +2910,12 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
 
   // ✅ Hybrid Quality Checker: Local first, AI fallback only if borderline
 const validateMeaningfulness = async (text: string): Promise<boolean> => {
-  if (!text || text.trim().length < 10) return false;
+  if (!text || text.trim().length === 0) return false;
+  
+  // Calculate tokens: only validate if >= 20 tokens
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  const tokensUsed = Math.round(words.length * (20/15));
+  if (tokensUsed < 20) return true; // Accept answers under 20 tokens without validation
 
   const lower = text.toLowerCase();
 
@@ -2916,16 +2928,16 @@ const validateMeaningfulness = async (text: string): Promise<boolean> => {
   const emojiPattern = /(\p{Emoji_Presentation}|\p{Extended_Pictographic})/gu;
   const emojiCount = (text.match(emojiPattern) || []).length;
 
-  const words = text.trim().split(/\s+/).length;
+  const wordCount = text.trim().split(/\s+/).length;
   const hasVerb = verbs.test(lower);
   const hasMeaning = !meaninglessPatterns.test(lower);
   const emojiRatio = emojiCount / text.length;
 
   // Strongly meaningful → pass immediately (no cost)
-  if (words > 4 && hasVerb && hasMeaning && emojiRatio < 0.3) return true;
+  if (wordCount > 4 && hasVerb && hasMeaning && emojiRatio < 0.3) return true;
 
   // Clearly junk → fail immediately (no cost)
-  if (words < 3 || emojiRatio > 0.5 || !hasMeaning) return false;
+  if (wordCount < 3 || emojiRatio > 0.5 || !hasMeaning) return false;
 
   // --- 2️⃣ Borderline → small AI check (costs ~20 tokens only) ---
   try {
@@ -3340,7 +3352,8 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
       const tagged_persons = (entitiesFromRegistry || []).map((e: any) => ({
         name: e.entity_name,
         is_user_b: e.role_in_conversation === 'User B' || (e.is_participant && e.participant_slot === 'B'),
-        relationship: e.relationship_category || 'General'
+        relationship: e.relationship_category || 'General',
+        preferred_pronouns: e.preferred_pronouns || null
       }));
 
       // ✅ CALL THE GENERATE-SUMMARY EDGE FUNCTION
