@@ -33,6 +33,7 @@ module.exports = {
         backgroundColor: "#FFFFFF"
       },
       package: "com.sorted.app",
+      versionCode: 1,
       permissions: [
         "android.permission.CAMERA",
         "android.permission.READ_EXTERNAL_STORAGE",
@@ -70,6 +71,14 @@ module.exports = {
         {
           photosPermission: "Allow Sorted to access your photos to set your profile picture."
         }
+      ],
+      [
+        "expo-notifications",
+        {
+          icon: "./assets/images/icon.png",
+          color: "#4f46e5",
+          sounds: []
+        }
       ]
     ],
     runtimeVersion: {
@@ -88,6 +97,10 @@ module.exports = {
       // ✅ Supabase environment variables
       EXPO_PUBLIC_SUPABASE_URL: process.env.EXPO_PUBLIC_SUPABASE_URL || "",
       EXPO_PUBLIC_SUPABASE_ANON_KEY: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || "",
+      // ✅ EAS configuration
+      eas: {
+        projectId: process.env.EAS_PROJECT_ID || ""
+      }
     }
   }
 };

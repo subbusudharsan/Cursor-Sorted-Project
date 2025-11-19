@@ -424,6 +424,41 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       }
     }, [isResolved])
   );
+
+  // ✅ NEW: Initialize options waiting state when stored session opens
+  useEffect(() => {
+    // Only run when:
+    // 1. Initial loading is complete (messages are loaded)
+    // 2. Chat ID is set
+    // 3. User is available
+    // 4. Messages array is populated (either empty or has messages)
+    // 5. Chat is not closed
+    if (!initialLoading && chatId && user?.id && messages.length >= 0 && !isChatClosed) {
+      // Determine who should receive options based on last message sender
+      if (messages.length > 0) {
+        const lastMessage = messages[messages.length - 1];
+        const lastSenderId = lastMessage.sender_id;
+        const currentUserId = user.id;
+        
+        // If last sender = current user → next options are for the contact
+        // If last sender = contact → next options are for the current user
+        if (lastSenderId === currentUserId) {
+          // Current user sent last message → contact should receive options
+          const recipientId = contactId ? String(contactId) : undefined;
+          console.log('✅ Initialization: Last message from current user → options for contact:', recipientId);
+          enterWaitingForOptions(recipientId);
+        } else {
+          // Contact sent last message → current user should receive options
+          console.log('✅ Initialization: Last message from contact → options for current user:', currentUserId);
+          enterWaitingForOptions(String(currentUserId));
+        }
+      } else {
+        // No messages yet → current user should receive options (initial turn)
+        console.log('✅ Initialization: No messages → options for current user:', user.id);
+        enterWaitingForOptions(String(user.id));
+      }
+    }
+  }, [initialLoading, chatId, user?.id, messages.length, contactId, enterWaitingForOptions, isChatClosed]);
   // 🔄 Tab focus refresh logic - regenerate options when user returns
   // Removed tab-focus auto refresh to avoid duplicate orchestrator calls
   useEffect(() => {

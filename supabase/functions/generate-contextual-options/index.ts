@@ -432,6 +432,25 @@ const buildNameVariants = (name: string): string[] => {
   return Array.from(variants);
 };
 
+// ✅ Helper function to normalize name to Title Case
+const normalizeToTitleCase = (name: string): string => {
+  if (!name || typeof name !== 'string') return name;
+  // Remove # prefix if present, trim whitespace
+  let cleaned = name.replace(/^#\s*/, '').trim();
+  if (!cleaned) return name;
+  
+  // Split by spaces, hyphens, apostrophes to handle compound names
+  const parts = cleaned.split(/[\s'-]+/);
+  const normalizedParts = parts.map(part => {
+    if (!part) return part;
+    // Capitalize first letter, lowercase the rest
+    return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
+  });
+  
+  // Rejoin with space (handles most cases)
+  return normalizedParts.join(' ');
+};
+
 const applySentenceCase = (replacement: string, offset: number, source: string): string => {
   const prefix = source.slice(0, offset);
   const isStartOfSentence =
@@ -678,10 +697,29 @@ const cleanPerspective = (text: string | undefined): string => {
     }
   }
 
-  // ✅ NEW: Remove # symbols from third-party references but keep the name
-  // #Vikram becomes Vikram, #Sarah becomes Sarah
-  cleaned = cleaned.replace(/#(\w+)/g, '$1');
-  console.log(`   ✅ Removed # symbols from third-party references`);
+  // ✅ ENHANCED: Remove # symbols from third-party references with case-insensitive matching
+  // Handles: #name, #Name, #NAME, #nAmE, #name's, #name-, #name., # name (with space)
+  // Normalizes to Title Case before removing #
+  const normalizeAndRemoveHash = (text: string): string => {
+    let result = text;
+    
+    // ✅ Pattern: # followed by optional space, then name (letters, apostrophes, hyphens), then word boundary or punctuation
+    const hashTagPattern = /#\s*([A-Za-z][A-Za-z'’-]*)/gi;
+    
+    result = result.replace(hashTagPattern, (match, name) => {
+      // Normalize to Title Case
+      const normalized = normalizeToTitleCase(name);
+      return normalized;
+    });
+    
+    // ✅ Catch-all: Remove any remaining # symbols
+    result = result.replace(/#/g, '');
+    
+    return result;
+  };
+  
+  cleaned = normalizeAndRemoveHash(cleaned);
+  console.log(`   ✅ Removed # symbols from third-party references (case-insensitive, normalized to Title Case)`);
 
   // ✅ FIX: Replace incorrect third-person pronouns when addressing the listener
   // If User A is talking TO User B, replace "her/his/their" with "your" when referring to User B
@@ -888,12 +926,15 @@ let entityContext = `\n${pronounToneContext}`;
     const registeredContacts = allTags.filter(t => t.type === 'registered');
     const unregisteredEntities = allTags.filter(t => t.type === 'unregistered');
 
-    // 🧠 Build pronoun map from entity_registry
-const pronounMap = {};
+    // 🧠 Build pronoun map from entity_registry (case-insensitive)
+const pronounMap: Record<string, string> = {};
 if (entities && entities.length > 0) {
   entities.forEach(e => {
     if (e.entity_type === 'third_party_person' && e.preferred_pronouns) {
-      pronounMap[e.entity_name.toLowerCase()] = e.preferred_pronouns;
+      // ✅ Normalize entity name to Title Case for consistency
+      const normalizedName = normalizeToTitleCase(e.entity_name);
+      // Store with lowercase key for case-insensitive lookup
+      pronounMap[normalizedName.toLowerCase()] = e.preferred_pronouns;
     }
   });
 }
@@ -901,18 +942,31 @@ if (entities && entities.length > 0) {
 // ✅ Extract third-party names EXACTLY as they appear in summary
 // Note: cleanSummary, cleanRecipientSummary, cleanOriginalIssueSummary will be defined later
 // We'll extract from the raw summaries first, then use cleaned versions when available
+// ✅ Enhanced: Extract third-party names with all casing formats
 const extractThirdPartyNamesFromSummary = (summaryText: string): string[] => {
   if (!summaryText || typeof summaryText !== 'string') return [];
-  const names: string[] = [];
-  const hashTagPattern = /#(\w+)/g;
+  const namesMap = new Map<string, string>(); // lowercase -> normalized
+  
+  // ✅ Enhanced pattern: Matches #name, #Name, #NAME, #nAmE, #name's, #name-, #name., # name (with space)
+  // Pattern: # followed by optional space, then name (letters, apostrophes, hyphens), then optional punctuation
+  const hashTagPattern = /#\s*([A-Za-z][A-Za-z'’-]*)/g;
   let match;
+  
   while ((match = hashTagPattern.exec(summaryText)) !== null) {
-    const name = match[1];
-    if (name && !names.includes(name)) {
-      names.push(name);
+    const rawName = match[1];
+    if (rawName) {
+      // Normalize to Title Case
+      const normalized = normalizeToTitleCase(rawName);
+      const lowerKey = normalized.toLowerCase();
+      
+      // Store normalized version (use first occurrence's casing as canonical)
+      if (!namesMap.has(lowerKey)) {
+        namesMap.set(lowerKey, normalized);
+      }
     }
   }
-  return names;
+  
+  return Array.from(namesMap.values());
 };
 
 // Extract from NEUTRAL summary only (no A/B perspective summaries)
@@ -938,15 +992,17 @@ const filteredUnregisteredEntities = unregisteredEntities.filter(t => {
     if (filteredUnregisteredEntities.length > 0) {
       tagContext += `\n\n📋 THIRD PARTIES (being DISCUSSED, not in conversation):\n`;
       tagContext += filteredUnregisteredEntities.map(t => {
-  const cleanTag = t.tag.replace('#', '').toLowerCase();
-  const name = t.tag.replace('#', ''); // Get name without # prefix
-  const pronouns =
-    t.pronouns ||
-    pronounMap[cleanTag] ||
-    'they/them';
-  const categoryInfo = t.category ? ` (${t.category})` : '';
-  return `- ${name}${categoryInfo} - Use name "${name}" or pronouns "${pronouns}" in messages (drop the # prefix)`;
-}).join('\n');
+        const rawName = t.tag.replace('#', '');
+        // ✅ Normalize to Title Case
+        const normalizedName = normalizeToTitleCase(rawName);
+        const cleanTag = normalizedName.toLowerCase();
+        const pronouns =
+          t.pronouns ||
+          pronounMap[cleanTag] ||
+          'they/them';
+        const categoryInfo = t.category ? ` (${t.category})` : '';
+        return `- ${normalizedName}${categoryInfo} - Use name "${normalizedName}" or pronouns "${pronouns}" in messages (drop the # prefix)`;
+      }).join('\n');
 
       tagContext += `\n\n⚠️ IMPORTANT: When mentioning third parties:
   - Use their NAME naturally (without # prefix): "Sarah told me" NOT "#Sarah told me"
@@ -3073,8 +3129,18 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       let cleaned = str.replace(/@\s*([A-Za-z][A-Za-z\s'’-]*)/gi, '$1');
       // Remove any remaining @ symbols (catch-all)
       cleaned = cleaned.replace(/@/g, '');
-      // Remove # symbols followed by word characters
-      cleaned = cleaned.replace(/#(\w+)/g, '$1');
+      
+      // ✅ ENHANCED: Remove # symbols with case-insensitive matching and normalization
+      // Pattern: # followed by optional space, then name (letters, apostrophes, hyphens)
+      const hashTagPattern = /#\s*([A-Za-z][A-Za-z'’-]*)/gi;
+      cleaned = cleaned.replace(hashTagPattern, (match, name) => {
+        // Normalize to Title Case
+        return normalizeToTitleCase(name);
+      });
+      
+      // ✅ Catch-all: Remove any remaining # symbols
+      cleaned = cleaned.replace(/#/g, '');
+      
       return cleaned;
     };
 
