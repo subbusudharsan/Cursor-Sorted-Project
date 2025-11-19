@@ -1434,7 +1434,7 @@ CRITICAL: Generate 5 TRULY DISTINCT options that:
 SPEECH STYLE PRINCIPLES (use naturally, never label):
 - Use warm, friendly, natural everyday English that fits any relationship - partners, friends, family, coworkers, elders, or younger people
 - Sound like a real person talking to someone they care about - conversational, genuine, human
-- Show understanding naturally: "I hear you" or "I get what you're saying" (not "I acknowledge your perspective" or "I appreciate your perspective")
+- Show understanding naturally: "I get what you mean" or "That makes sense" or "Oh okay, I understand" (NEVER "I hear you" or "I acknowledge your perspective" or "I appreciate your perspective")
 - Admit mistakes simply: "I didn't realize that" or "You're right, I made a mistake" (not "I apologize for my actions" or "I would like to apologize")
 - Keep it genuine and warm: "I don't want us to fight over this" or "Let's figure this out" (not "We should resolve our conflict" or "I would like to discuss this matter")
 - Match their energy: warm when they're open, honest when there's tension
@@ -1445,12 +1445,24 @@ SPEECH STYLE PRINCIPLES (use naturally, never label):
 - Use contractions naturally: "I'm", "you're", "we're", "don't", "can't", "won't" (not "I am", "you are", "we are", "do not", "cannot", "will not")
 - Sound like friends talking: "I want to understand what happened" (not "I would like to understand the situation that occurred")
 
+🎯 EMOTIONAL TONE AWARENESS - MATCH THE CONVERSATION ENERGY:
+- Read the emotional tone of the latest message from the other person
+- Match your response energy to their emotional state:
+  * Sad/hurt messages → Use gentle, reassuring language: "I get what you mean", "That makes sense", "Thanks for sharing that"
+  * Angry/frustrated messages → Use calm, grounded language: "Okay, I see what you mean", "Got it", "I understand"
+  * Confused/unclear messages → Use clarifying language: "Oh okay, I get it now", "I see what you mean", "Got it"
+  * Normal/neutral messages → Use warm, friendly language: "Yeah, I get what you mean", "Makes sense", "Oh okay, I understand"
+  * Grateful messages → Respond warmly: "You're welcome"
+  * Apologetic messages → Accept gently: "Okay, I understand"
+- Your options should feel like a natural human response that acknowledges what they just said
+- Don't sound like a therapist or counselor - sound like a friend/partner/family member responding naturally
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 FRIENDLY, NATURAL TONE ONLY - MANDATORY FOR ALL OPTIONS:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 🚫 NEVER USE (formal, robotic, therapeutic):
-- "I hear you" → Use: "I get it" or "I get what you mean"
+- "I hear you" / "I hear you on that" → Use: "I get it" or "I get what you mean" or "That makes sense" (NEVER use "I hear you" - it sounds robotic)
 - "I appreciate your perspective" → Use: "thanks for saying that" or "that makes sense"
 - "I understand your situation" → Use: "I didn't know that" or "oh okay"
 - "I acknowledge your perspective" → Use: "I get that" or "yeah I see"
@@ -1517,6 +1529,14 @@ EXAMPLES OF GOOD TONE:
 - "I want to understand what happened"
 - "Let's figure this out together"
 - "I'm here for you, let's work through this"
+
+EXAMPLES OF GOOD TONE (context-aware, matching emotional energy):
+- Sad message → "I get what you mean, that must have been hard"
+- Angry message → "Okay, I see what you mean, let's figure this out"
+- Confused message → "Oh okay, I get it now, can you help me understand?"
+- Normal message → "Yeah, I get what you mean, maybe we can sort this out"
+- Grateful message → "You're welcome, I'm glad we talked"
+- Apologetic message → "Okay, I understand, let's move forward"
 
 EXAMPLES OF BAD TONE (NEVER USE):
 - "I hear you, and I appreciate your perspective" ❌
@@ -1950,12 +1970,14 @@ ${isRecipientUserA ? `
 `}
 
 🧩 ACKNOWLEDGEMENT REQUIREMENT (STRICT):
-- Every option must START with a short, natural acknowledgement of the latest received message 
-  (cleaned version of cleanCurrentMessage).
-- Acknowledgement examples: "I hear you", "I get why you shared that", 
-  "I appreciate you opening up", "I understand how that felt".
-- Do NOT copy the message.
-- After acknowledging, continue the response normally.
+- Each option MUST start with a **short, natural acknowledgement** of the latest message:
+  - "I get what you mean…"
+  - "yeah, that makes sense…"
+  - "I understand why you'd feel that way…"
+  - "thanks for telling me…"
+- ❌ Never copy their full message
+- ❌ Never sound like a therapist
+- ✔ Make it feel human and warm
 ${shouldUseHint && isRecipientUserB ? `- If User B submitted a private hint, subtly reflect their perspective AFTER the acknowledgement, without exposing the hint directly.` : ''}
 
 **MANDATORY CHECK:** Before generating each option, verify:
@@ -1974,7 +1996,7 @@ ${shouldUseHint && isRecipientUserB ? `- If User B submitted a private hint, sub
 **LANGUAGE STYLE (CRITICAL):**
 - Use warm, friendly, natural everyday English that fits any relationship - partners, friends, family, coworkers, elders, or younger people
 - Sound human and approachable - not formal, robotic, overly polite, or Gen-Z slang
-- Use natural everyday phrases: "I hear you", "I get what you're saying", "I didn't realize that", "I want to understand this better", "I'm listening", "Let's figure this out"
+- Show understanding naturally using: "I get what you mean", "that makes sense", "oh okay I understand" (NEVER "I hear you"). Use other natural everyday phrases: "I didn't realize that", "I want to understand this better", "I'm listening", "Let's figure this out"
 - Avoid Gen-Z slang: "fr", "ngl", "no cap", "bet", "slay", "sus", "lowkey", "highkey", "tbh", "ngl", "hit different", etc.
 - Avoid overly formal phrasing: "I appreciate your perspective", "I would like to hear your side", "I would appreciate if", "I acknowledge your perspective"
 - Write in complete, natural sentences - friendly but not casual slang, warm but not stiff
