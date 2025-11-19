@@ -69,9 +69,23 @@ const fetchConversations = useCallback(async () => {
   .throwOnError();
   
       // ✅ Filter out empty sessions (no meaningful content)
-      // Show all AI assistant chats for this user
-const validChats = chatsData || [];
-
+      const validChats = (chatsData || []).filter((chat) => {
+        const ctx = chat.context_data;
+        if (!ctx) return false;
+        
+        const flowStage = ctx.flowStage || 'welcome';
+        const hasInitialDescription = ctx.initial_description && ctx.initial_description.trim().length > 0;
+        const hasQAPairs = ctx.qa_pairs && ctx.qa_pairs.length > 0;
+        const hasSummary = ctx.summary && ctx.summary.trim().length > 0;
+        
+        // Only include chats with meaningful content
+        return (
+          (flowStage === 'welcome' && hasInitialDescription) ||
+          (flowStage === 'qa' && hasQAPairs) ||
+          (flowStage === 'summary' && hasQAPairs && hasSummary) ||
+          (flowStage === 'ready' && hasQAPairs && hasSummary)
+        );
+      });
       
       console.log(`✅ Filtered ${(chatsData || []).length} chats to ${validChats.length} valid chats`);
 
@@ -117,13 +131,16 @@ const validChats = chatsData || [];
         }
       }
 
-      // ✅ FIX: Only hide sessions that have been sent to contact
+      // ✅ FIX: Show saved sessions but exclude:
+      // 1. Active pending sessions that haven't been saved
+      // 2. Sessions that have been sent to contact (sent_to_contact === true)
       const filteredChats = validChats.filter((chat) => {
         if (!chat.context_data) return true;
-        // ✅ CRITICAL: Only exclude sessions that have been sent to contact
-        // Do NOT filter by is_resolved - that's for contact chats, not AI assistant sessions
+        // Exclude only if it's an initial pending session that hasn't been saved
+        if (chat.context_data.initial_pending === true && chat.context_data.session_promoted !== true) return false;
+        // ✅ CRITICAL: Exclude sessions that have been sent to contact (after first message is sent)
         if (chat.context_data.sent_to_contact === true) return false;
-        // Include everything else (pending, promoted, etc.)
+        // Include all other saved sessions (session_promoted === true) and non-pending sessions
         return true;
       });
 

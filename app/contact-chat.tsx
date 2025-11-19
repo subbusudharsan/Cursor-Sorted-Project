@@ -1556,8 +1556,10 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       console.warn("⚠️ Using fallback recipientId (chatCheck not available):", recipientId);
     }
     try {
-      // ✅ CRITICAL: Check if this will be the first message and mark source AI chat
+      // ✅ CRITICAL: Check if this will be the first message (but don't mark yet)
       let isFirstMessage = false;
+      let sourceChatId: string | null = null;
+      
       if (chatCheck) {
         const { count: existingMessageCount } = await supabase
           .from("messages")
@@ -1565,32 +1567,10 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           .eq("chat_id", currentChatId);
         
         isFirstMessage = (existingMessageCount || 0) === 0;
-        
-        // If this will be the first message and there's a source AI chat, mark it
-        if (isFirstMessage && chatCheck.ai_source_chat_id) {
-          const { data: sourceChat } = await supabase
-            .from("chats")
-            .select("context_data")
-            .eq("id", chatCheck.ai_source_chat_id)
-            .eq("chat_type", "ai_assistant")
-            .single();
-          
-          if (sourceChat?.context_data) {
-            await supabase
-              .from("chats")
-              .update({
-                context_data: {
-                  ...sourceChat.context_data,
-                  sent_to_contact: true, // ✅ Mark as sent when first message is sent
-                },
-              })
-              .eq("id", chatCheck.ai_source_chat_id)
-              .eq("chat_type", "ai_assistant");
-            console.log("✅ Marked source AI chat as sent_to_contact: true");
-          }
-        }
+        sourceChatId = chatCheck.ai_source_chat_id || null;
       }
 
+      // ✅ Insert message FIRST
       const { data, error } = await supabase
         .from("messages")
         .insert({
@@ -1602,12 +1582,38 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         })
         .select()
         .single();
+        
       if (error) {
         console.error("❌ MESSAGE INSERT FAILED:", error);
         throw error;
       }
+      
       console.log("✅ MESSAGE INSERTED INTO DATABASE");
       console.log(" Message ID:", data.id);
+      
+      // ✅ CRITICAL: Only mark as sent_to_contact AFTER successful message insert
+      if (isFirstMessage && sourceChatId) {
+        const { data: sourceChat } = await supabase
+          .from("chats")
+          .select("context_data")
+          .eq("id", sourceChatId)
+          .eq("chat_type", "ai_assistant")
+          .single();
+        
+        if (sourceChat?.context_data) {
+          await supabase
+            .from("chats")
+            .update({
+              context_data: {
+                ...sourceChat.context_data,
+                sent_to_contact: true, // ✅ Mark as sent ONLY after message is successfully sent
+              },
+            })
+            .eq("id", sourceChatId)
+            .eq("chat_type", "ai_assistant");
+          console.log("✅ Marked source AI chat as sent_to_contact: true");
+        }
+      }
       if (recipientId) {
         try {
           // Fetch current chat to check initial_pending flag (first delivery after Stage-4)

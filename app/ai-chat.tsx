@@ -148,7 +148,10 @@ STRICT RULES:
   3) Their feelings (brief, natural)
   4) What they want the other person to understand
   5) What outcome they hope for
-- Each question must be warm, simple, short, and non-therapeutic (human, friendly).
+- Each question must be:
+  * ONE single sentence only (no multiple sentences, no compound questions)
+  * Medium length: 6-10 words (not too short, not too long)
+  * Warm, simple, and non-therapeutic (human, friendly)
 - No instructions, no extra wording, no explanations in output.
 - If any two questions are partially similar, regenerate until all 5 are clearly unique.
 - Output ONLY valid JSON with the exact structure above.
@@ -173,12 +176,43 @@ Context (brief):
       if (chatId && !hasCommittedStage1Ref.current) {
         (async () => {
           try {
+            // ✅ CRITICAL: Check if session has meaningful content before deleting
+            const { data: chatData, error: fetchError } = await supabase
+              .from('chats')
+              .select('id, session_name, context_data')
+              .eq('id', chatId)
+              .eq('chat_type', 'ai_assistant')
+              .single();
+
+            if (fetchError || !chatData) {
+              console.log('⚠️ Could not fetch chat for cleanup check, skipping deletion');
+              return;
+            }
+
+            const ctx = chatData.context_data || {};
+            
+            // Check if session has ANY meaningful content
+            const hasTitle = chatData.session_name && chatData.session_name.trim().length > 0;
+            const hasDescription = ctx.initial_description && ctx.initial_description.trim().length > 0;
+            const hasQAPairs = ctx.qa_pairs && Array.isArray(ctx.qa_pairs) && ctx.qa_pairs.length > 0;
+            const hasSummary = ctx.summary && ctx.summary.trim().length > 0;
+            const hasCurrentAnswer = ctx.currentAnswer && ctx.currentAnswer.trim().length > 0;
+            const hasCurrentQuestion = ctx.currentQuestion && ctx.currentQuestion.trim().length > 0;
+            const hasAdditionalInfo = ctx.additional_info && ctx.additional_info.trim().length > 0;
+            
+            // ✅ NEVER delete if session has ANY content
+            if (hasTitle || hasDescription || hasQAPairs || hasSummary || hasCurrentAnswer || hasCurrentQuestion || hasAdditionalInfo) {
+              console.log('✅ Session has content, preserving:', chatId);
+              return;
+            }
+
+            // ✅ Only delete if truly empty (no title, no description, no qa_pairs, no summary, no context_data)
             await supabase
               .from('chats')
               .delete()
               .eq('id', chatId)
               .eq('chat_type', 'ai_assistant');
-            console.log('🧹 Removed unused AI prep session', chatId);
+            console.log('🧹 Removed unused AI prep session (truly empty)', chatId);
           } catch (cleanupErr) {
             console.warn('⚠️ Failed to clean up unused AI prep session', cleanupErr);
           }
@@ -485,38 +519,11 @@ Context (brief):
     async (fields: Record<string, any> = {}, contextPatch?: Record<string, any>) => {
       if (!currentChatId) return;
       const payload: Record<string, any> = { ...fields };
-      
-      // ✅ CRITICAL: Properly merge existing context with new updates
-      if (contextPatch || fields.context_data) {
-        const existing = contextDataRef.current || {};
-        // Combine context_data from fields (if present) with contextPatch
-        const combinedPatch = {
-          ...(fields.context_data && typeof fields.context_data === 'object' ? fields.context_data : {}),
-          ...(contextPatch || {}),
-        };
-        
-        const mergedContext = {
-          ...existing,             // preserve everything
-          ...combinedPatch,         // apply new updates
-          session_promoted:
-            combinedPatch.session_promoted !== undefined
-              ? combinedPatch.session_promoted
-              : existing.session_promoted ?? true,
-          initial_pending:
-            combinedPatch.initial_pending !== undefined
-              ? combinedPatch.initial_pending
-              : existing.initial_pending ?? false,
-          // ✅ CRITICAL: Preserve sent_to_contact (only set to true when first message is sent)
-          sent_to_contact:
-            combinedPatch.sent_to_contact !== undefined
-              ? combinedPatch.sent_to_contact
-              : existing.sent_to_contact ?? false,
-        };
-        
+      if (contextPatch) {
+        const mergedContext = { ...contextDataRef.current, ...contextPatch };
         contextDataRef.current = mergedContext;
         payload.context_data = mergedContext;
       }
-      
       if (Object.keys(payload).length === 0) return;
       await supabase
         .from('chats')
@@ -549,7 +556,6 @@ Context (brief):
       }
       updateChatRecord(fields, {
         chat_title: normalized || contextDataRef.current?.chat_title || '',
-        session_promoted: true, // ✅ Always ensure session_promoted is true
       });
     }, 500);
 
@@ -582,7 +588,6 @@ Context (brief):
       const contextPatch: Record<string, any> = {
         initial_description: initialDescription,
         taggedEntities,
-        session_promoted: true, // ✅ Always ensure session_promoted is true
       };
       if (flowStage === 'welcome') {
         contextPatch.flowStage = 'welcome';
@@ -784,10 +789,6 @@ Context (brief):
             flowStage: 'welcome',
             chat_title: defaultSessionName,
             session_started_at: new Date().toISOString(),
-            // ✅ FIX: Mark new chats as saved so they appear in Sorted Assistant
-            initial_pending: false,
-            session_promoted: true,
-            sent_to_contact: false,
           },
         })
         .select()
@@ -2036,10 +2037,6 @@ const inferEntityCategory = (name: string): string => {
         if (ctx.currentAnswer) setCurrentAnswer(ctx.currentAnswer);
         if (ctx.selectedOption) setSelectedOption(ctx.selectedOption);
         if (ctx.currentOptions) setCurrentOptions(ctx.currentOptions);
-        
-        // ✅ Restore editing state for Stage 3 and 4
-        if (ctx.isEditingMode !== undefined) setIsEditingMode(ctx.isEditingMode);
-        if (ctx.isSummaryUnclear !== undefined) setIsSummaryUnclear(ctx.isSummaryUnclear);
       }
 
       console.log('✅ Existing chat loaded successfully');
@@ -2183,7 +2180,6 @@ const inferEntityCategory = (name: string): string => {
       initial_description: initialDescription,
       taggedEntities,
       flowStage: 'welcome',
-      session_promoted: true, // ✅ Always ensure session_promoted is true
     };
 
     if (shouldResetSession && sessionStartedAt) {
@@ -2449,7 +2445,8 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
   const handleSaveAndExit = async () => {
     try {
       // ✅ Check if there's meaningful content to save
-      // Include all possible content: initial description, qaPairs, summary, additionalInfo, currentAnswer
+      // Include all possible content: title, initial description, qaPairs, summary, additionalInfo, currentAnswer
+      const hasTitle = chatTitle.trim().length > 0;
       const hasInitialDescription = initialDescription.trim().length > 0;
       const hasQAPairs = qaPairs.length > 0;
       const hasSummary = summary.trim().length > 0;
@@ -2458,17 +2455,20 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
       
       // Check contextDataRef for previously saved content
       const ctx = contextDataRef.current || {};
+      const hasCtxTitle = ctx.chat_title && ctx.chat_title.trim().length > 0;
       const hasCtxInitialDescription = ctx.initial_description && ctx.initial_description.trim().length > 0;
       const hasCtxQAPairs = ctx.qa_pairs && ctx.qa_pairs.length > 0;
       const hasCtxSummary = ctx.summary && ctx.summary.trim().length > 0;
       const hasCtxAdditionalInfo = ctx.additional_info && ctx.additional_info.trim().length > 0;
       
       const hasContent = 
+        hasTitle ||
         hasInitialDescription ||
         hasQAPairs ||
         hasSummary ||
         hasAdditionalInfo ||
         hasCurrentAnswer ||
+        hasCtxTitle ||
         hasCtxInitialDescription ||
         hasCtxQAPairs ||
         hasCtxSummary ||
@@ -2476,11 +2476,13 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
       
       console.log('💾 Save & Exit - Content check:', {
         flowStage,
+        hasTitle,
         hasInitialDescription,
         hasQAPairs,
         hasSummary,
         hasAdditionalInfo,
         hasCurrentAnswer,
+        hasCtxTitle,
         hasCtxInitialDescription,
         hasCtxQAPairs,
         hasCtxSummary,
@@ -2524,8 +2526,7 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
         questionCount: qaPairs.length,
         // ✅ FIX: Ensure saved sessions are visible in Sorted Assistant
         initial_pending: false, // Mark as not pending (saved session)
-        session_promoted: true, // ✅ Mark as promoted so it appears in Sorted Assistant
-        sent_to_contact: false, // ✅ Explicitly mark as not sent (only set to true when first message is sent)
+        session_promoted: false, // Don't mark as promoted to keep it visible
       };
       
       // Stage 1 (welcome): Save title, description, taggedEntities
@@ -2537,13 +2538,14 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
       if (flowStage === 'qa') {
         contextPatch.qa_pairs = qaPairs;
         // ✅ Always save currentAnswer if it exists (even if not yet saved to qaPairs)
-        contextPatch.currentAnswer = currentAnswer || '';
+        if (currentAnswer.trim()) {
+          contextPatch.currentAnswer = currentAnswer;
+        }
         if (currentQuestion) {
           contextPatch.currentQuestion = currentQuestion;
           contextPatch.currentQuestionType = currentQuestionType;
           if (currentQuestionType === 'dropdown') {
-            contextPatch.currentOptions = currentOptions || [];
-            contextPatch.selectedOption = selectedOption;
+            contextPatch.currentOptions = currentOptions;
           }
         }
       }
@@ -2560,9 +2562,6 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
         // ✅ Always save additionalInfo if it exists (even if empty, to preserve user's edits)
         contextPatch.additional_info = additionalInfo || '';
         contextPatch.additional_info_tags = additionalInfoTags || [];
-        // ✅ Save editing state if in editing mode
-        contextPatch.isEditingMode = isEditingMode;
-        contextPatch.isSummaryUnclear = isSummaryUnclear;
       }
       
       // Stage 4 (ready): Save everything from Stage 3
@@ -2577,9 +2576,6 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
         // ✅ Always save additionalInfo if it exists (even if empty, to preserve user's edits)
         contextPatch.additional_info = additionalInfo || '';
         contextPatch.additional_info_tags = additionalInfoTags || [];
-        // ✅ Save editing state if in editing mode
-        contextPatch.isEditingMode = isEditingMode;
-        contextPatch.isSummaryUnclear = isSummaryUnclear;
       }
       
       // Determine last_message based on stage
@@ -2704,7 +2700,6 @@ for (const [idx, pair] of qaPairs.entries()) {
         currentAnswer: '',
         selectedOption: null,
         chat_title: normalizedTitle,
-        session_promoted: true, // ✅ Always ensure session_promoted is true
       }
     );
 
@@ -2938,7 +2933,6 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
           currentQuestionType: 'text',
           currentAnswer: '',
           selectedOption: null,
-          session_promoted: true, // ✅ Always ensure session_promoted is true
           flowStage: 'qa',
           questionCount: questionCount + 1,
           taggedEntities,
@@ -3550,7 +3544,6 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
           taggedEntities,
           chat_title: normalizedTitle,
           key_points: keyPoints,
-          session_promoted: true, // ✅ Always ensure session_promoted is true
         }
       );
 
@@ -4165,7 +4158,6 @@ CRITICAL:
             additional_info_tags: additionalInfoTags,
             flowStage: 'summary',
             questionCount: editedQAPairs.length,
-            session_promoted: true, // ✅ Always ensure session_promoted is true
             taggedEntities: [...taggedEntities, ...additionalInfoTags],
           }
         );
@@ -4273,7 +4265,7 @@ Respond ONLY with valid JSON:
         {
           is_resolved: true,
           session_name: normalizedTitle,
-          // ✅ Remove context_data from fields - let it be handled by contextPatch
+          context_data: { ...contextDataRef.current, session_promoted: true },
         },
         {
           summary,
@@ -4281,7 +4273,7 @@ Respond ONLY with valid JSON:
           qa_pairs: qaPairs,
           initial_description: initialDescription,
           session_promoted: true,
-          sent_to_contact: false, // ✅ Explicitly set to false (will be set to true when first message is sent)
+          sent_to_contact: false, // ✅ Explicitly keep as false - will be set to true when first message is sent
           chat_title: normalizedTitle,
         }
       );
