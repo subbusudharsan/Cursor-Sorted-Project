@@ -3,14 +3,15 @@ import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   TouchableOpacity,
   Switch,
   Alert,
   Animated,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
+import Constants from 'expo-constants';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
 import { ArrowLeft, Shield, Eye, EyeOff, Lock, Trash2, Download } from 'lucide-react-native';
@@ -28,7 +29,8 @@ interface PrivacySettings {
 }
 
 export default function PrivacySecurityScreen() {
-  const { user } = useAuth();
+  const { user, signOut } = useAuth();
+  const insets = useSafeAreaInsets();
   const [settings, setSettings] = useState<PrivacySettings>({
     profile_visibility: 'contacts_only',
     show_online_status: true,
@@ -180,10 +182,92 @@ export default function PrivacySecurityScreen() {
                   style: 'destructive',
                   onPress: async () => {
                     try {
-                      showNotification('info', 'Account Deletion', 'Your account deletion request has been submitted.');
-                      // In a real implementation, this would trigger account deletion
-                    } catch (error) {
-                      showNotification('error', 'Deletion Failed', 'Could not process account deletion.');
+                      setLoading(true);
+                      
+                      if (!user?.id) {
+                        showNotification('error', 'Error', 'User not found');
+                        setLoading(false);
+                        return;
+                      }
+
+                      console.log('🗑️ Starting account deletion for user:', user.id);
+
+                      // Call the edge function - it handles all cleanup and auth deletion
+                      console.log('🔐 Calling delete-user-account edge function');
+                      console.log('📤 Request body:', JSON.stringify({ userId: user.id }));
+
+                      // Get the anon key for Authorization header
+                      // Even though the function has auth: false, Supabase runtime may still require the header
+                      const getEnvVariable = (key: string): string => {
+                        if (process.env[key]) return process.env[key]!;
+                        if (Constants.expoConfig?.extra?.[key]) return Constants.expoConfig.extra[key];
+                        if (Constants.manifest?.extra?.[key]) return Constants.manifest.extra[key];
+                        if (Constants.manifest2?.extra?.expoClient?.extra?.[key])
+                          return Constants.manifest2.extra.expoClient.extra[key];
+                        return '';
+                      };
+                      const anonKey = getEnvVariable('EXPO_PUBLIC_SUPABASE_ANON_KEY');
+
+                      const response = await fetch(
+                        `${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/delete-user-account`,
+                        {
+                          method: "POST",
+                          headers: {
+                            "Content-Type": "application/json",
+                            "Authorization": `Bearer ${anonKey}`,
+                          },
+                          body: JSON.stringify({ userId: user.id }),
+                        }
+                      );
+
+                      const responseText = await response.text();
+                      console.log('📥 Response status:', response.status);
+                      console.log('📥 Response body:', responseText);
+
+                      if (response.status !== 200) {
+                        const errorMsg = responseText || `Failed to delete account (status: ${response.status})`;
+                        console.error('❌ Edge function returned non-200 status:', response.status);
+                        console.error('❌ Error response body:', errorMsg);
+                        throw new Error(errorMsg);
+                      }
+
+                      let result;
+                      try {
+                        result = JSON.parse(responseText);
+                      } catch (parseError) {
+                        console.error('❌ Failed to parse response as JSON:', parseError);
+                        throw new Error('Invalid response from server. Please try again.');
+                      }
+
+                      if (!result?.success) {
+                        const errorMsg = result?.error || 'Failed to delete account';
+                        console.error('❌ Account deletion failed:', result);
+                        throw new Error(errorMsg);
+                      }
+
+                      console.log('✅ Account deleted successfully');
+
+                      // Show success notification
+                      showNotification('success', 'Account Deleted', 'Your account has been permanently deleted.');
+                      
+                      // Sign out and navigate immediately
+                      try {
+                        await signOut();
+                        console.log('✅ Signed out successfully');
+                      } catch (signOutError) {
+                        console.warn('⚠️ Sign out error (continuing anyway):', signOutError);
+                        // Continue with navigation even if signOut fails
+                      }
+                      
+                      // Navigate to landing page
+                      router.replace('/');
+                      
+                    } catch (error: any) {
+                      console.error('❌ Error deleting account:', error);
+                      const errorMessage = error?.message || 'Could not delete account. Please try again.';
+                      showNotification('error', 'Deletion Failed', errorMessage);
+                    } finally {
+                      setLoading(false);
                     }
                   },
                 },
@@ -212,12 +296,12 @@ export default function PrivacySecurityScreen() {
         {...notification}
         onDismiss={() => setNotification(prev => ({ ...prev, visible: false }))}
       />
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['left', 'right']}>
         <Animated.View style={[styles.content, { opacity: fadeAnim }]}>
           {/* Header */}
-          <View style={styles.header}>
+          <View style={[styles.header, { paddingTop: Math.max(insets.top + Spacing.sm, Spacing.lg) }]}>
             <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-              <ArrowLeft size={24} color={Colors.text.secondary} />
+              <ArrowLeft size={20} color={Colors.text.secondary} />
             </TouchableOpacity>
             <Text style={styles.headerTitle}>Privacy & Security</Text>
             <View style={styles.placeholder} />
@@ -235,7 +319,7 @@ export default function PrivacySecurityScreen() {
               <View style={styles.settingCard}>
                 <View style={styles.settingHeader}>
                   <View style={styles.settingIcon}>
-                    <Eye size={20} color={Colors.primary[500]} />
+                    <Eye size={16} color={Colors.primary[500]} />
                   </View>
                   <View style={styles.settingInfo}>
                     <Text style={styles.settingTitle}>Profile Visibility</Text>
@@ -279,7 +363,7 @@ export default function PrivacySecurityScreen() {
               <View style={styles.toggleCard}>
                 <View style={styles.toggleHeader}>
                   <View style={styles.settingIcon}>
-                    <Shield size={20} color={Colors.success[500]} />
+                    <Shield size={16} color={Colors.success[500]} />
                   </View>
                   <View style={styles.settingInfo}>
                     <Text style={styles.settingTitle}>Show Online Status</Text>
@@ -300,7 +384,7 @@ export default function PrivacySecurityScreen() {
               <View style={styles.toggleCard}>
                 <View style={styles.toggleHeader}>
                   <View style={styles.settingIcon}>
-                    <Lock size={20} color={Colors.warning[500]} />
+                    <Lock size={16} color={Colors.warning[500]} />
                   </View>
                   <View style={styles.settingInfo}>
                     <Text style={styles.settingTitle}>Allow Contact Invites</Text>
@@ -326,7 +410,7 @@ export default function PrivacySecurityScreen() {
               <View style={styles.toggleCard}>
                 <View style={styles.toggleHeader}>
                   <View style={styles.settingIcon}>
-                    <Shield size={20} color={Colors.secondary[500]} />
+                    <Shield size={16} color={Colors.secondary[500]} />
                   </View>
                   <View style={styles.settingInfo}>
                     <Text style={styles.settingTitle}>Usage Analytics</Text>
@@ -347,7 +431,7 @@ export default function PrivacySecurityScreen() {
               <View style={styles.toggleCard}>
                 <View style={styles.toggleHeader}>
                   <View style={styles.settingIcon}>
-                    <Shield size={20} color={Colors.error[500]} />
+                    <Shield size={16} color={Colors.error[500]} />
                   </View>
                   <View style={styles.settingInfo}>
                     <Text style={styles.settingTitle}>Crash Reporting</Text>
@@ -372,7 +456,7 @@ export default function PrivacySecurityScreen() {
               
               <TouchableOpacity style={styles.actionCard} onPress={exportData}>
                 <View style={styles.actionIcon}>
-                  <Download size={24} color={Colors.primary[500]} />
+                  <Download size={20} color={Colors.primary[500]} />
                 </View>
                 <View style={styles.actionContent}>
                   <Text style={styles.actionTitle}>Export My Data</Text>
@@ -384,7 +468,7 @@ export default function PrivacySecurityScreen() {
 
               <TouchableOpacity style={[styles.actionCard, styles.dangerCard]} onPress={deleteAccount}>
                 <View style={[styles.actionIcon, styles.dangerIcon]}>
-                  <Trash2 size={24} color={Colors.error[500]} />
+                  <Trash2 size={20} color={Colors.error[500]} />
                 </View>
                 <View style={styles.actionContent}>
                   <Text style={[styles.actionTitle, styles.dangerText]}>Delete Account</Text>
@@ -397,7 +481,7 @@ export default function PrivacySecurityScreen() {
 
             {/* Security Information */}
             <View style={styles.infoCard}>
-              <Shield size={20} color={Colors.primary[500]} />
+              <Shield size={16} color={Colors.primary[500]} />
               <View style={styles.infoContent}>
                 <Text style={styles.infoTitle}>Your Data is Secure</Text>
                 <Text style={styles.infoText}>
@@ -436,16 +520,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.lg,
+    paddingHorizontal: Spacing.md,
+    paddingBottom: Spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: Colors.borderLight,
     backgroundColor: Colors.surfaceElevated,
     ...Shadows.small,
   },
   backButton: {
-    width: 40,
-    height: 40,
+    width: 36,
+    height: 36,
     borderRadius: BorderRadius.lg,
     backgroundColor: Colors.surface,
     justifyContent: 'center',
@@ -453,34 +537,35 @@ const styles = StyleSheet.create({
     ...Shadows.small,
   },
   headerTitle: {
-    fontSize: Typography.fontSize.xl,
+    fontSize: Typography.fontSize.lg,
     fontWeight: Typography.fontWeight.bold,
     color: Colors.text.primary,
   },
   placeholder: {
-    width: 40,
+    width: 36,
   },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
-    padding: Spacing.xl,
-    paddingBottom: Spacing.xxxl,
+    paddingHorizontal: Spacing.md,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.xl,
   },
   section: {
-    marginBottom: Spacing.xxxl,
+    marginBottom: Spacing.lg,
   },
   sectionTitle: {
-    fontSize: Typography.fontSize.lg,
+    fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.bold,
     color: Colors.text.primary,
-    marginBottom: Spacing.lg,
+    marginBottom: Spacing.sm,
   },
   settingCard: {
     backgroundColor: Colors.surfaceElevated,
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.lg,
-    marginBottom: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    marginBottom: Spacing.sm,
     borderWidth: 1,
     borderColor: Colors.borderLight,
     ...Shadows.small,
@@ -488,30 +573,30 @@ const styles = StyleSheet.create({
   settingHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: Spacing.lg,
+    marginBottom: Spacing.sm,
   },
   settingIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: BorderRadius.lg,
+    width: 32,
+    height: 32,
+    borderRadius: BorderRadius.md,
     backgroundColor: Colors.primary[50],
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: Spacing.md,
+    marginRight: Spacing.sm,
   },
   settingInfo: {
     flex: 1,
   },
   settingTitle: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.text.primary,
-    marginBottom: Spacing.xs,
+    marginBottom: 2,
   },
   settingDescription: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
-    lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
+    lineHeight: Typography.fontSize.xs * 1.3,
   },
   radioGroup: {
     gap: Spacing.sm,
@@ -519,7 +604,7 @@ const styles = StyleSheet.create({
   radioOption: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: Spacing.md,
+    padding: Spacing.sm,
     borderRadius: BorderRadius.lg,
     borderWidth: 1,
     borderColor: Colors.borderLight,
@@ -552,20 +637,21 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   radioLabel: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.medium,
     color: Colors.text.primary,
-    marginBottom: Spacing.xs,
+    marginBottom: 2,
   },
   radioDescription: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
+    lineHeight: Typography.fontSize.xs * 1.3,
   },
   toggleCard: {
     backgroundColor: Colors.surfaceElevated,
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.lg,
-    marginBottom: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    marginBottom: Spacing.sm,
     borderWidth: 1,
     borderColor: Colors.borderLight,
     ...Shadows.small,
@@ -578,9 +664,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: Colors.surfaceElevated,
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.lg,
-    marginBottom: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    marginBottom: Spacing.sm,
     borderWidth: 1,
     borderColor: Colors.borderLight,
     ...Shadows.small,
@@ -590,13 +676,13 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.error[50],
   },
   actionIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: BorderRadius.lg,
+    width: 40,
+    height: 40,
+    borderRadius: BorderRadius.md,
     backgroundColor: Colors.primary[50],
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: Spacing.lg,
+    marginRight: Spacing.md,
   },
   dangerIcon: {
     backgroundColor: Colors.error[100],
@@ -605,42 +691,42 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   actionTitle: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.text.primary,
-    marginBottom: Spacing.xs,
+    marginBottom: 2,
   },
   dangerText: {
     color: Colors.error[600],
   },
   actionDescription: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
-    lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
+    lineHeight: Typography.fontSize.xs * 1.3,
   },
   infoCard: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     backgroundColor: Colors.primary[50],
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.lg,
-    marginTop: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    marginTop: Spacing.sm,
     borderWidth: 1,
     borderColor: Colors.primary[200],
   },
   infoContent: {
     flex: 1,
-    marginLeft: Spacing.md,
+    marginLeft: Spacing.sm,
   },
   infoTitle: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.primary[700],
-    marginBottom: Spacing.xs,
+    marginBottom: 2,
   },
   infoText: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.primary[600],
-    lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
+    lineHeight: Typography.fontSize.xs * 1.3,
   },
 });

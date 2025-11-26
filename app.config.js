@@ -33,7 +33,7 @@ module.exports = {
         backgroundColor: "#FFFFFF"
       },
       package: "com.sorted.app",
-      versionCode: 1,
+      versionCode: 2,
       permissions: [
         "android.permission.CAMERA",
         "android.permission.READ_EXTERNAL_STORAGE",

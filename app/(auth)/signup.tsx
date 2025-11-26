@@ -40,6 +40,7 @@ export default function SignUpScreen() {
   const [loading, setLoading] = useState(false);
   const [passwordTouched, setPasswordTouched] = useState(false);
   const [confirmTouched, setConfirmTouched] = useState(false);
+  const [showVerifyModal, setShowVerifyModal] = useState(false);
   const [notification, setNotification] = useState<{
     visible: boolean;
     type: 'success' | 'error' | 'info' | 'warning';
@@ -178,11 +179,8 @@ export default function SignUpScreen() {
       
       // Check if user was created successfully
       if (result?.user) {
-        // Navigate to sign-in page
-        showNotification('success', 'Account Created!', 'Please check your email to verify your account, then sign in.');
-        setTimeout(() => {
-          router.replace('/(auth)/signin');
-        }, 1500);
+        // Show verification modal instead of notification
+        setShowVerifyModal(true);
       } else {
         throw new Error('Failed to create account. Please try again.');
       }
@@ -503,6 +501,29 @@ export default function SignUpScreen() {
             </View>
         </Animated.View>
       </ScrollView>
+      
+      {/* Email Verification Modal */}
+      {showVerifyModal && (
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>Account created</Text>
+              <Text style={styles.modalMessage}>
+                Check your inbox and verify your email before signing in.
+              </Text>
+              <TouchableOpacity
+                style={styles.modalButton}
+                onPress={() => {
+                  setShowVerifyModal(false);
+                  router.replace('/(auth)/signin');
+                }}
+              >
+                <Text style={styles.modalButtonText}>OK</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      )}
     </KeyboardSafeView>
   );
 }
@@ -825,5 +846,60 @@ const styles = StyleSheet.create({
   countryText: {
     fontSize: Typography.fontSize.base,
     color: Colors.text.primary,
+  },
+  // Modal styles
+  modalOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1000,
+  },
+  modalContainer: {
+    width: '85%',
+    maxWidth: 400,
+    alignItems: 'center',
+  },
+  modalContent: {
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.xl,
+    padding: Spacing.xl,
+    alignItems: 'center',
+    ...Shadows.large,
+    borderWidth: 2,
+    borderColor: Colors.primary[200],
+  },
+  modalTitle: {
+    fontSize: Typography.fontSize.xl,
+    fontWeight: Typography.fontWeight.bold,
+    color: Colors.text.primary,
+    marginBottom: Spacing.md,
+    textAlign: 'center',
+  },
+  modalMessage: {
+    fontSize: Typography.fontSize.base,
+    color: Colors.text.secondary,
+    textAlign: 'center',
+    marginBottom: Spacing.xl,
+    lineHeight: Typography.lineHeight.normal * Typography.fontSize.base,
+    paddingHorizontal: Spacing.sm,
+  },
+  modalButton: {
+    backgroundColor: Colors.primary[500],
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    minWidth: 120,
+    alignItems: 'center',
+    ...Shadows.medium,
+  },
+  modalButtonText: {
+    fontSize: Typography.fontSize.base,
+    fontWeight: Typography.fontWeight.semibold,
+    color: '#FFFFFF',
   },
 });

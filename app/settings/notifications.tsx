@@ -3,13 +3,13 @@ import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   TouchableOpacity,
   Switch,
   Alert,
   Animated,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
@@ -51,6 +51,7 @@ interface NotificationSettings {
 
 export default function NotificationsSettingsScreen() {
   const { user } = useAuth();
+  const insets = useSafeAreaInsets();
   const [settings, setSettings] = useState<NotificationSettings>({
     message_notifications: true,
     message_sound: true,
@@ -297,7 +298,7 @@ export default function NotificationsSettingsScreen() {
         {...notification}
         onDismiss={() => setNotification(prev => ({ ...prev, visible: false }))}
       />
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={styles.container} edges={['left', 'right']}>
         <Animated.View 
           style={[
             styles.content, 
@@ -308,7 +309,7 @@ export default function NotificationsSettingsScreen() {
           ]}
         >
           {/* Header */}
-          <View style={styles.header}>
+          <View style={[styles.header, { paddingTop: Math.max(insets.top + Spacing.sm, Spacing.lg) }]}>
             <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
               <ArrowLeft size={24} color={Colors.text.secondary} />
             </TouchableOpacity>
@@ -325,7 +326,7 @@ export default function NotificationsSettingsScreen() {
             <View style={styles.section}>
               <View style={styles.sectionHeader}>
                 <View style={[styles.sectionIcon, styles.dndIcon]}>
-                  <Volume2 size={20} color={Colors.warning[600]} />
+                  <Volume2 size={16} color={Colors.warning[600]} />
                 </View>
                 <View style={styles.sectionInfo}>
                   <Text style={styles.sectionTitle}>Do Not Disturb</Text>
@@ -347,7 +348,7 @@ export default function NotificationsSettingsScreen() {
             {renderToggleSection(
               'Messages',
               'Notifications for chat messages and conversations',
-              <MessageCircle size={20} color={Colors.primary[500]} />,
+              <MessageCircle size={16} color={Colors.primary[500]} />,
               [
                 {
                   key: 'message_notifications',
@@ -374,7 +375,7 @@ export default function NotificationsSettingsScreen() {
             {renderToggleSection(
               'Contacts',
               'Notifications for contact invites and connections',
-              <Users size={20} color={Colors.success[500]} />,
+              <Users size={16} color={Colors.success[500]} />,
               [
                 {
                   key: 'contact_invites',
@@ -401,7 +402,7 @@ export default function NotificationsSettingsScreen() {
             {renderToggleSection(
               'AI Assistant',
               'Notifications from your AI conversation partner',
-              <Bot size={20} color={Colors.secondary[500]} />,
+              <Bot size={16} color={Colors.secondary[500]} />,
               [
                 {
                   key: 'ai_responses',
@@ -428,7 +429,7 @@ export default function NotificationsSettingsScreen() {
             {renderToggleSection(
               'Soulroom',
               'Notifications for personal reflection and wellness',
-              <Heart size={20} color={Colors.error[400]} />,
+              <Heart size={16} color={Colors.error[400]} />,
               [
                 {
                   key: 'soulroom_reminders',
@@ -449,7 +450,7 @@ export default function NotificationsSettingsScreen() {
             {renderToggleSection(
               'Email Notifications',
               'Important updates sent to your email',
-              <Mail size={20} color={Colors.warning[500]} />,
+              <Mail size={16} color={Colors.warning[500]} />,
               [
                 {
                   key: 'email_important',
@@ -470,7 +471,7 @@ export default function NotificationsSettingsScreen() {
             <View style={styles.section}>
               <View style={styles.sectionHeader}>
                 <View style={styles.sectionIcon}>
-                  <Smartphone size={20} color={Colors.neutral[600]} />
+                  <Smartphone size={16} color={Colors.neutral[600]} />
                 </View>
                 <View style={styles.sectionInfo}>
                   <Text style={styles.sectionTitle}>Quiet Hours</Text>
@@ -506,7 +507,7 @@ export default function NotificationsSettingsScreen() {
 
             {/* Information Note */}
             <View style={styles.infoCard}>
-              <Bell size={20} color={Colors.primary[500]} />
+              <Bell size={16} color={Colors.primary[500]} />
               <View style={styles.infoContent}>
                 <Text style={styles.infoTitle}>About Notifications</Text>
                 <Text style={styles.infoText}>
@@ -554,16 +555,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.lg,
+    paddingHorizontal: Spacing.md,
+    paddingBottom: Spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: Colors.borderLight,
     backgroundColor: Colors.surfaceElevated,
     ...Shadows.small,
   },
   backButton: {
-    width: 40,
-    height: 40,
+    width: 36,
+    height: 36,
     borderRadius: BorderRadius.lg,
     backgroundColor: Colors.surface,
     justifyContent: 'center',
@@ -571,25 +572,26 @@ const styles = StyleSheet.create({
     ...Shadows.small,
   },
   headerTitle: {
-    fontSize: Typography.fontSize.xl,
+    fontSize: Typography.fontSize.lg,
     fontWeight: Typography.fontWeight.bold,
     color: Colors.text.primary,
   },
   placeholder: {
-    width: 40,
+    width: 36,
   },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
-    padding: Spacing.xl,
-    paddingBottom: Spacing.xxxl,
+    paddingHorizontal: Spacing.md,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.xl,
   },
   section: {
     backgroundColor: Colors.surfaceElevated,
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.lg,
-    marginBottom: Spacing.lg,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    marginBottom: Spacing.md,
     borderWidth: 1,
     borderColor: Colors.borderLight,
     ...Shadows.small,
@@ -597,16 +599,16 @@ const styles = StyleSheet.create({
   sectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: Spacing.md,
+    marginBottom: Spacing.sm,
   },
   sectionIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: BorderRadius.lg,
+    width: 32,
+    height: 32,
+    borderRadius: BorderRadius.md,
     backgroundColor: Colors.primary[50],
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: Spacing.md,
+    marginRight: Spacing.sm,
   },
   dndIcon: {
     backgroundColor: Colors.warning[50],
@@ -615,26 +617,26 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   sectionTitle: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.text.primary,
-    marginBottom: Spacing.xs,
+    marginBottom: 2,
   },
   sectionDescription: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
-    lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
+    lineHeight: Typography.fontSize.xs * 1.3,
   },
   toggleContainer: {
     borderTopWidth: 1,
     borderTopColor: Colors.borderLight,
-    paddingTop: Spacing.md,
+    paddingTop: Spacing.sm,
   },
   toggleItem: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: Spacing.md,
+    paddingVertical: Spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: Colors.borderLight,
   },
@@ -646,19 +648,19 @@ const styles = StyleSheet.create({
     marginRight: Spacing.md,
   },
   toggleLabel: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.medium,
     color: Colors.text.primary,
-    marginBottom: Spacing.xs,
+    marginBottom: 2,
   },
   toggleDescription: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
-    lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
+    lineHeight: Typography.fontSize.xs * 1.3,
   },
   quietHoursContainer: {
-    marginTop: Spacing.md,
-    paddingTop: Spacing.md,
+    marginTop: Spacing.sm,
+    paddingTop: Spacing.sm,
     borderTopWidth: 1,
     borderTopColor: Colors.borderLight,
   },
@@ -666,50 +668,50 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: Spacing.sm,
+    paddingVertical: Spacing.xs,
   },
   timeLabel: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     color: Colors.text.secondary,
     fontWeight: Typography.fontWeight.medium,
   },
   timeValue: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     color: Colors.text.primary,
     fontWeight: Typography.fontWeight.semibold,
   },
   quietHoursNote: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.tertiary,
     fontStyle: 'italic',
-    marginTop: Spacing.sm,
+    marginTop: Spacing.xs,
     textAlign: 'center',
   },
   infoCard: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     backgroundColor: Colors.primary[50],
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.lg,
-    marginTop: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    marginTop: Spacing.sm,
     borderWidth: 1,
     borderColor: Colors.primary[200],
   },
   infoContent: {
     flex: 1,
-    marginLeft: Spacing.md,
+    marginLeft: Spacing.sm,
   },
   infoTitle: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.primary[700],
-    marginBottom: Spacing.xs,
+    marginBottom: 2,
   },
   infoText: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.primary[600],
-    lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
-    marginBottom: Spacing.md,
+    lineHeight: Typography.fontSize.xs * 1.3,
+    marginBottom: Spacing.sm,
   },
   testButton: {
     backgroundColor: Colors.primary[500],

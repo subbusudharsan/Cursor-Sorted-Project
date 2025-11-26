@@ -20,6 +20,9 @@
       "distribution": "store",
       "android": {
         "buildType": "app-bundle"
+      },
+      "env": {
+       
       }
     }
   },
@@ -32,4 +35,3 @@
     }
   }
 }
-

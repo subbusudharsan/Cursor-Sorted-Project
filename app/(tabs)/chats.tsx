@@ -65,6 +65,8 @@ function ChatsScreen() {
   const fadeAnim = React.useRef(new Animated.Value(0)).current;
   const [multiSelectMode, setMultiSelectMode] = useState(false);
   const [selectedContactIds, setSelectedContactIds] = useState<string[]>([]);
+  const profileRetryCount = React.useRef(0);
+  const MAX_PROFILE_RETRIES = 3;
 
   const welcomeName = userProfile?.nickname
     || userProfile?.first_name
@@ -88,17 +90,55 @@ function ChatsScreen() {
   }, []);
 
   const fetchUserProfile = useCallback(async () => {
+    if (!user?.id) return;
     try {
       const { data, error } = await supabase
         .from('profiles')
         .select('full_name, first_name, nickname')
-        .eq('id', user?.id)
-        .single();
+        .eq('id', user.id)
+        .maybeSingle();
 
-      if (error) throw error;
-      setUserProfile(data);
-    } catch (error) {
-      console.error('Error fetching user profile:', error);
+      if (error) {
+        // Handle PGRST116 (no rows) gracefully - profile might be creating
+        if (error.code === 'PGRST116') {
+          if (profileRetryCount.current < MAX_PROFILE_RETRIES) {
+            profileRetryCount.current++;
+            console.log(`ℹ️ Profile not found yet, retrying (${profileRetryCount.current}/${MAX_PROFILE_RETRIES})...`);
+            // Retry after a short delay in case profile is being created
+            setTimeout(() => {
+              fetchUserProfile();
+            }, 1000);
+            return;
+          } else {
+            console.log('ℹ️ Profile not found after retries, user might be new');
+            setUserProfile(null);
+            return;
+          }
+        }
+        throw error;
+      }
+      
+      if (data) {
+        profileRetryCount.current = 0; // Reset retry count on success
+        setUserProfile(data);
+      } else {
+        // Profile doesn't exist yet - retry after delay
+        if (profileRetryCount.current < MAX_PROFILE_RETRIES) {
+          profileRetryCount.current++;
+          console.log(`ℹ️ Profile not found, retrying (${profileRetryCount.current}/${MAX_PROFILE_RETRIES})...`);
+          setTimeout(() => {
+            fetchUserProfile();
+          }, 1000);
+        } else {
+          console.log('ℹ️ Profile not found after retries, user might be new');
+          setUserProfile(null);
+        }
+      }
+    } catch (error: any) {
+      // Only log non-PGRST116 errors
+      if (error?.code !== 'PGRST116') {
+        console.error('Error fetching user profile:', error);
+      }
     }
   }, [user?.id]);
 
@@ -508,7 +548,8 @@ setContactChats(finalChats);
 
   return (
     <SafeAreaView style={styles.container}>
-      <Animated.View style={[styles.content, { opacity: fadeAnim, paddingTop: insets.top }]}> 
+      <Animated.View style={[styles.content, { opacity: fadeAnim }]}>
+
         {/* Centered content container */}
         <View style={styles.centeredContainer}>
           {/* Title and Notifications */}
@@ -518,7 +559,7 @@ setContactChats(finalChats);
               style={styles.headerButton}
               onPress={handleNotificationsPress}
             >
-              <Bell size={20} color={Colors.primary[500]} />
+              <Bell size={20} color={Colors.secondary[500]} />
               {unreadCount > 0 && (
                 <View style={styles.notificationBadge}>
                   <Text style={styles.badgeText}>
@@ -739,10 +780,13 @@ const styles = StyleSheet.create({
   },
   centeredContainer: {
     flex: 1,
-    justifyContent: 'center',
     paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.lg,
+    paddingTop: 40,
+    paddingBottom: Spacing.md,
   },
+  
+  
+  
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -760,11 +804,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: Spacing.lg,
   },
+
   title: {
-    fontSize: Typography.fontSize['2xl'],
+    fontSize: Typography.fontSize['2xl'] + 4,
     fontWeight: Typography.fontWeight.bold,
-    color: '#0288D1',
+    color: '#FFACC4', // coral
+    letterSpacing: 0.5,
+  
+    textShadowColor: 'rgba(110, 200, 245, 0.8)', // sky blue
+    textShadowOffset: { width: 1, height: 1 },
+    textShadowRadius: 3,
   },
+  
   welcomeSection: {
     alignItems: 'center',
     marginBottom: Spacing.xl,
@@ -902,6 +953,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: Spacing.lg,
   },
+
+  
   emptyTitle: {
     fontSize: Typography.fontSize.lg,
     fontWeight: Typography.fontWeight.semibold,

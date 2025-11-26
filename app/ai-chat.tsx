@@ -61,6 +61,21 @@ type FlowStage = "welcome" | "qa" | "summary" | "ready";
 type TagStage = 'description' | 'answer' | 'additionalInfo' | 'editAnswer';
 type TypingTagMatch = ReturnType<typeof getLastTypingTag>;
 
+// OutlineText component for stage titles with dark-blue outline
+const OutlineText = ({ children, style, outlineStyle }: { children: React.ReactNode; style?: any; outlineStyle?: any }) => {
+  return (
+    <View style={{ position: 'relative', alignItems: 'center' }}>
+      {/* 4 outline layers behind the text */}
+      <Text style={[style, outlineStyle, { position: 'absolute', top: -1, left: -1 }]}>{children}</Text>
+      <Text style={[style, outlineStyle, { position: 'absolute', top: -1, left: 1 }]}>{children}</Text>
+      <Text style={[style, outlineStyle, { position: 'absolute', top: 1, left: -1 }]}>{children}</Text>
+      <Text style={[style, outlineStyle, { position: 'absolute', top: 1, left: 1 }]}>{children}</Text>
+      {/* Main yellow text on top */}
+      <Text style={style}>{children}</Text>
+    </View>
+  );
+};
+
 function AIChatScreen() {
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
@@ -95,6 +110,9 @@ function AIChatScreen() {
   const [currentQuestionType, setCurrentQuestionType] = useState<"text" | "dropdown">("text");
   const [currentOptions, setCurrentOptions] = useState<string[]>([]);
   const [currentAnswer, setCurrentAnswer] = useState("");
+  // ✅ NEW: Store pre-generated questions array
+  const [preGeneratedQuestions, setPreGeneratedQuestions] = useState<string[]>([]);
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState<number>(0);
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [initializing, setInitializing] = useState(true);
@@ -665,13 +683,17 @@ Context (brief):
       if (comingBack && !hasSent) {
         kickedOff = true;
         setShowReturnFromChatBanner(String(skipReturnBannerValue || '') === '1' ? false : true);
+        // ✅ FIX: Ensure loading is false so buttons are clickable
+        setLoading(false);
         if (chatIdValue) {
           (async () => {
             await loadExistingChat();
             setFlowStage('ready');
+            setLoading(false); // ✅ Ensure loading is false after load completes
           })();
         } else {
           setFlowStage('ready');
+          setLoading(false); // ✅ Ensure loading is false
         }
         // Skip initialization to avoid jumping back to Stage 1
       } else if (mode === 'continue' && chatIdValue) {
@@ -1861,11 +1883,25 @@ const inferEntityCategory = (name: string): string => {
         .eq('id', chatIdValue)
         .eq('user_id', user.id)
         .eq('chat_type', 'ai_assistant')
-        .single();
+        .maybeSingle();
 
-      if (chatError || !chatData) {
+      if (chatError) {
+        // Handle PGRST116 (no rows) gracefully
+        if (chatError.code === 'PGRST116') {
+          console.log('ℹ️ Chat not found, redirecting to AI Assistant');
+          setInitializing(false);
+          router.push('/ai-assistant');
+          return;
+        }
         console.error('❌ Failed to load chat:', chatError);
         throw new Error('Chat session not found');
+      }
+
+      if (!chatData) {
+        console.log('ℹ️ Chat not found, redirecting to AI Assistant');
+        setInitializing(false);
+        router.push('/ai-assistant');
+        return;
       }
 
       console.log('✅ Chat data loaded:', chatData);
@@ -2046,6 +2082,7 @@ const inferEntityCategory = (name: string): string => {
       router.push('/ai-assistant');
     } finally {
       setInitializing(false);
+      setLoading(false); // ✅ Also clear loading state to ensure buttons are clickable
     }
   };
 
@@ -2194,8 +2231,10 @@ const inferEntityCategory = (name: string): string => {
     );
   };
 
-  const generateFirstQuestion = async () => {
+  // ✅ NEW: Generate all 5 questions at once with strong validation
+  const generateAllQuestions = async () => {
     try {
+      setLoading(true);
       const tagContext = taggedEntities.length > 0
         ? `\n\nPeople mentioned: ${taggedEntities.map(e => `${e.entity_name || e.name} (${e.type})`).join(', ')}`
         : '';
@@ -2213,14 +2252,22 @@ const inferEntityCategory = (name: string): string => {
 You already know the following from what they said:
 "${initialDescription}"${tagContext}${thirdPersonContext}
 
-📌 Instructions:
+📌 CRITICAL INSTRUCTIONS:
+- Generate EXACTLY 5 questions that explore DIFFERENT aspects of the issue
+- Each question must be COMPLETELY different from the others - not just name variations or slight rewordings
+- Questions should explore different dimensions:
+  * Question 1: Emotions/Feelings (how they feel about it)
+  * Question 2: Facts/Details (specific information not yet mentioned)
+  * Question 3: Intentions/Goals (what they want to achieve)
+  * Question 4: Outcomes/Desired Results (how they want it to end)
+  * Question 5: Relationships/Context (involvement of others or background)
+${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${thirdPersonEntities.map((e: any) => e.entity_name || e.name).join(', ')}). Include questions about their role, relationship, or involvement, but make each question explore a DIFFERENT aspect.` : ''}
 - Do NOT ask about things already mentioned (who, where, when, event type, relationship, etc.)
-- Ask only what is *missing* or *emotionally unclear* — like feelings, intentions, or next steps.
-${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${thirdPersonEntities.map((e: any) => e.entity_name || e.name).join(', ')}). You MUST ask a question about one of these third parties - their role, relationship, or what happened involving them. This is important for context.` : ''}
-- Avoid repeating or obvious questions.
-- Ask ONLY ONE question. Do NOT ask multiple questions in a single response. Ask just ONE short, natural question (5–8 words max).
-- Keep your tone caring and human, not robotic.`;
-
+- Each question must be a SINGLE sentence, 6-10 words, medium length
+- Do NOT generate questions like "What does X say?" and "What does Y say?" - these are too similar
+- Ensure questions ask about DIFFERENT topics, not just different people
+- Keep tone caring and human, not robotic
+- Return ONLY the 5 questions, one per line, numbered 1-5`;
 
       const response = await fetch(CLAUDE_EDGE_FUNCTION_URL, {
         method: "POST",
@@ -2230,29 +2277,104 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
         },
         body: JSON.stringify({
           model: "claude-3-5-haiku-20241022",
-          max_tokens: 100,
+          max_tokens: 300,
           system: systemPrompt,
           messages: [
-            { role: "user", content: initialDescription },
+            { role: "user", content: "Generate 5 completely different questions, one per line, numbered 1-5." },
           ],
         }),
       });
 
       const result = await response.json();
+      
+      if (!result?.content) {
+        throw new Error("No content in response");
+      }
 
-      if (result?.content) {
-        setCurrentQuestion(result.content);
+      // Parse the response to extract questions
+      const content = result.content.trim();
+      const lines = content.split('\n').filter((line: string) => line.trim().length > 0);
+      
+      let questions: string[] = [];
+      for (const line of lines) {
+        // Remove numbering (1., 2., etc.) and extract question
+        const cleaned = line.replace(/^\d+[\.\)]\s*/, '').trim();
+        if (cleaned.endsWith('?')) {
+          questions.push(cleaned);
+        } else if (cleaned.length > 0) {
+          // Add ? if missing
+          questions.push(cleaned + '?');
+        }
+      }
+
+      // Validate and filter questions
+      const validQuestions: string[] = [];
+      for (const q of questions) {
+        const sanitized = sanitizeQuestion(q);
+        const finalQ = sanitized.endsWith('?') ? sanitized : sanitized + '?';
+        
+        // Check word count and single question
+        if (
+          countWords(finalQ) <= MAX_STAGE2_QUESTION_WORDS &&
+          countWords(finalQ) >= 4 && // Minimum 4 words
+          isSingleQuestion(finalQ) &&
+          isDistinctFromArray(finalQ, validQuestions) // Check against already accepted questions
+        ) {
+          validQuestions.push(finalQ);
+        }
+      }
+
+      // If we don't have 5 valid questions, use fallbacks for missing ones
+      while (validQuestions.length < 5) {
+        const fallback = fallbackQuestions.find(
+          (q) => isDistinctFromArray(q, validQuestions)
+        );
+        if (fallback) {
+          validQuestions.push(fallback);
+        } else {
+          // Last resort: use a generic question
+          validQuestions.push("What matters most to you here?");
+          break;
+        }
+      }
+
+      // Store the first 5 questions
+      const finalQuestions = validQuestions.slice(0, 5);
+      setPreGeneratedQuestions(finalQuestions);
+      setCurrentQuestionIndex(0);
+      
+      // Show the first question
+      if (finalQuestions.length > 0) {
+        setCurrentQuestion(finalQuestions[0]);
         setCurrentQuestionType("text");
         setFlowStage("qa");
         setQuestionCount(1);
-        // Reset saved state for new question
         setCurrentAnswerSaved(false);
         setCurrentAnswerSavedText('');
       }
     } catch (err) {
-      console.error("Failed to generate question:", err);
-      Alert.alert("Error", "Failed to generate question. Please try again.");
+      console.error("Failed to generate questions:", err);
+      // Fallback to old method if batch generation fails
+      Alert.alert("Error", "Failed to generate questions. Please try again.");
+      // Use fallback questions
+      const fallbacks = fallbackQuestions.slice(0, 5);
+      setPreGeneratedQuestions(fallbacks);
+      setCurrentQuestionIndex(0);
+      if (fallbacks.length > 0) {
+        setCurrentQuestion(fallbacks[0]);
+        setCurrentQuestionType("text");
+        setFlowStage("qa");
+        setQuestionCount(1);
+      }
+    } finally {
+      setLoading(false);
     }
+  };
+
+  // ✅ KEEP: Old function for backward compatibility (not used in new flow)
+  const generateFirstQuestion = async () => {
+    // Redirect to new batch generation
+    await generateAllQuestions();
   };
 
   const handleDeleteQAPair = (index: number) => {
@@ -2624,14 +2746,26 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
     const answer = currentQuestionType === "dropdown" ? selectedOption : currentAnswer;
     const normalizedTitle = chatTitle.trim() || contextDataRef.current.chat_title || '';
 
-    // If answer is already saved, just generate next question
+    // If answer is already saved, just show next question
     if (currentAnswerSaved && currentQuestionType === "text" && currentAnswer.trim() === currentAnswerSavedText) {
       setCurrentAnswer("");
       setSelectedOption(null);
       setCurrentAnswerSaved(false);
       setCurrentAnswerSavedText('');
       
-      // Generate next question
+      // ✅ NEW: Use pre-generated questions if available
+      if (preGeneratedQuestions.length > 0 && currentQuestionIndex < preGeneratedQuestions.length - 1) {
+        const nextIndex = currentQuestionIndex + 1;
+        setCurrentQuestionIndex(nextIndex);
+        setCurrentQuestion(preGeneratedQuestions[nextIndex]);
+        setQuestionCount(nextIndex + 1);
+        setCurrentAnswerSaved(false);
+        setCurrentAnswerSavedText('');
+        scrollToEnd();
+        return;
+      }
+      
+      // Fallback to old method if pre-generated questions exhausted
       if (qaPairs.length >= 2) {
         await checkIfSufficientInfo(qaPairs);
       } else {
@@ -2718,6 +2852,19 @@ for (const [idx, pair] of qaPairs.entries()) {
       return;
     }
 
+    // ✅ NEW: Use pre-generated questions if available
+    if (preGeneratedQuestions.length > 0 && currentQuestionIndex < preGeneratedQuestions.length - 1) {
+      const nextIndex = currentQuestionIndex + 1;
+      setCurrentQuestionIndex(nextIndex);
+      setCurrentQuestion(preGeneratedQuestions[nextIndex]);
+      setQuestionCount(nextIndex + 1);
+      setCurrentAnswerSaved(false);
+      setCurrentAnswerSavedText('');
+      scrollToEnd();
+      return;
+    }
+
+    // Fallback to old method if pre-generated questions exhausted
     if (updatedPairs.length >= 2) {
       await checkIfSufficientInfo(updatedPairs);
     } else {
@@ -2781,10 +2928,30 @@ Minimum 2 questions answered. Consider sufficient if we understand: what happene
         }
       }
 
-      await generateNextQuestion(pairs);
+      // ✅ NEW: Use pre-generated questions if available
+      if (preGeneratedQuestions.length > 0 && currentQuestionIndex < preGeneratedQuestions.length - 1) {
+        const nextIndex = currentQuestionIndex + 1;
+        setCurrentQuestionIndex(nextIndex);
+        setCurrentQuestion(preGeneratedQuestions[nextIndex]);
+        setQuestionCount(nextIndex + 1);
+        setCurrentAnswerSaved(false);
+        setCurrentAnswerSavedText('');
+      } else {
+        await generateNextQuestion(pairs);
+      }
     } catch (err) {
       console.error("Failed to check info completeness:", err);
-      await generateNextQuestion(pairs);
+      // ✅ NEW: Use pre-generated questions if available
+      if (preGeneratedQuestions.length > 0 && currentQuestionIndex < preGeneratedQuestions.length - 1) {
+        const nextIndex = currentQuestionIndex + 1;
+        setCurrentQuestionIndex(nextIndex);
+        setCurrentQuestion(preGeneratedQuestions[nextIndex]);
+        setQuestionCount(nextIndex + 1);
+        setCurrentAnswerSaved(false);
+        setCurrentAnswerSavedText('');
+      } else {
+        await generateNextQuestion(pairs);
+      }
     } finally {
       setLoading(false);
     }
@@ -2813,8 +2980,57 @@ Minimum 2 questions answered. Consider sufficient if we understand: what happene
     const common = words1.filter((w) => words2.includes(w)).length;
     return common / Math.max(words1.length, words2.length);
   };
+  
+  // ✅ ENHANCED: Stronger similarity check that considers semantic meaning
+  const calculateStrongSimilarity = (a: string, b: string): number => {
+    const aLower = a.toLowerCase().trim();
+    const bLower = b.toLowerCase().trim();
+    
+    // Exact match
+    if (aLower === bLower) return 1.0;
+    
+    // Check for name variations (e.g., "Subbu" vs "Subbulakshmi")
+    const namePattern = /(subbu|subbulakshmi|john|jane|etc)/gi;
+    const aNames: string[] = aLower.match(namePattern) || [];
+    const bNames: string[] = bLower.match(namePattern) || [];
+    if (aNames.length > 0 && bNames.length > 0 && aNames.some((n: string) => bNames.includes(n))) {
+      // If same name pattern but different question structure, check word overlap
+      const aWords = aLower.replace(namePattern, '').split(/\s+/).filter(w => w.length > 2);
+      const bWords = bLower.replace(namePattern, '').split(/\s+/).filter(w => w.length > 2);
+      const commonWords = aWords.filter(w => bWords.includes(w));
+      if (commonWords.length / Math.max(aWords.length, bWords.length) > 0.7) {
+        return 0.9; // Very similar - likely just name variation
+      }
+    }
+    
+    // Remove common question words for better comparison
+    const questionWords = ['what', 'how', 'why', 'when', 'where', 'who', 'does', 'did', 'do', 'is', 'are', 'was', 'were', 'say', 'says', 'said'];
+    const aCore = aLower.split(/\s+/).filter(w => !questionWords.includes(w) && w.length > 2);
+    const bCore = bLower.split(/\s+/).filter(w => !questionWords.includes(w) && w.length > 2);
+    
+    if (aCore.length === 0 || bCore.length === 0) {
+      // Fallback to word overlap
+      return calculateSimilarity(a, b);
+    }
+    
+    const commonCore = aCore.filter(w => bCore.includes(w));
+    const similarity = commonCore.length / Math.max(aCore.length, bCore.length);
+    
+    // Also check if questions are asking about the same topic (e.g., both about "what X says")
+    const aTopic = aCore.join(' ');
+    const bTopic = bCore.join(' ');
+    if (aTopic === bTopic) return 0.95; // Same topic, different wording
+    
+    return similarity;
+  };
+  
   const isDistinctQuestion = (candidate: string, history: QAPair[]) => {
     return !history.some((pair) => calculateSimilarity(candidate, pair.question) > 0.6);
+  };
+  
+  // ✅ NEW: Check if question is distinct from an array of questions (for batch validation)
+  const isDistinctFromArray = (candidate: string, questions: string[]): boolean => {
+    return !questions.some((q) => calculateStrongSimilarity(candidate, q) > 0.5);
   };
   const fallbackQuestions = [
     "What felt hardest about this?",
@@ -3548,6 +3764,7 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
         }
       );
 
+      setIsSummaryUnclear(false);  // ✅ Clear unclear flag after successful generation
       setFlowStage("summary");
     } catch (err) {
       console.error("Failed to generate summary:", err);
@@ -4188,7 +4405,16 @@ CRITICAL:
   };
 
   const handleReadyToChat = async () => {
-    if (!user || !currentChatId || !contactIdValue) return;
+    // ✅ FIX: Add check for initializing state and ensure all required data is loaded
+    if (!user || !currentChatId || !contactIdValue || initializing) {
+      console.log('⚠️ Cannot send to contact yet - data still loading:', {
+        hasUser: !!user,
+        hasChatId: !!currentChatId,
+        hasContactId: !!contactIdValue,
+        isInitializing: initializing
+      });
+      return;
+    }
 
     setLoading(true);
     scrollToEnd();
@@ -4576,7 +4802,7 @@ Respond ONLY with valid JSON:
         <View style={styles.headerSection}>
           <View style={styles.headerTitleRow}>
             <Text style={styles.stageIcon}>🎬</Text>
-            <Text style={styles.stageTitle}>Stage 1 – Set the Scene</Text>
+            <OutlineText style={styles.stageTitle} outlineStyle={styles.outlineLayer}>Stage 1 – Set the Scene</OutlineText>
           </View>
         </View>
 
@@ -4767,7 +4993,7 @@ Respond ONLY with valid JSON:
         <View style={styles.headerSection}>
           <View style={styles.headerTitleRow}>
             <Text style={styles.stageIcon}>🎨</Text>
-            <Text style={styles.stageTitle}>Stage 2 - Add the Details</Text>
+            <OutlineText style={styles.stageTitle} outlineStyle={styles.outlineLayer}>Stage 2 - Add the Details</OutlineText>
           </View>
         </View>
 
@@ -5654,7 +5880,7 @@ Respond ONLY with valid JSON:
           <View style={styles.headerSection}>
             <View style={styles.headerTitleRow}>
               <Text style={styles.stageIcon}>🧩</Text>
-              <Text style={styles.stageTitle}>Stage 3 - Your Recap</Text>
+              <OutlineText style={styles.stageTitle} outlineStyle={styles.outlineLayer}>Stage 3 - Your Recap</OutlineText>
             </View>
           </View>
 
@@ -5692,7 +5918,7 @@ Respond ONLY with valid JSON:
         <View style={styles.headerSection}>
           <View style={styles.headerTitleRow}>
             <Text style={styles.stageIcon}>🟢</Text>
-            <Text style={styles.stageTitle}>Stage 4 - Launch Time</Text>
+            <OutlineText style={styles.stageTitle} outlineStyle={styles.outlineLayer}>Stage 4 - Launch Time</OutlineText>
           </View>
         </View>
 
@@ -5933,9 +6159,13 @@ const styles = StyleSheet.create({
   stageTitle: {
     fontSize: Typography.fontSize.xl,
     fontWeight: Typography.fontWeight.bold,
-    color: Colors.primary[700],
+    color: Colors.primary[500], // Bright yellow (#FFEB3B)
     textAlign: "center",
     letterSpacing: 0.3,
+  },
+  outlineLayer: {
+    color: "#013a63", // Dark blue outline
+    position: 'absolute',
   },
   stageSubtitle: {
     fontSize: Typography.fontSize.xs,

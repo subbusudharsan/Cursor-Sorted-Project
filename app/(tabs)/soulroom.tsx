@@ -1855,26 +1855,29 @@ const base64ToUint8Array = (base64: string) => {
 
   return (
   <SafeAreaView style={styles.container}>
-      <View style={[styles.header, { paddingTop: insets.top }]}>
-        <Text style={styles.title}>Soulroom</Text>
-        <TouchableOpacity style={styles.addButton} onPress={() => {
-          setEditingEntry(null);
-          setTitle('');
-          setContent('');
-          setSelectedMood(null);
-          setLinkedContactId(null);
-          resetVoiceState();
-          setShowModal(true);
-        }}>
-          <Plus size={24} color="#6366f1" />
-        </TouchableOpacity>
-      </View>
+      <View style={styles.content}>
+        <View style={styles.centeredContainer}>
+          <View style={styles.titleSection}>
+            <Text style={styles.title}>Soulroom</Text>
+            <TouchableOpacity style={styles.addButton} onPress={() => {
+              setEditingEntry(null);
+              setTitle('');
+              setContent('');
+              setSelectedMood(null);
+              setLinkedContactId(null);
+              resetVoiceState();
+              setShowModal(true);
+            }}>
+              <Plus size={20} color={Colors.secondary[500]} />
+            </TouchableOpacity>
+          </View>
+        </View>
 
-      <ScrollView
-        style={styles.entriesList}
-        stickyHeaderIndices={[0]}
-        showsVerticalScrollIndicator={false}
-      >
+        <ScrollView
+          style={styles.entriesList}
+          stickyHeaderIndices={[0]}
+          showsVerticalScrollIndicator={false}
+        >
         <View style={styles.stickyTabWrapper}>
           <View style={styles.tabRow}>
             {tabOptions.map((tab) => {
@@ -1998,7 +2001,7 @@ const base64ToUint8Array = (base64: string) => {
                   <View style={styles.wellnessCard}>
                     <View style={styles.wellnessStatus}>
                       {wellnessSaving ? (
-                        <ActivityIndicator size="small" color={Colors.primary[500]} />
+                        <ActivityIndicator size="small" color={Colors.secondary[500]} />
                       ) : wellnessUpdatedAt ? (
                         <Text style={styles.wellnessStatusText}>Logged today</Text>
                       ) : (
@@ -2045,13 +2048,13 @@ const base64ToUint8Array = (base64: string) => {
                   <View style={styles.coachCardWrapper}>
                     {coachLoading ? (
                       <View style={styles.coachCard}> 
-                        <ActivityIndicator color={Colors.primary[500]} />
+                        <ActivityIndicator color={Colors.secondary[500]} />
                         <Text style={styles.coachHeadline}>Gathering your weekly nudge…</Text>
                       </View>
                     ) : coachNudge ? (
                       <View style={styles.coachCard}>
                         <View style={styles.coachHeader}>
-                          <Sparkles size={18} color={Colors.primary[600]} />
+                          <Sparkles size={18} color={Colors.secondary[500]} />
                           <Text style={styles.coachHeadline}>{coachNudge.headline}</Text>
                         </View>
                         {coachMessageDisplay ? (
@@ -2109,7 +2112,7 @@ const base64ToUint8Array = (base64: string) => {
                         <Text style={styles.digestValue}>{growthDigest.contactLabel || 'Keeping it private'}</Text>
                       </View>
                       <TouchableOpacity style={styles.shareButton} onPress={handleShareDigest}>
-                        <Share2 size={16} color={Colors.primary[700]} />
+                        <Share2 size={16} color={Colors.secondary[600]} />
                         <Text style={styles.shareButtonText}>
                           {growthDigest.contactLabel
                             ? `Help me express this to ${growthDigest.contactLabel}`
@@ -2137,13 +2140,13 @@ const base64ToUint8Array = (base64: string) => {
                   <View style={styles.insightCardWrapper}>
                     {aiInsightLoading ? (
                       <View style={styles.insightCard}>
-                        <ActivityIndicator color={Colors.primary[500]} />
+                        <ActivityIndicator color={Colors.secondary[500]} />
                         <Text style={styles.insightHeadline}>Listening to your week…</Text>
                       </View>
                     ) : aiInsight ? (
                       <View style={styles.insightCard}>
                         <View style={styles.insightHeader}>
-                          <Sparkles size={16} color={Colors.primary[600]} />
+                          <Sparkles size={16} color={Colors.secondary[500]} />
                           <Text style={styles.insightTitle}>AI Insight of the Week</Text>
                           <TouchableOpacity style={styles.insightRefresh} onPress={() => fetchAiInsight(true)}>
                             <Text style={styles.insightRefreshText}>Refresh</Text>
@@ -2272,7 +2275,7 @@ const base64ToUint8Array = (base64: string) => {
                                           isSelected && styles.selectionBadgeSelected,
                                         ]}
                                       >
-                                        {isSelected && <Check size={14} color={Colors.primary[600]} />}
+                                        {isSelected && <Check size={14} color={Colors.secondary[500]} />}
                                       </View>
                                     ) : (
                                       <>
@@ -2300,7 +2303,7 @@ const base64ToUint8Array = (base64: string) => {
                                     <View style={styles.summaryHeader}>
                                       <Sparkles
                                         size={14}
-                                        color={variant.summaryTitle?.color ?? Colors.primary[600]}
+                                        color={variant.summaryTitle?.color ?? Colors.secondary[600]}
                                       />
                                       <Text style={[styles.summaryTitle, variant.summaryTitle]}>
                                         AI Reflection Summary
@@ -2333,11 +2336,11 @@ const base64ToUint8Array = (base64: string) => {
                                         disabled={!playbackUri}
                                       >
                                         {currentlyPlayingId === entry.id ? (
-                                          <Pause size={16} color={Colors.primary[700]} />
+                                          <Pause size={16} color={Colors.secondary[600]} />
                                         ) : playbackUri ? (
-                                          <Play size={16} color={Colors.primary[700]} />
+                                          <Play size={16} color={Colors.secondary[600]} />
                                         ) : (
-                                          <ActivityIndicator size="small" color={Colors.primary[500]} />
+                                          <ActivityIndicator size="small" color={Colors.secondary[500]} />
                                         )}
                                         <Text style={styles.voiceButtonText}>
                                           {currentlyPlayingId === entry.id ? 'Pause voice note' : 'Play voice note'}
@@ -2411,6 +2414,7 @@ const base64ToUint8Array = (base64: string) => {
           )}
         </View>
       </ScrollView>
+      </View>
 
       <Modal
         visible={showModal}
@@ -2511,14 +2515,14 @@ const base64ToUint8Array = (base64: string) => {
                   </TouchableOpacity>
                   {recordingUri ? (
                     <TouchableOpacity style={styles.previewButton} onPress={previewRecording}>
-                      <Play size={16} color={Colors.primary[700]} />
+                      <Play size={16} color={Colors.secondary[600]} />
                       <Text style={styles.previewButtonText}>Listen back</Text>
                     </TouchableOpacity>
                   ) : null}
                 </View>
                 {processingVoice ? (
                   <View style={styles.processingRow}>
-                    <ActivityIndicator size="small" color={Colors.primary[600]} />
+                    <ActivityIndicator size="small" color={Colors.secondary[500]} />
                     <Text style={styles.processingText}>Transcribing your reflection…</Text>
                   </View>
                 ) : null}
@@ -2699,40 +2703,51 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#6b7280',
   },
-  header: {
+  content: {
+    flex: 1,
+  },
+  centeredContainer: {
+    paddingHorizontal: Spacing.lg,
+    paddingTop: 40,
+    paddingBottom: Spacing.sm,
+  },
+  titleSection: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e5e7eb',
+    marginBottom: Spacing.xl,
   },
   title: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#1f2937',
+    fontSize: Typography.fontSize['2xl'] + 4,
+    fontWeight: Typography.fontWeight.bold,
+    color: '#FFACC4', // coral
+    letterSpacing: 0.5,
+    textShadowColor: 'rgba(110, 200, 245, 0.8)', // sky blue
+    textShadowOffset: { width: 1, height: 1 },
+    textShadowRadius: 3,
   },
   addButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#f3f4f6',
+    width: 36,
+    height: 36,
+    borderRadius: BorderRadius.lg,
+    backgroundColor: Colors.surface,
     justifyContent: 'center',
     alignItems: 'center',
+    ...Shadows.small,
   },
   entriesList: {
     flex: 1,
   },
   entriesContent: {
-    padding: 16,
-    gap: 16,
+    padding: Spacing.sm,
+    paddingTop: Spacing.xs,
+    gap: Spacing.sm,
   },
   stickyTabWrapper: {
     backgroundColor: Colors.background,
-    paddingHorizontal: 16,
-    paddingTop: Spacing.md,
-    paddingBottom: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    paddingTop: Spacing.xs,
+    paddingBottom: Spacing.xs,
     borderBottomWidth: 1,
     borderBottomColor: Colors.borderLight,
     zIndex: 10,
@@ -2751,15 +2766,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   tabButtonActive: {
-    backgroundColor: Colors.primary[500],
+    backgroundColor: Colors.secondary[500], // Sky blue instead of yellow
   },
   tabButtonText: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
     fontWeight: Typography.fontWeight.medium,
   },
   tabButtonTextActive: {
-    color: '#ffffff',
+    color: '#FFFFFF',
   },
   multiSelectBarContainer: {
     backgroundColor: Colors.surface,
@@ -2810,31 +2825,32 @@ const styles = StyleSheet.create({
   },
   overviewCard: {
     backgroundColor: Colors.surfaceElevated,
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.lg,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
     borderWidth: 1,
     borderColor: Colors.borderLight,
-    ...Shadows.medium,
+    ...Shadows.small,
   },
   sectionHeading: {
-    fontSize: Typography.fontSize.lg,
+    fontSize: Typography.fontSize.base,
     fontWeight: Typography.fontWeight.bold,
     color: Colors.text.primary,
     marginBottom: Spacing.xs,
   },
   overviewSubtitle: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
-    marginBottom: Spacing.md,
+    marginBottom: Spacing.sm,
+    lineHeight: Typography.fontSize.xs * 1.3,
   },
   wellnessCard: {
-    marginTop: Spacing.lg,
+    marginTop: Spacing.md,
     backgroundColor: Colors.surfaceElevated,
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.lg,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
     borderWidth: 1,
     borderColor: Colors.borderLight,
-    ...Shadows.medium,
+    ...Shadows.small,
   },
   wellnessHeader: {
     flexDirection: 'row',
@@ -2848,7 +2864,7 @@ const styles = StyleSheet.create({
     gap: Spacing.xs,
   },
   wellnessStatusText: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
   },
   wellnessOptionsRow: {
@@ -2860,15 +2876,15 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: Colors.surface,
     borderRadius: BorderRadius.lg,
-    paddingVertical: Spacing.md,
+    paddingVertical: Spacing.sm,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: Colors.borderLight,
   },
   wellnessOptionSelected: {
-    borderColor: Colors.primary[500],
-    backgroundColor: Colors.primary[50],
+    borderColor: Colors.secondary[500], // Sky blue border
+    backgroundColor: Colors.secondary[50], // Light sky blue background
   },
   wellnessOptionDisabled: {
     opacity: 0.6,
@@ -2878,30 +2894,31 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.xs,
   },
   wellnessLabel: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
     textAlign: 'center',
+    lineHeight: Typography.fontSize.xs * 1.3,
   },
   statsRow: {
     flexDirection: 'row',
-    gap: Spacing.md,
+    gap: Spacing.sm,
     flexWrap: 'wrap',
-    marginBottom: Spacing.md,
+    marginBottom: Spacing.sm,
   },
   statBadge: {
     flex: 1,
-    minWidth: 110,
+    minWidth: 100,
     borderRadius: BorderRadius.lg,
     borderWidth: 1,
     borderColor: Colors.borderLight,
     backgroundColor: Colors.surface,
-    padding: Spacing.md,
+    padding: Spacing.sm,
     ...Shadows.small,
   },
   statValue: {
-    fontSize: Typography.fontSize['2xl'],
+    fontSize: Typography.fontSize.lg,
     fontWeight: Typography.fontWeight.bold,
-    color: Colors.primary[600],
+    color: Colors.secondary[600], // Sky blue instead of yellow
   },
   statLabel: {
     fontSize: Typography.fontSize.xs,
@@ -2911,7 +2928,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   moodBadgeLabel: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     fontWeight: Typography.fontWeight.semibold,
     marginTop: 2,
   },
@@ -2931,15 +2948,15 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.sm,
     paddingHorizontal: Spacing.md,
     borderRadius: BorderRadius.lg,
-    backgroundColor: Colors.primary[500],
+    backgroundColor: Colors.secondary[500], // Sky blue background
     borderWidth: 2,
-    borderColor: Colors.secondary[600],
+    borderColor: Colors.primary[500], // Lemon yellow border accent
     ...Shadows.small,
   },
   quickActionText: {
     color: '#FFFFFF',
     textAlign: 'center',
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     fontWeight: Typography.fontWeight.semibold,
   },
   emptyState: {
@@ -2950,25 +2967,25 @@ const styles = StyleSheet.create({
     paddingTop: 100,
   },
   emptyTitle: {
-    fontSize: 20,
-    fontWeight: '600',
-    color: '#374151',
-    marginTop: 16,
-    marginBottom: 8,
+    fontSize: Typography.fontSize.lg,
+    fontWeight: Typography.fontWeight.semibold,
+    color: Colors.text.primary,
+    marginTop: Spacing.md,
+    marginBottom: Spacing.sm,
   },
   emptyDescription: {
-    fontSize: 14,
-    color: '#6b7280',
+    fontSize: Typography.fontSize.sm,
+    color: Colors.text.secondary,
     textAlign: 'center',
-    lineHeight: 20,
-    marginBottom: 32,
+    lineHeight: Typography.fontSize.sm * 1.3,
+    marginBottom: Spacing.lg,
   },
   startButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: Colors.primary[500],
+    backgroundColor: Colors.secondary[500], // Sky blue background
     borderWidth: 3,
-    borderColor: Colors.secondary[600],
+    borderColor: Colors.primary[500], // Lemon yellow border accent
     paddingHorizontal: 20,
     paddingVertical: 12,
     borderRadius: 12,
@@ -2977,43 +2994,40 @@ const styles = StyleSheet.create({
   },
   startButtonText: {
     color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '600',
-    textShadowColor: Colors.secondary[600],
-    textShadowOffset: { width: 1, height: 1 },
-    textShadowRadius: 2,
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.semibold,
   },
   entryCard: {
     backgroundColor: Colors.surfaceElevated,
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.lg,
-    marginBottom: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    marginBottom: Spacing.sm,
     borderWidth: 1,
     borderColor: Colors.borderLight,
-    ...Shadows.medium,
+    ...Shadows.small,
   },
   entryCardMultiSelect: {
     opacity: 0.96,
   },
   entryCardSelected: {
-    borderColor: Colors.primary[400],
+    borderColor: Colors.secondary[400], // Sky blue border
     borderWidth: 2,
-    shadowColor: Colors.primary[200],
+    shadowColor: Colors.secondary[200], // Light sky blue shadow
   },
   entryHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    marginBottom: 12,
+    marginBottom: Spacing.sm,
   },
   entryInfo: {
     flex: 1,
   },
   entryTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1f2937',
-    marginBottom: 4,
+    fontSize: Typography.fontSize.base,
+    fontWeight: Typography.fontWeight.semibold,
+    color: Colors.text.primary,
+    marginBottom: Spacing.xs,
   },
   entryMeta: {
     flexDirection: 'row',
@@ -3021,35 +3035,35 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   entryDate: {
-    fontSize: 12,
-    color: '#9ca3af',
+    fontSize: Typography.fontSize.xs,
+    color: Colors.text.tertiary,
   },
   metaSeparator: {
-    fontSize: 12,
-    color: '#d1d5db',
+    fontSize: Typography.fontSize.xs,
+    color: Colors.borderLight,
   },
   entryMood: {
-    fontSize: 12,
-    fontWeight: '500',
+    fontSize: Typography.fontSize.xs,
+    fontWeight: Typography.fontWeight.medium,
   },
   entryActions: {
     flexDirection: 'row',
-    gap: 8,
+    gap: Spacing.xs,
   },
   actionButton: {
-    padding: 8,
+    padding: Spacing.xs,
   },
   entryContent: {
-    fontSize: 14,
-    color: '#374151',
-    lineHeight: 20,
+    fontSize: Typography.fontSize.sm,
+    color: Colors.text.secondary,
+    lineHeight: Typography.fontSize.sm * 1.3,
   },
   summaryCard: {
     marginTop: Spacing.md,
     borderRadius: BorderRadius.lg,
     borderWidth: 1,
-    borderColor: Colors.primary[100],
-    backgroundColor: Colors.primary[50],
+    borderColor: Colors.secondary[200], // Light sky blue border
+    backgroundColor: Colors.secondary[50], // Very light sky blue background
     padding: Spacing.md,
     gap: Spacing.xs,
   },
@@ -3059,9 +3073,9 @@ const styles = StyleSheet.create({
     gap: Spacing.sm,
   },
   summaryTitle: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     fontWeight: Typography.fontWeight.semibold,
-    color: Colors.primary[600],
+    color: Colors.secondary[600], // Sky blue text
     flex: 1,
   },
   summaryChip: {
@@ -3070,14 +3084,14 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.full,
     backgroundColor: '#fff',
     fontSize: Typography.fontSize.xs,
-    color: Colors.primary[600],
+    color: Colors.secondary[600], // Sky blue text
     fontWeight: Typography.fontWeight.medium,
     textTransform: 'capitalize',
   },
   summaryBody: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
-    lineHeight: 20,
+    lineHeight: Typography.fontSize.xs * 1.3,
   },
   entryTagRow: {
     flexDirection: 'row',
@@ -3086,16 +3100,16 @@ const styles = StyleSheet.create({
     marginTop: Spacing.sm,
   },
   tagChip: {
-    backgroundColor: Colors.primary[50],
+    backgroundColor: Colors.secondary[50], // Light sky blue background
     borderRadius: BorderRadius.md,
     paddingHorizontal: Spacing.sm,
     paddingVertical: 4,
     borderWidth: 1,
-    borderColor: Colors.primary[100],
+    borderColor: Colors.secondary[200], // Light sky blue border
   },
   tagChipText: {
     fontSize: Typography.fontSize.xs,
-    color: Colors.primary[700],
+    color: Colors.secondary[700], // Dark sky blue text
     fontWeight: Typography.fontWeight.medium,
   },
   entryActionRow: {
@@ -3108,9 +3122,9 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: Spacing.md,
     borderRadius: BorderRadius.lg,
-    backgroundColor: Colors.primary[500],
+    backgroundColor: Colors.secondary[500], // Sky blue background
     borderWidth: 2,
-    borderColor: Colors.secondary[600],
+    borderColor: Colors.primary[500], // Lemon yellow border accent
     ...Shadows.small,
   },
   entryActionButtonText: {
@@ -3142,8 +3156,8 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
   },
   selectionBadgeSelected: {
-    borderColor: Colors.primary[500],
-    backgroundColor: Colors.primary[50],
+    borderColor: Colors.secondary[500], // Sky blue border
+    backgroundColor: Colors.secondary[50], // Light sky blue background
   },
   modalContainer: {
     flex: 1,
@@ -3159,14 +3173,14 @@ const styles = StyleSheet.create({
     borderBottomColor: '#e5e7eb',
   },
   modalTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: '#1f2937',
+    fontSize: Typography.fontSize.lg,
+    fontWeight: Typography.fontWeight.bold,
+    color: Colors.text.primary,
   },
   saveButton: {
-    backgroundColor: Colors.primary[500],
+    backgroundColor: Colors.secondary[500], // Sky blue background
     borderWidth: 3,
-    borderColor: Colors.secondary[600],
+    borderColor: Colors.primary[500], // Lemon yellow border accent
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 8,
@@ -3247,11 +3261,13 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   timelineCard: {
-    backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.lg,
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
     ...Shadows.small,
-    gap: Spacing.md,
+    gap: Spacing.sm,
   },
   timelineHeader: {
     flexDirection: 'row',
@@ -3259,7 +3275,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   sectionTitle: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.text.secondary,
   },
@@ -3272,12 +3288,12 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   coachCard: {
-    backgroundColor: '#f0f5ff',
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.lg,
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
     borderWidth: 1,
-    borderColor: '#d6e4ff',
-    gap: Spacing.md,
+    borderColor: Colors.borderLight,
+    gap: Spacing.sm,
     ...Shadows.small,
   },
   coachHeader: {
@@ -3287,15 +3303,15 @@ const styles = StyleSheet.create({
   },
   coachHeadline: {
     flex: 1,
-    fontSize: Typography.fontSize.sm + 2,
+    fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.text.primary,
     letterSpacing: 0.15,
   },
   coachMessage: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
-    lineHeight: 20,
+    lineHeight: Typography.fontSize.xs * 1.3,
   },
   coachPromptList: {
     gap: 4,
@@ -3309,13 +3325,13 @@ const styles = StyleSheet.create({
     marginTop: Spacing.lg,
   },
   insightCard: {
-    backgroundColor: '#f3f4ff',
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.lg,
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
     borderWidth: 1,
-    borderColor: '#d9dcff',
+    borderColor: Colors.borderLight,
     ...Shadows.small,
-    gap: Spacing.md,
+    gap: Spacing.sm,
   },
   insightHeader: {
     flexDirection: 'row',
@@ -3326,41 +3342,41 @@ const styles = StyleSheet.create({
   insightTitle: {
     flex: 1,
     marginLeft: Spacing.xs,
-    fontSize: Typography.fontSize.base + 1,
+    fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.semibold,
     letterSpacing: 0.2,
     color: Colors.text.primary,
   },
   insightHeadline: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     color: Colors.text.primary,
     fontWeight: Typography.fontWeight.semibold,
   },
   insightBody: {
-    fontSize: Typography.fontSize.sm + 1,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
-    lineHeight: 22,
+    lineHeight: Typography.fontSize.xs * 1.3,
     fontWeight: Typography.fontWeight.normal,
   },
   insightTimestamp: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.tertiary,
   },
   insightRefresh: {
     paddingHorizontal: Spacing.sm,
     paddingVertical: 4,
     borderRadius: BorderRadius.lg,
-    backgroundColor: Colors.primary[50],
+    backgroundColor: Colors.secondary[50], // Light sky blue background
   },
   insightRefreshText: {
-    color: Colors.primary[600],
-    fontSize: Typography.fontSize.sm,
+    color: Colors.secondary[600], // Sky blue text
+    fontSize: Typography.fontSize.xs,
     fontWeight: Typography.fontWeight.semibold,
   },
   digestCard: {
     backgroundColor: Colors.surfaceElevated,
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.lg,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
     borderWidth: 1,
     borderColor: Colors.borderLight,
     gap: Spacing.sm,
@@ -3384,11 +3400,11 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   digestLabel: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
   },
   digestValue: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.text.primary,
   },
@@ -3401,11 +3417,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.sm,
     borderRadius: BorderRadius.lg,
-    backgroundColor: Colors.primary[100],
+    backgroundColor: Colors.secondary[100], // Light sky blue background
   },
   shareButtonText: {
-    color: Colors.primary[700],
-    fontSize: Typography.fontSize.sm,
+    color: Colors.secondary[700], // Dark sky blue text
+    fontSize: Typography.fontSize.xs,
     fontWeight: Typography.fontWeight.semibold,
   },
   voiceCard: {
@@ -3427,8 +3443,8 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
   },
   modeToggleActive: {
-    backgroundColor: Colors.primary[50],
-    borderColor: Colors.primary[400],
+    backgroundColor: Colors.secondary[50], // Light sky blue background
+    borderColor: Colors.secondary[400], // Sky blue border
   },
   modeToggleText: {
     fontSize: Typography.fontSize.sm,
@@ -3495,7 +3511,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: Spacing.xs,
-    backgroundColor: Colors.primary[500],
+    backgroundColor: Colors.secondary[500], // Sky blue background
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.sm,
     borderRadius: BorderRadius.lg,
@@ -3505,7 +3521,7 @@ const styles = StyleSheet.create({
   },
   recordButtonText: {
     color: '#ffffff',
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     fontWeight: Typography.fontWeight.semibold,
   },
   previewButton: {
@@ -3515,11 +3531,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.md,
     paddingVertical: Spacing.sm,
     borderRadius: BorderRadius.lg,
-    backgroundColor: Colors.primary[100],
+    backgroundColor: Colors.secondary[100], // Light sky blue background
   },
   previewButtonText: {
-    color: Colors.primary[700],
-    fontSize: Typography.fontSize.sm,
+    color: Colors.secondary[700], // Dark sky blue text
+    fontSize: Typography.fontSize.xs,
     fontWeight: Typography.fontWeight.semibold,
   },
   processingRow: {
@@ -3548,8 +3564,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.sm,
     borderRadius: BorderRadius.lg,
     borderWidth: 1,
-    borderColor: Colors.primary[500],
-    backgroundColor: Colors.primary[50],
+    borderColor: Colors.secondary[500], // Sky blue border
+    backgroundColor: Colors.secondary[50], // Light sky blue background
   },
   smallPillButtonSecondary: {
     paddingVertical: Spacing.xs,
@@ -3560,13 +3576,13 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
   },
   smallPillButtonText: {
-    color: Colors.primary[600],
-    fontSize: Typography.fontSize.sm,
+    color: Colors.secondary[600], // Sky blue text
+    fontSize: Typography.fontSize.xs,
     fontWeight: Typography.fontWeight.medium,
   },
   smallPillButtonSecondaryText: {
     color: Colors.text.tertiary,
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
   },
   smallPillButtonGhost: {
     paddingVertical: Spacing.xs,
@@ -3578,7 +3594,7 @@ const styles = StyleSheet.create({
   },
   smallPillButtonGhostText: {
     color: Colors.text.secondary,
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
   },
   pickerBackdrop: {
     flex: 1,
@@ -3650,11 +3666,11 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.xs,
   },
   sectionToggleText: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.text.secondary,
     textTransform: 'uppercase',
-    letterSpacing: 0.6,
+    letterSpacing: 0.5,
   },
   sectionHeaderRow: {
     flexDirection: 'row',

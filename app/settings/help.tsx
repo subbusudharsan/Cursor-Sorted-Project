@@ -3,7 +3,6 @@ import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   TouchableOpacity,
   Linking,
@@ -11,6 +10,7 @@ import {
   Animated,
   Platform,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { ArrowLeft, Mail, MessageCircle, Book, ExternalLink, ChevronRight } from 'lucide-react-native';
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/Colors';
@@ -135,50 +135,60 @@ const userGuideSections = [
 ];
 
 export default function HelpSupportScreen() {
+  const insets = useSafeAreaInsets();
   const [expandedFAQ, setExpandedFAQ] = useState<number | null>(null);
   const [showUserGuide, setShowUserGuide] = useState<boolean>(false);
   const fadeAnim = React.useRef(new Animated.Value(0)).current;
+  const scaleAnim = React.useRef(new Animated.Value(0.95)).current;
 
   React.useEffect(() => {
-    Animated.timing(fadeAnim, {
-      toValue: 1,
-      duration: 600,
-      useNativeDriver: true,
-    }).start();
+    Animated.parallel([
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 600,
+        useNativeDriver: true,
+      }),
+      Animated.spring(scaleAnim, {
+        toValue: 1,
+        tension: 100,
+        friction: 8,
+        useNativeDriver: true,
+      }),
+    ]).start();
   }, []);
 
   const faqs: FAQItem[] = [
     {
       question: 'How do I add contacts to Sorted?',
-      answer: 'Go to the Contacts tab and tap the "+" button. You can search for registered users by email or send email invitations to unregistered users.',
+      answer: 'Go to the Contacts tab and tap the "+" button. You can search for registered users by email or send email invitations to unregistered users. You can also categorize contacts as family, friend, partner, or work colleague to personalize your conversations.',
     },
     {
       question: 'How does the AI Assistant work?',
-      answer: 'The AI Assistant helps you process emotions and prepare for conversations. Share your thoughts, and it will provide insights and help you get ready to talk with your contacts.',
+      answer: 'The AI Assistant guides you through 4 stages to prepare meaningful conversations: Stage 1 - Set the Scene (describe what happened), Stage 2 - Add Details (answer prompts about feelings and needs), Stage 3 - Your Recap (review AI-generated summary and thoughts), and Stage 4 - Ready to Reach Out (choose from AI-generated message options or write your own). You can save your progress at any stage and return later.',
     },
     {
       question: 'What is the Soulroom?',
-      answer: 'The Soulroom is your private space for personal reflection. Write about your emotions, track your mood, and maintain a wellness journal.',
+      answer: 'The Soulroom is your private reflection space. You can write journal entries, track your mood with emojis, record voice notes, and receive weekly AI insights about your emotional patterns. Everything in the Soulroom is private and can inspire your conversations.',
     },
     {
       question: 'How do I start a conversation with a contact?',
-      answer: 'From the Chats tab, tap on a contact or use the AI Assistant to prepare for a conversation. The AI can help generate conversation starters.',
+      answer: 'Use the AI Assistant (tap the chat icon) to prepare your conversation through the 4-stage flow. Once ready, click "Send to contact" in Stage 4 to move to the chat screen. You can also open existing chats from the Chats tab - "My Talks" shows conversations you started, and "Contact Talks" shows conversations they started.',
     },
     {
       question: 'Are my conversations private?',
-      answer: 'Yes, all conversations are private and encrypted. Only you and your contact can see your messages. The AI Assistant conversations are also private to you.',
+      answer: 'Yes, all conversations are private and encrypted. Only you and your contact can see your messages. AI Assistant sessions are completely private to you. You can delete conversations or clear all data anytime from Settings > Privacy & Security.',
     },
     {
       question: 'How do I manage notifications?',
-      answer: 'Go to Settings > Notifications to customize when and how you receive notifications. You can set quiet hours, disable specific types, or enable do not disturb.',
+      answer: 'Go to Settings > Notifications to customize when and how you receive notifications. You can enable/disable notifications for messages, contacts, AI responses, and Soulroom reminders. Set quiet hours or enable do not disturb mode to control when you receive alerts.',
     },
     {
       question: 'Can I delete my conversations?',
-      answer: 'Yes, you can delete individual conversations or clear all your data from the Settings menu. This action cannot be undone.',
+      answer: 'Yes, you can clear all your data (chats, messages, Soulroom entries) from Settings > Privacy & Security > Clear All Data. This keeps your account active. To permanently delete your account, use "Delete Account" which removes everything including your account. Both actions cannot be undone.',
     },
     {
       question: 'How do I change my profile information?',
-      answer: 'Go to Settings > Profile to edit your name, phone number, date of birth, and other personal information. You can also upload a profile picture.',
+      answer: 'Go to Settings > Profile to edit your name, nickname, phone number, date of birth, pronouns, and upload a profile picture. Your profile information helps personalize AI-generated options and conversations throughout the app.',
     },
   ];
 
@@ -203,12 +213,20 @@ export default function HelpSupportScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
-      <Animated.View style={[styles.content, { opacity: fadeAnim }]}>
+    <SafeAreaView style={styles.container} edges={['left', 'right']}>
+      <Animated.View 
+        style={[
+          styles.content, 
+          { 
+            opacity: fadeAnim,
+            transform: [{ scale: scaleAnim }],
+          }
+        ]}
+      >
         {/* Header */}
-        <View style={styles.header}>
+        <View style={[styles.header, { paddingTop: Math.max(insets.top + Spacing.sm, Spacing.lg) }]}>
           <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-            <ArrowLeft size={24} color={Colors.text.secondary} />
+            <ArrowLeft size={20} color={Colors.text.secondary} />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Help & Support</Text>
           <View style={styles.placeholder} />
@@ -225,7 +243,7 @@ export default function HelpSupportScreen() {
             
             <TouchableOpacity style={styles.actionCard} onPress={openEmail}>
               <View style={styles.actionIcon}>
-                <Mail size={24} color={Colors.primary[500]} />
+                <Mail size={16} color={Colors.secondary[500]} />
               </View>
               <View style={styles.actionContent}>
                 <Text style={styles.actionTitle}>Contact Support</Text>
@@ -233,12 +251,12 @@ export default function HelpSupportScreen() {
                   Send us an email for personalized help
                 </Text>
               </View>
-              <ExternalLink size={20} color={Colors.text.tertiary} />
+              <ExternalLink size={16} color={Colors.text.tertiary} />
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.actionCard} onPress={toggleUserGuide}>
               <View style={styles.actionIcon}>
-                <Book size={24} color={Colors.secondary[500]} />
+                <Book size={16} color={Colors.secondary[500]} />
               </View>
               <View style={styles.actionContent}>
                 <Text style={styles.actionTitle}>In-app User Guide</Text>
@@ -247,7 +265,7 @@ export default function HelpSupportScreen() {
                 </Text>
               </View>
               <ChevronRight
-                size={20}
+                size={16}
                 color={Colors.text.tertiary}
                 style={[styles.chevron, showUserGuide && styles.chevronExpanded]}
               />
@@ -296,7 +314,7 @@ export default function HelpSupportScreen() {
                 >
                   <Text style={styles.faqQuestion}>{faq.question}</Text>
                   <ChevronRight 
-                    size={20} 
+                    size={16} 
                     color={Colors.text.tertiary}
                     style={[
                       styles.chevron,
@@ -342,7 +360,7 @@ export default function HelpSupportScreen() {
                 <Text style={styles.infoLabel}>Build</Text>
                 <Text style={styles.infoValue}>2025.01.15</Text>
               </View>
-              <View style={styles.infoRow}>
+              <View style={[styles.infoRow, styles.lastInfoRow]}>
                 <Text style={styles.infoLabel}>Platform</Text>
                 <Text style={styles.infoValue}>
                   {Platform.OS === 'ios' ? 'iOS' : Platform.OS === 'android' ? 'Android' : 'Web'}
@@ -368,16 +386,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.lg,
+    paddingHorizontal: Spacing.md,
+    paddingBottom: Spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: Colors.borderLight,
     backgroundColor: Colors.surfaceElevated,
     ...Shadows.small,
   },
   backButton: {
-    width: 40,
-    height: 40,
+    width: 36,
+    height: 36,
     borderRadius: BorderRadius.lg,
     backgroundColor: Colors.surface,
     justifyContent: 'center',
@@ -385,67 +403,74 @@ const styles = StyleSheet.create({
     ...Shadows.small,
   },
   headerTitle: {
-    fontSize: Typography.fontSize.xl,
+    fontSize: Typography.fontSize.lg,
     fontWeight: Typography.fontWeight.bold,
     color: Colors.text.primary,
   },
   placeholder: {
-    width: 40,
+    width: 36,
   },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
-    padding: Spacing.xl,
-    paddingBottom: Spacing.xxxl,
+    paddingHorizontal: Spacing.md,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.xl,
   },
   section: {
-    marginBottom: Spacing.xxxl,
-  },
-  sectionTitle: {
-    fontSize: Typography.fontSize.lg,
-    fontWeight: Typography.fontWeight.bold,
-    color: Colors.text.primary,
-    marginBottom: Spacing.lg,
-  },
-  actionCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
     backgroundColor: Colors.surfaceElevated,
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.lg,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
     marginBottom: Spacing.md,
     borderWidth: 1,
     borderColor: Colors.borderLight,
     ...Shadows.small,
   },
-  actionIcon: {
-    width: 48,
-    height: 48,
+  sectionTitle: {
+    fontSize: Typography.fontSize.sm,
+    fontWeight: Typography.fontWeight.semibold,
+    color: Colors.text.primary,
+    marginBottom: Spacing.md,
+  },
+  actionCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.surfaceElevated,
     borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    marginBottom: Spacing.sm,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
+    ...Shadows.small,
+  },
+  actionIcon: {
+    width: 32,
+    height: 32,
+    borderRadius: BorderRadius.md,
     backgroundColor: Colors.primary[50],
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: Spacing.lg,
+    marginRight: Spacing.sm,
   },
   actionContent: {
     flex: 1,
   },
   actionTitle: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.text.primary,
-    marginBottom: Spacing.xs,
+    marginBottom: 2,
   },
   actionDescription: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
-    lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
+    lineHeight: Typography.fontSize.xs * 1.3,
   },
   faqCard: {
     backgroundColor: Colors.surfaceElevated,
-    borderRadius: BorderRadius.xl,
-    marginBottom: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    marginBottom: Spacing.sm,
     borderWidth: 1,
     borderColor: Colors.borderLight,
     ...Shadows.small,
@@ -454,14 +479,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: Spacing.lg,
+    padding: Spacing.md,
   },
   faqQuestion: {
     flex: 1,
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.text.primary,
-    marginRight: Spacing.md,
+    marginRight: Spacing.sm,
   },
   chevron: {
     transform: [{ rotate: '0deg' }],
@@ -470,16 +495,16 @@ const styles = StyleSheet.create({
     transform: [{ rotate: '90deg' }],
   },
   faqAnswer: {
-    paddingHorizontal: Spacing.lg,
-    paddingBottom: Spacing.lg,
+    paddingHorizontal: Spacing.md,
+    paddingBottom: Spacing.md,
     borderTopWidth: 1,
     borderTopColor: Colors.borderLight,
   },
   faqAnswerText: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
-    lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
-    paddingTop: Spacing.md,
+    lineHeight: Typography.fontSize.xs * 1.3,
+    paddingTop: Spacing.sm,
   },
   linkCard: {
     flexDirection: 'row',
@@ -487,106 +512,113 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     backgroundColor: Colors.surfaceElevated,
     borderRadius: BorderRadius.lg,
-    padding: Spacing.lg,
+    padding: Spacing.md,
     marginBottom: Spacing.sm,
     borderWidth: 1,
     borderColor: Colors.borderLight,
     ...Shadows.small,
   },
   linkText: {
-    fontSize: Typography.fontSize.base,
-    color: Colors.primary[500],
+    fontSize: Typography.fontSize.sm,
+    color: Colors.secondary[500],
     fontWeight: Typography.fontWeight.medium,
   },
   infoCard: {
-    backgroundColor: '#ffffff',
+    backgroundColor: Colors.surfaceElevated,
     borderRadius: BorderRadius.lg,
     padding: Spacing.md,
-    gap: Spacing.sm,
+    gap: Spacing.xs,
+    borderWidth: 1,
+    borderColor: Colors.borderLight,
     ...Shadows.small,
   },
   infoRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: Spacing.md,
+    paddingVertical: Spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: Colors.borderLight,
   },
   infoLabel: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     color: Colors.text.secondary,
     fontWeight: Typography.fontWeight.medium,
   },
   infoValue: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
   },
+  lastInfoRow: {
+    borderBottomWidth: 0,
+  },
   userGuideSection: {
-    marginBottom: Spacing.lg,
-    backgroundColor: '#f6f8ff',
+    marginBottom: Spacing.md,
+    backgroundColor: Colors.surfaceElevated,
     borderRadius: BorderRadius.lg,
     padding: Spacing.md,
     borderWidth: 1,
-    borderColor: '#d9e3ff',
-    gap: Spacing.lg,
+    borderColor: Colors.borderLight,
+    gap: Spacing.md,
+    ...Shadows.small,
   },
   userGuideIntro: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
-    lineHeight: 20,
+    lineHeight: Typography.fontSize.xs * 1.3,
   },
   guideCard: {
     backgroundColor: Colors.surface,
     borderRadius: BorderRadius.lg,
-    padding: Spacing.lg,
+    padding: Spacing.md,
     borderWidth: 1,
-    borderColor: '#e2e8f0',
+    borderColor: Colors.borderLight,
     ...Shadows.small,
-    gap: Spacing.md,
+    gap: Spacing.sm,
+    marginBottom: Spacing.sm,
   },
   guideHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.sm,
+    gap: Spacing.xs,
   },
   guideEmoji: {
-    fontSize: Typography.fontSize.lg,
+    fontSize: Typography.fontSize.base,
   },
   guideTitle: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.text.primary,
   },
   guideIntro: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
-    lineHeight: 20,
+    lineHeight: Typography.fontSize.xs * 1.3,
   },
   guideBulletList: {
-    gap: Spacing.sm,
+    gap: Spacing.xs,
   },
   guideBullet: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: Spacing.sm,
+    gap: Spacing.xs,
   },
   guideBulletDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
     backgroundColor: Colors.secondary[400],
-    marginTop: Spacing.xs,
+    marginTop: 4,
   },
   guideBulletText: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
-    lineHeight: 20,
+    lineHeight: Typography.fontSize.xs * 1.3,
   },
   userGuideOutro: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
-    lineHeight: 20,
-    marginTop: Spacing.md,
+    lineHeight: Typography.fontSize.xs * 1.3,
+    marginTop: Spacing.sm,
   },
 });

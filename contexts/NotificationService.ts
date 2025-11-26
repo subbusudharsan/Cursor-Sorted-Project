@@ -63,11 +63,18 @@ export class NotificationService {
       return true; // Exit silently — no crash
     }
 
-    // ✅ 2. Request permissions
-    const { status: existingStatus } = await Notifications.getPermissionsAsync();
+    // ✅ 2. Load notifications module
+    const NotificationsModule = getNotifications();
+    if (!NotificationsModule) {
+      console.log("⚠️ Notifications module not available");
+      return false;
+    }
+
+    // ✅ 3. Request permissions
+    const { status: existingStatus } = await NotificationsModule.getPermissionsAsync();
     let finalStatus = existingStatus;
     if (existingStatus !== 'granted') {
-      const { status } = await Notifications.requestPermissionsAsync();
+      const { status } = await NotificationsModule.requestPermissionsAsync();
       finalStatus = status;
     }
     if (finalStatus !== 'granted') {
@@ -75,17 +82,17 @@ export class NotificationService {
       return false;
     }
 
-    // ✅ 3. Get push token (only in dev build / EAS build)
-    const tokenResponse = await Notifications.getExpoPushTokenAsync({ projectId });
+    // ✅ 4. Get push token (only in dev build / EAS build)
+    const tokenResponse = await NotificationsModule.getExpoPushTokenAsync({ projectId });
     const token = tokenResponse.data;
 
-    // ✅ 4. Save token to Supabase profile
+    // ✅ 5. Save token to Supabase profile
     await supabase
       .from('profiles')
       .update({ push_token: token })
       .eq('id', userId);
 
-    // ✅ 5. Load user preferences
+    // ✅ 6. Load user preferences
     await this.loadNotificationSettings(userId);
 
     return true;

@@ -57,6 +57,8 @@ function SettingsScreen() {
   });
 
   const fadeAnim = React.useRef(new Animated.Value(0)).current;
+  const profileRetryCount = React.useRef(0);
+  const MAX_PROFILE_RETRIES = 3;
 
   useEffect(() => {
     Animated.timing(fadeAnim, {
@@ -73,12 +75,49 @@ function SettingsScreen() {
         .from('profiles')
         .select('*')
         .eq('id', user.id)
-        .single();
+        .maybeSingle();
 
-      if (error) throw error;
-      setProfile(data);
-    } catch (error) {
-      console.error('Error fetching profile:', error);
+      if (error) {
+        // Handle PGRST116 (no rows) gracefully - profile might be creating
+        if (error.code === 'PGRST116') {
+          if (profileRetryCount.current < MAX_PROFILE_RETRIES) {
+            profileRetryCount.current++;
+            console.log(`ℹ️ Profile not found yet, retrying (${profileRetryCount.current}/${MAX_PROFILE_RETRIES})...`);
+            // Retry after a short delay in case profile is being created
+            setTimeout(() => {
+              fetchProfile();
+            }, 1000);
+            return;
+          } else {
+            console.log('ℹ️ Profile not found after retries, user might be new');
+            setProfile(null);
+            return;
+          }
+        }
+        throw error;
+      }
+      
+      if (data) {
+        profileRetryCount.current = 0; // Reset retry count on success
+        setProfile(data);
+      } else {
+        // Profile doesn't exist yet - retry after delay
+        if (profileRetryCount.current < MAX_PROFILE_RETRIES) {
+          profileRetryCount.current++;
+          console.log(`ℹ️ Profile not found, retrying (${profileRetryCount.current}/${MAX_PROFILE_RETRIES})...`);
+          setTimeout(() => {
+            fetchProfile();
+          }, 1000);
+        } else {
+          console.log('ℹ️ Profile not found after retries, user might be new');
+          setProfile(null);
+        }
+      }
+    } catch (error: any) {
+      // Only log non-PGRST116 errors
+      if (error?.code !== 'PGRST116') {
+        console.error('Error fetching profile:', error);
+      }
     } finally {
       setLoading(false);
     }
@@ -148,6 +187,9 @@ function SettingsScreen() {
         onPress: async () => {
           try {
             await signOut();
+            // ✅ FIX: Clear navigation stack and prevent back navigation
+            // Replace with landing page - this should clear navigation history
+            // Using replace ensures the landing page becomes the root, preventing back navigation
             router.replace('/');
           } catch (error) {
             Alert.alert('Error', 'Failed to sign out');
@@ -420,7 +462,8 @@ function SettingsScreen() {
         <Animated.View style={[styles.content, { opacity: fadeAnim, paddingTop: insets.top }]}> 
           {/* Centered content container */}
           <View style={styles.centeredContainer}>
-  <View style={{ width: '92%' }}>
+          <View style={{ width: '100%', alignSelf: 'center' }}>
+
 
             {/* Title */}
             <View style={styles.titleSection}>
@@ -440,8 +483,8 @@ function SettingsScreen() {
                   <Image source={{ uri: profile.avatar_url }} style={styles.avatar} />
                 ) : (
                  <View style={styles.avatarCircle}>
-  <User size={24} color="#FFEB3B" />
-</View>
+                  <User size={20} color="#FFEB3B" />
+                </View>
 
                 )}
               </TouchableOpacity>
@@ -461,7 +504,7 @@ function SettingsScreen() {
                   activeOpacity={0.7}
                 >
                   <View style={styles.settingIcon}>
-                    <option.icon size={18} color={Colors.text.secondary} />
+                    <option.icon size={16} color={Colors.secondary[500]} />
                   </View>
                   <View style={styles.settingContent}>
                     <Text style={styles.settingTitle}>{option.title}</Text>
@@ -474,14 +517,14 @@ function SettingsScreen() {
 
             {/* Sign Out button */}
             <View style={styles.signOutContainer}>
-              <Button
-                title="Sign Out"
-                onPress={handleSignOut}
-                variant="outline"
+              <TouchableOpacity
                 style={styles.signOutButton}
-                textStyle={styles.signOutButtonText}
-                icon={<LogOut size={16} color={Colors.error[500]} />}
-              />
+                onPress={handleSignOut}
+                activeOpacity={0.8}
+              >
+                <LogOut size={16} color="#FFFFFF" style={{ marginRight: Spacing.xs }} />
+                <Text style={styles.signOutButtonText}>Sign Out</Text>
+              </TouchableOpacity>
             </View>
           </View>
           </View>
@@ -496,11 +539,9 @@ const styles = StyleSheet.create({
   content: { flex: 1 },
   centeredContainer: {
     flex: 1,
-    justifyContent: 'flex-start', // start from top instead of center
-    alignItems: 'center',      // keeps all content nicely aligned
     paddingHorizontal: Spacing.lg,
-    paddingTop: Spacing.xs, // reduced top padding
-    paddingBottom: Spacing.xs, // reduced bottom padding
+    paddingTop: 0,
+    paddingBottom: Spacing.md,
   },
   
   
@@ -518,53 +559,70 @@ const styles = StyleSheet.create({
   },
 
   titleSection: {
-    marginBottom: Spacing.sm, // increased spacing
+    marginBottom: Spacing.xs,
+    width: '100%',
   },
 
   title: {
-    fontSize: Typography.fontSize.xl, // reduced from 2xl
+    fontSize: Typography.fontSize['2xl'] + 4,
     fontWeight: Typography.fontWeight.bold,
-    color: '#0288D1',
-    textAlign: 'left',
+    color: '#FFACC4', // coral
+    letterSpacing: 0.5,
+  
+    textShadowColor: 'rgba(110, 200, 245, 0.8)', // sky blue
+    textShadowOffset: { width: 1, height: 1 },
+    textShadowRadius: 3,
   },
-
   profileSection: {
     flexDirection: 'column',
     alignItems: 'center',
-    marginBottom: Spacing.md, // increased spacing between profile and settings
+    marginBottom: Spacing.sm,
+    width: '100%',
   },
 
   userName: {
-    fontSize: Typography.fontSize.base, // reduced from lg
+    fontSize: Typography.fontSize.base,
     fontWeight: Typography.fontWeight.semibold,
     color: '#0288D1',
-    marginTop: Spacing.xs, // reduced from sm
+    marginTop: Spacing.xs,
     textAlign: 'center',
   },
 
   userEmail: {
-    fontSize: Typography.fontSize.xs, // reduced from sm
+    fontSize: Typography.fontSize.xs,
     color: '#0277BD',
     textAlign: 'center',
-    marginTop: 2, // reduced from Spacing.xs
+    marginTop: 2,
   },
 
   avatarContainer: {
     marginBottom: 0, // removed margin
   },
   avatar: { width: 48, height: 48, borderRadius: BorderRadius.xxl },
-  
+  avatarCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 2,
+    borderColor: '#FFEB3B',
+    backgroundColor: '#42A5F5',
+    justifyContent: 'center',
+    alignItems: 'center',
+    alignSelf: 'center',
+    marginBottom: 2,
+  },
 
   settingsList: {
-    marginBottom: Spacing.md, // increased spacing before sign out
+    marginBottom: Spacing.sm,
+    width: '100%',
   },
   
 
   settingItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: Spacing.xs, // reduced from sm
-    marginBottom: Spacing.xs, // reduced from sm
+    padding: Spacing.sm,
+    marginBottom: Spacing.xs,
     backgroundColor: '#ffffff',
     borderRadius: BorderRadius.lg,
     borderWidth: 2,
@@ -575,7 +633,7 @@ const styles = StyleSheet.create({
   settingIcon: {
     width: 32,
     height: 32,
-    borderRadius: BorderRadius.lg,
+    borderRadius: BorderRadius.md,
     backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
@@ -588,44 +646,52 @@ const styles = StyleSheet.create({
   settingContent: { flex: 1 },
 
   settingTitle: {
-    fontSize: Typography.fontSize.xs, // reduced from sm
+    fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.semibold,
     color: '#0288D1',
+    marginBottom: 1,
   },
 
-  settingSubtitle: { fontSize: Typography.fontSize.xs, color: '#0277BD', lineHeight: Typography.fontSize.xs * 1.2 },
-  settingDescription: { fontSize: Typography.fontSize.xs, color: '#546E7A', lineHeight: Typography.fontSize.xs * 1.2 },
+  settingSubtitle: { 
+    fontSize: Typography.fontSize.xs, 
+    color: '#0277BD', 
+    lineHeight: Typography.fontSize.xs * 1.2,
+    marginBottom: 1,
+  },
+  settingDescription: { 
+    fontSize: Typography.fontSize.xs, 
+    color: '#546E7A', 
+    lineHeight: Typography.fontSize.xs * 1.2,
+  },
 
   signOutContainer: {
-    marginTop: Spacing.sm, // added spacing from settings list
+    marginTop: Spacing.sm,
     paddingHorizontal: Spacing.sm,
-    paddingBottom: Spacing.md, // increased bottom padding for visibility
+    paddingBottom: Spacing.md,
+    width: '100%',
     alignItems: 'center',
   },
   
   
   signOutButton: {
-    backgroundColor: 'transparent',
-    borderWidth: 0,
+    flexDirection: 'row',
+    backgroundColor: '#D32F2F',
+    borderWidth: 2,
+    borderColor: '#B71C1C',
+    borderRadius: BorderRadius.lg,
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.lg,
+    minWidth: 180,
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...Shadows.small,
   },
 
   signOutButtonText: {
-    color: '#D32F2F',
-    fontSize: Typography.fontSize.lg,
+    color: '#FFFFFF',
+    fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.bold,
   },
-  avatarCircle: {
-  width: 48,
-  height: 48,
-  borderRadius: 24,
-  borderWidth: 2,
-  borderColor: '#FFEB3B',     // lemon yellowborder (#0D47A1 - dark navy blue border)
-  backgroundColor: '#42A5F5', // sky blue fill
-  justifyContent: 'center',
-  alignItems: 'center',
-  alignSelf: 'center',
-  marginBottom: 4, // reduced from 8
-},
 
 });
 

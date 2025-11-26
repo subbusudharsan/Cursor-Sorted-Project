@@ -91,12 +91,12 @@ export default function LandingExperience() {
         }),
         Animated.timing(ring1RotateAnim, {
           toValue: 1,
-          duration: 3400,
+          duration: 3000, // Same duration for both rings to end simultaneously
           useNativeDriver: nativeDriver,
         }),
         Animated.timing(ring2RotateAnim, {
           toValue: 1,
-          duration: 2600,
+          duration: 3000, // Same duration for both rings to end simultaneously
           useNativeDriver: nativeDriver,
         }),
         Animated.timing(floatingDot1RotateAnim, {
@@ -234,12 +234,12 @@ export default function LandingExperience() {
   
   const ring1Rotate = ring1RotateAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: ['0deg', '-540deg'], // 1.5 rotations counter-clockwise
+    outputRange: ['0deg', '-360deg'], // Full rotation counter-clockwise - ends at 0deg (same as start)
   });
   
   const ring2Rotate = ring2RotateAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: ['0deg', '540deg'], // 1.5 rotations clockwise
+    outputRange: ['0deg', '360deg'], // Full rotation clockwise - ends at 0deg (same as start)
   });
   
   const floatingDot1Rotate = floatingDot1RotateAnim.interpolate({
@@ -698,27 +698,50 @@ const styles = StyleSheet.create({
   },
   accentRings: {
     position: 'absolute',
-    width: 190,
-    height: 190,
+    width: 230,
+    height: 230,
+    // Adjusted centering: shift slightly left and up to balance bottom/right visibility
+    // logoCard is 180x180, center at 90,90
+    // accentRings is 230x230, so center it: left = (180-230)/2 = -25, top = (180-230)/2 = -25
+    // Adjusted to compensate for bottom/right showing more
+    left: -25, // Slightly left to reduce right side visibility
+    top: -25,  // Slightly up to reduce bottom side visibility
     alignItems: 'center',
     justifyContent: 'center',
   },
   ring1: {
     position: 'absolute',
-    width: 185,
-    height: 185,
-    borderRadius: 92.5,
+    width: 220,
+    height: 220,
+    borderRadius: 110, // Exactly half for perfect circle
     borderWidth: 1,
     borderColor: 'rgba(255, 235, 59, 0.3)',
+    // Adjusted centering: shift slightly right and down to balance bottom/right visibility
+    // accentRings is 230x230, center at (115, 115)
+    // Ring is 220x220, adjusted position to compensate for bottom/right showing more
+    left: 5, // Slightly right to reduce right side visibility
+    top: 5,  // Slightly down to reduce bottom side visibility
+    backgroundColor: 'transparent',
+    // Ensure perfect circle rendering
+    alignSelf: 'center',
   },
   ring2: {
     position: 'absolute',
-    width: 195,
-    height: 195,
-    borderRadius: 97.5,
+    width: 220,
+    height: 220,
+    borderRadius: 110, // Exactly half for perfect circle
     borderWidth: 1,
     borderColor: 'rgba(0, 136, 209, 0.2)',
+    // Adjusted centering: shift slightly right and down to balance bottom/right visibility
+    // IDENTICAL positioning to ring1 for perfect 4-way symmetry
+    left: 1, // Slightly right to reduce right side visibility
+    top: 1,
+    backgroundColor: 'transparent',
+    // Ensure perfect circle rendering - IDENTICAL to ring1
+    alignSelf: 'center',
   },
+  
+    
   centerGlow: {
     position: 'absolute',
     width: 90,

@@ -41,17 +41,12 @@ END $$;
 
 
 -- Create the correct policy
-
+-- Note: user_id in password_activity_log is text (email), so we compare as text
 CREATE POLICY "Users can read own password activity"
-
 ON public.password_activity_log
-
 FOR SELECT
-
 USING (
-
-  user_id = auth.jwt()->>'email'
-
+  user_id::text = (auth.jwt()->>'email')::text
 );
 
 -- No UPDATE or DELETE for password_activity_log (it's a log table - immutable)

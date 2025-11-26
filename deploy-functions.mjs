@@ -156,7 +156,7 @@ async function deployFunction(fnName) {
     form.append('metadata', JSON.stringify({
       entrypoint_path: 'index.ts',
       name: fnName,
-      verify_jwt: false
+      verify_jwt: false  // always disable JWT requirement
     }));
     form.append('file', sourceCode, {
       filename: 'index.ts',

@@ -102,6 +102,7 @@ function ContactChatScreen() {
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const [showSuggestedOptions, setShowSuggestedOptions] = useState(false);
   const [suggestedOptions, setSuggestedOptions] = useState<string[]>([]);
+  const [aiSourceChatId, setAiSourceChatId] = useState<string | null>(null); // ✅ Store AI source chat ID for back navigation
   const [waitingForOptions, setWaitingForOptions] = useState(false);
   // 🧠 cached chat context
   const [chatSummary, setChatSummary] = useState<string>("");
@@ -125,6 +126,10 @@ function ContactChatScreen() {
   const [tipText, setTipText] = useState("");
   // ✅ FIX 1: Track if hint box has been seen/dismissed to prevent re-showing
   const hasSeenHintBoxRef = useRef(false);
+  // ✅ FIX: Track if we're currently fetching options to prevent duplicate calls
+  const isFetchingOptionsRef = useRef(false);
+  // ✅ FIX: Track if options initialization has run to prevent dependency loop
+  const hasInitializedOptionsRef = useRef(false);
   // Tagging state for hint submission
   const [hintTaggedEntities, setHintTaggedEntities] = useState<TaggedEntity[]>([]);
   const [hintShowTagDropdown, setHintShowTagDropdown] = useState<'@' | '#' | null>(null);
@@ -217,6 +222,16 @@ const messageSubscriptionRef = useRef<RealtimeChannel | null>(null);
   }, []);
 const enterWaitingForOptions = useCallback(
   (recipientId?: string) => {
+    const targetRecipientId = recipientId ?? (user?.id ? String(user.id) : null);
+    
+    // ✅ FIX: Prevent duplicate calls for the same recipient
+    if (waitingForOptions && 
+        pendingOptionsRecipientRef.current && 
+        String(pendingOptionsRecipientRef.current) === String(targetRecipientId)) {
+      console.log('ℹ️ Already waiting for options for this recipient, skipping duplicate call');
+      return;
+    }
+    
     fadeOutCurrentOptions();
     stopOptionShimmer();
     setActiveOptionIndex(null);
@@ -224,8 +239,7 @@ const enterWaitingForOptions = useCallback(
     setShowSuggestedOptions(false);
     setSuggestedOptions([]);
     setManualInputMode(false);
-    pendingOptionsRecipientRef.current =
-      recipientId ?? (user?.id ? String(user.id) : null);
+    pendingOptionsRecipientRef.current = targetRecipientId;
     pendingOptionsSinceRef.current = Date.now();
     if (!waitingForOptions) {
       setWaitingForOptions(true);
@@ -284,6 +298,12 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         .eq("id", cid)
         .maybeSingle();
       if (!error && data) {
+        // ✅ Store AI source chat ID for back navigation to Stage 4
+        if (data.ai_source_chat_id) {
+          setAiSourceChatId(data.ai_source_chat_id);
+          console.log('✅ Stored AI source chat ID for back navigation:', data.ai_source_chat_id);
+        }
+        
         // ✅ CRITICAL: Check if chat is closed/resolved and hide options
         const chatIsClosed = data.is_resolved === true && data.closure_state === 'closed';
         setIsChatClosed(chatIsClosed);
@@ -291,6 +311,15 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           console.log("🛑 Chat is closed/resolved - hiding options");
           setShowSuggestedOptions(false);
           setSuggestedOptions([]);
+          // ✅ FIX: If chat is already closed when loading, navigate to history tab
+          // This handles the case where user opens a closed chat
+          setTimeout(() => {
+            console.log('🚀 Chat already closed - navigating to history tab');
+            router.replace({
+              pathname: '/contact-chat-details',
+              params: { contactId: contactId || '', autoSwitchToHistory: 'true' }
+            });
+          }, 1000);
         }
         
         if (data.context_data) {
@@ -351,6 +380,9 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       const id = chatId as string;
       console.log('🚀 CONTACT CHAT INITIALIZATION:', { chatId: id, userId: user.id });
       
+      // ✅ FIX: Reset initialization flag when chatId changes
+      hasInitializedOptionsRef.current = false;
+      
       // ✅ CRITICAL: Clean up any existing subscriptions first
       if (messageSubscriptionRef.current) {
         console.log('🧹 Cleaning up existing message subscription before setting up new one');
@@ -372,7 +404,12 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         });
         fetchInitialOptions(id, user.id);
         unsubscribeOptions = subscribeToOptions(id, user.id);
-        ensureInitialOptions(id);
+        // ✅ FIX: Delay ensureInitialOptions to avoid race condition with fetchInitialOptions
+        setTimeout(() => {
+          if (!showSuggestedOptions) {
+            ensureInitialOptions(id);
+          }
+        }, 1000);
         unsubscribeMessages = subscribeToMessages(id, user.id);
         unsubscribeClosure = subscribeToClosureState(id);
       } catch (err) {
@@ -427,6 +464,11 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
 
   // ✅ NEW: Initialize options waiting state when stored session opens
   useEffect(() => {
+    // ✅ FIX: Only run once when screen first loads, not on every state change
+    if (hasInitializedOptionsRef.current) {
+      return;
+    }
+    
     // Only run when:
     // 1. Initial loading is complete (messages are loaded)
     // 2. Chat ID is set
@@ -434,6 +476,8 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     // 4. Messages array is populated (either empty or has messages)
     // 5. Chat is not closed
     if (!initialLoading && chatId && user?.id && messages.length >= 0 && !isChatClosed) {
+      hasInitializedOptionsRef.current = true; // Mark as initialized
+      
       // Determine who should receive options based on last message sender
       if (messages.length > 0) {
         const lastMessage = messages[messages.length - 1];
@@ -451,14 +495,16 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           // Contact sent last message → current user should receive options
           console.log('✅ Initialization: Last message from contact → options for current user:', currentUserId);
           enterWaitingForOptions(String(currentUserId));
+          // ✅ FIX: Don't call fetchInitialOptions here - it's already called on line 391
         }
       } else {
-        // No messages yet → current user should receive options (initial turn)
+        // No messages yet → current user should receive options (initial turn - Stage 4 scenario)
         console.log('✅ Initialization: No messages → options for current user:', user.id);
         enterWaitingForOptions(String(user.id));
+        // ✅ FIX: Don't call fetchInitialOptions here - it's already called on line 391
       }
     }
-  }, [initialLoading, chatId, user?.id, messages.length, contactId, enterWaitingForOptions, isChatClosed]);
+  }, [initialLoading, chatId, user?.id, messages.length, contactId, enterWaitingForOptions, isChatClosed]); // ✅ FIX: Removed showSuggestedOptions from dependencies
   // 🔄 Tab focus refresh logic - regenerate options when user returns
   // Removed tab-focus auto refresh to avoid duplicate orchestrator calls
   useEffect(() => {
@@ -466,26 +512,60 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       headerLeft: () => (
         <TouchableOpacity
           style={{ paddingLeft: 16 }}
-          onPress={() => {
+          onPress={async () => {
             if (hasSentMessage.current) {
+              // ✅ After first message sent → go to My Talks/Contact Talks
               router.replace('/(tabs)/chats');
             } else {
-              router.push({
-                pathname: '/ai-chat',
-                params: {
-                  contactId: contactId as string,
-                  chatId: chatId as string,
-                  summary: summaryParam ?? '',
-                  thoughts: thoughtsParam ?? '',
-                  aiContext: aiContextParam ?? '',
-                  stage: '4',
-                  mode: 'continue',
-                  returnStage: 'ready',
-                  fromContactChat: '1',
-                  sent: '0',
-                  skipReturnBanner: '1',
-                },
-              });
+              // ✅ Before first message sent → go back to Stage 4 to edit details
+              // Get the AI source chat ID if not already stored
+              let sourceChatId = aiSourceChatId;
+              if (!sourceChatId && currentChatId) {
+                try {
+                  const { data: chatData } = await supabase
+                    .from("chats")
+                    .select("ai_source_chat_id")
+                    .eq("id", currentChatId)
+                    .maybeSingle();
+                  sourceChatId = chatData?.ai_source_chat_id || null;
+                  if (sourceChatId) {
+                    setAiSourceChatId(sourceChatId);
+                  }
+                } catch (err) {
+                  console.warn('⚠️ Failed to fetch AI source chat ID:', err);
+                }
+              }
+              
+              if (sourceChatId) {
+                // ✅ Navigate to AI chat with the source chat ID to restore Stage 4
+                console.log('🔙 Navigating back to Stage 4 with AI chat ID:', sourceChatId);
+                router.push({
+                  pathname: '/ai-chat',
+                  params: {
+                    contactId: contactId as string,
+                    chatId: sourceChatId, // ✅ Use AI source chat ID, not contact chat ID
+                    mode: 'continue',
+                    returnStage: 'ready',
+                    fromContactChat: '1',
+                    sent: '0',
+                    skipReturnBanner: '1',
+                  },
+                });
+              } else {
+                // Fallback: try to find the AI chat by contact ID
+                console.warn('⚠️ No AI source chat ID found, trying to find AI chat by contact');
+                router.push({
+                  pathname: '/ai-chat',
+                  params: {
+                    contactId: contactId as string,
+                    mode: 'continue',
+                    returnStage: 'ready',
+                    fromContactChat: '1',
+                    sent: '0',
+                    skipReturnBanner: '1',
+                  },
+                });
+              }
             }
           }}
         >
@@ -493,7 +573,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         </TouchableOpacity>
       ),
     });
-  }, [navigation, contactId, chatId, summaryParam, thoughtsParam, aiContextParam, hasSentMessage]);
+  }, [navigation, contactId, chatId, summaryParam, thoughtsParam, aiContextParam, hasSentMessage, aiSourceChatId, currentChatId]);
   useEffect(() => {
     Animated.timing(tipBoxSlideAnim, {
       toValue: 1,
@@ -700,7 +780,19 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     options: { force?: boolean } = {}
   ) => {
     const { force = false } = options;
-    console.log("🔍 FETCHING INITIAL OPTIONS", { chatId, userId, forced: force });
+    
+    // ✅ FIX: Prevent duplicate calls - if already fetching for this user, skip
+    if (isFetchingOptionsRef.current && _retryCount === 0) {
+      console.log("ℹ️ Already fetching options, skipping duplicate call");
+      return;
+    }
+    
+    // ✅ FIX: Set fetching flag only on first attempt
+    if (_retryCount === 0) {
+      isFetchingOptionsRef.current = true;
+    }
+    
+    console.log("🔍 FETCHING INITIAL OPTIONS", { chatId, userId, forced: force, retryCount: _retryCount });
     
     // ✅ CRITICAL: Check if conversation is closed before fetching options
     const { data: closureCheck } = await supabase
@@ -711,6 +803,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
 
     if (closureCheck?.is_resolved === true && closureCheck?.closure_state === 'closed') {
       console.log("🛑 Conversation is closed - no initial options needed");
+      isFetchingOptionsRef.current = false; // Clear fetching flag
       resolveWaitingForOptions(userId);
       return;
     }
@@ -725,6 +818,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         const lastSenderId = messagesData[0].sender_id;
         if (lastSenderId === userId) {
           console.log("⛔ Not user's turn - they sent the last message");
+          isFetchingOptionsRef.current = false; // Clear fetching flag
           setShowSuggestedOptions(false);
           setSuggestedOptions([]);
           resolveWaitingForOptions(userId);
@@ -741,13 +835,45 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       .limit(1);
     if (error) {
       console.error("❌ Failed to fetch initial options:", error);
+      isFetchingOptionsRef.current = false; // Clear fetching flag on error
       if (force) {
         resolveWaitingForOptions(userId);
         setOptionsGenerationFailed(true);
         showNotification('error', 'Options Failed', 'Response options could not load. Try regenerating or use manual input.');
       }
       return;
-    } else if (data && data.length > 0 && data[0].options && Array.isArray(data[0].options) && data[0].options.length >= 1) {
+    }
+    
+    // ✅ FIX: Enhanced retry logic for Stage 4 scenario
+    // Check if chat has no messages (indicating this is a fresh Stage 4 transition)
+    const { data: messagesCheck } = await supabase
+      .from("messages")
+      .select("id")
+      .eq("chat_id", chatId)
+      .limit(1);
+    
+    const isStage4Scenario = !messagesCheck || messagesCheck.length === 0;
+    const noOptionsFound = !data || data.length === 0 || !data[0].options || data[0].options.length === 0;
+    
+    // ✅ FIX: Retry if no options found, especially for Stage 4 scenario
+    if (noOptionsFound && _retryCount < 5) {
+      if (isStage4Scenario) {
+        console.log(`ℹ️ NO INITIAL OPTIONS FOUND YET (Stage 4 scenario) - retrying (${_retryCount + 1}/5)...`);
+      } else {
+        console.log(`ℹ️ NO OPTIONS FOUND - retrying (${_retryCount + 1}/5)...`);
+      }
+      // ✅ FIX: Only enter waiting state on first attempt, not on retries
+      if (_retryCount === 0) {
+        enterWaitingForOptions(userId);
+      }
+      // Retry after 2 seconds to allow database transaction to commit
+      setTimeout(() => {
+        fetchInitialOptions(chatId, userId, _retryCount + 1, options);
+      }, 2000);
+      return;
+    }
+    
+    if (data && data.length > 0 && data[0].options && Array.isArray(data[0].options) && data[0].options.length >= 1) {
       console.log(`✅ INITIAL OPTIONS FOUND (${data[0].options.length} total)`, data[0].options);
       console.log(" Recipient ID from DB:", data[0].recipient_id);
       console.log(" Current User ID:", userId);
@@ -788,15 +914,29 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           optionsCount: data[0].options.length,
           fallback: ctx.fallback
         });
-        // Enter waiting state and let realtime handler process when ready
-        enterWaitingForOptions(userId);
+        // ✅ FIX: For Stage 4 scenario, retry if options aren't valid yet
+        if (isStage4Scenario && _retryCount < 5) {
+          console.log(`🔄 Options not valid yet (Stage 4) - retrying (${_retryCount + 1}/5)...`);
+          setTimeout(() => {
+            fetchInitialOptions(chatId, userId, _retryCount + 1, options);
+          }, 2000);
+          return;
+        }
+        // ✅ FIX: Only enter waiting state if not already waiting and not retrying
+        if (_retryCount === 0 && !waitingForOptions) {
+          enterWaitingForOptions(userId);
+        }
         return;
       }
       
       const signature = `${data[0].id || ""}|${JSON.stringify(data[0].options || [])}`;
       if (signature && lastOptionsSignatureRef.current === signature) {
         console.log("ℹ️ Options already applied from initial fetch");
-        resolveWaitingForOptions(userId);
+        // ✅ FIX: Only resolve if options are actually displayed
+        if (showSuggestedOptions && suggestedOptions.length > 0) {
+          isFetchingOptionsRef.current = false;
+          resolveWaitingForOptions(userId);
+        }
         return;
       }
       const fetchedOptionId = data[0].id ? String(data[0].id) : null;
@@ -839,10 +979,15 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       }
       const cleanedOptions = cleanOptionsForDisplay(data[0].options || [], contact?.full_name || null);
       console.log("✅ Applying initial options:", cleanedOptions);
+      // ✅ FIX: Set options first, then resolve waiting state after state update
       setSuggestedOptions(cleanedOptions);
       setShowSuggestedOptions(true);
       pendingOptionsSinceRef.current = null;
-      resolveWaitingForOptions(userId);
+      isFetchingOptionsRef.current = false; // Clear fetching flag
+      // ✅ FIX: Use setTimeout to ensure state is updated before resolving
+      setTimeout(() => {
+        resolveWaitingForOptions(userId);
+      }, 0);
       setLastOptionRefreshTime(Date.now());
       // 🌟 Capture extra fields if present
       if (data[0].context_data) {
@@ -858,13 +1003,15 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       }
     } else {
       console.log("ℹ️ NO INITIAL OPTIONS FOUND YET");
-      // ✅ FIX: Enter waiting state when no options found
-      enterWaitingForOptions(userId);
+      // ✅ FIX: Only enter waiting state on first attempt, not on retries
+      if (_retryCount === 0) {
+        enterWaitingForOptions(userId);
+      }
       
       // ✅ FIX: For initial load (not force), retry once after a short delay
       // This handles cases where options are being generated but not yet in DB
-      if (!force) {
-        console.log("🔄 Retrying fetch after 2 seconds for initial options...");
+      if (!force && _retryCount < 5) {
+        console.log(`🔄 Retrying fetch after 2 seconds for initial options (${_retryCount + 1}/5)...`);
         setTimeout(async () => {
           // Retry fetch once
           const { data: retryData, error: retryError } = await supabase
@@ -913,7 +1060,10 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                 const retryCleanedOptions = cleanOptionsForDisplay(retryData[0].options || [], contact?.full_name || null);
                 setSuggestedOptions(retryCleanedOptions);
                 setShowSuggestedOptions(true);
-                resolveWaitingForOptions(userId);
+                isFetchingOptionsRef.current = false; // Clear fetching flag
+                setTimeout(() => {
+                  resolveWaitingForOptions(userId);
+                }, 0);
                 setLastOptionRefreshTime(Date.now());
                 if (retryData[0].context_data) {
                   setAiPerspective(retryData[0].context_data.newPerspective || "");
@@ -936,6 +1086,16 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
   };
   const ensureInitialOptions = async (chatId: string) => {
     if (!user) return;
+    // ✅ FIX: Don't run if we're already fetching options to prevent race conditions
+    if (isFetchingOptionsRef.current) {
+      console.log("ℹ️ Already fetching options, skipping ensureInitialOptions");
+      return;
+    }
+    // ✅ FIX: Don't run if options are already displayed
+    if (showSuggestedOptions && suggestedOptions.length > 0) {
+      console.log("ℹ️ Options already displayed, skipping ensureInitialOptions");
+      return;
+    }
     console.log("🔍 ENSURING INITIAL OPTIONS EXIST", { chatId, userId: user.id });
     try {
       const { data, error } = await supabase
@@ -1030,7 +1190,10 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         console.log("✅ Applying valid options from ensureInitialOptions:", cleanedOptions);
         setSuggestedOptions(cleanedOptions);
         setShowSuggestedOptions(true);
-        resolveWaitingForOptions(String(user.id));
+        isFetchingOptionsRef.current = false; // Clear fetching flag
+        setTimeout(() => {
+          resolveWaitingForOptions(String(user.id));
+        }, 0);
         setLastOptionRefreshTime(Date.now());
         if (data[0].context_data) {
           setAiPerspective(data[0].context_data.newPerspective || "");
@@ -1044,11 +1207,16 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         }
       } else {
         // Options already applied, just resolve waiting
-        resolveWaitingForOptions(String(user.id));
+        if (showSuggestedOptions && suggestedOptions.length > 0) {
+          resolveWaitingForOptions(String(user.id));
+        }
       }
     } catch (err) {
       console.error("❌ ensureInitialOptions error:", err);
-      enterWaitingForOptions(user ? String(user.id) : undefined);
+      // Don't enter waiting state if already fetching
+      if (!isFetchingOptionsRef.current) {
+        enterWaitingForOptions(user ? String(user.id) : undefined);
+      }
     }
   };
   // ---- realtime: options ----
@@ -1097,7 +1265,10 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           optionsCount: optionsArray.length,
           fallback: ctx.fallback
         });
-        enterWaitingForOptions(currentUserId);
+        // ✅ FIX: Don't re-enter waiting state if already waiting for this user
+        if (!waitingForOptions || String(pendingOptionsRecipientRef.current) !== String(currentUserId)) {
+          enterWaitingForOptions(currentUserId);
+        }
         return;
       }
 
@@ -1172,6 +1343,20 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       )
       .subscribe((status) => {
         console.log("📡 Options subscription status:", status);
+        if (status === 'SUBSCRIBED') {
+          console.log("✅ Options subscription is ACTIVE and ready for live updates");
+          // ✅ FIX: Once subscribed, do a quick fetch to catch any options that arrived before subscription
+          // Use closure variables to ensure we have the correct chatId and userId
+          const subscribedChatId = chatId;
+          const subscribedUserId = currentUserId;
+          setTimeout(() => {
+            if (subscribedChatId && subscribedUserId) {
+              console.log("🔄 Quick fetch after subscription active to catch any missed options");
+              // Use a function that will access current state when called
+              fetchInitialOptions(subscribedChatId, subscribedUserId, 0, { force: false });
+            }
+          }, 500);
+        }
       });
     return () => {
       console.log("🔌 Unsubscribing from options channel");
@@ -1219,16 +1404,24 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               }).start(() => setIsResolved(false));
             }, 5000);
             // ✅ FIX: Navigate to history tab instead of chats tab
+            // Use replace to prevent back navigation to closed chat
+            // Navigate after closure animation (2 seconds) to show the closure message
             setTimeout(() => {
-              router.push({
-                pathname: '/contact-chat-details',
-                params: { contactId: contactId || '', autoSwitchToHistory: 'true' }
-              });
-            }, 2500);
+              console.log('🚀 Navigating to history tab after closure');
+              if (contactId) {
+                router.replace({
+                  pathname: '/contact-chat-details',
+                  params: { contactId: contactId, autoSwitchToHistory: 'true' }
+                });
+              } else {
+                // Fallback: navigate to chats if contactId is missing
+                console.warn('⚠️ contactId missing, navigating to chats tab');
+                router.replace('/(tabs)/chats');
+              }
+            }, 2000);
           }
         }
       )
-      .subscribe();
     return () => {
       supabase.removeChannel(channel);
     };
@@ -1487,6 +1680,42 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         switch (status) {
           case "SUBSCRIBED":
             console.log("📡 Messages connected");
+            console.log("✅ Messages subscription is ACTIVE and ready for live updates");
+            // ✅ FIX: Once subscribed, refresh messages to catch any that arrived before subscription
+            // Use closure variables to ensure we have the correct chatId and userId
+            const subscribedChatId = chatId;
+            const subscribedUserId = currentUserId;
+            setTimeout(async () => {
+              if (subscribedChatId && subscribedUserId) {
+                console.log("🔄 Quick refresh after subscription active to catch any missed messages");
+                // Fetch messages directly using the subscribed chatId
+                try {
+                  const { data, error } = await supabase
+                    .from("messages")
+                    .select("*")
+                    .eq("chat_id", subscribedChatId)
+                    .order("created_at", { ascending: true });
+                  if (error) throw error;
+                  if (data) {
+                    setMessages((prev) => {
+                      // Merge with existing messages, avoiding duplicates
+                      const existingIds = new Set(prev.map(m => m.id));
+                      const newMessages = (data || []).filter(msg => !existingIds.has(msg.id));
+                      if (newMessages.length === 0) return prev;
+                      return [...prev, ...newMessages.map((msg) => ({
+                        id: msg.id,
+                        content: msg.content,
+                        sender_type: (msg.sender_id === subscribedUserId ? "user" : "contact") as "user" | "contact",
+                        sender_id: msg.sender_id,
+                        created_at: msg.created_at,
+                      }))];
+                    });
+                  }
+                } catch (err) {
+                  console.error("⚠️ Error refreshing messages after subscription:", err);
+                }
+              }
+            }, 500);
             break;
 
           case "CHANNEL_ERROR":

@@ -16,7 +16,7 @@ import {
 } from 'react-native';
 
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
@@ -56,6 +56,7 @@ interface UserProfile {
 
 export default function ProfileSettingsScreen() {
   const { user } = useAuth();
+  const insets = useSafeAreaInsets();
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -537,7 +538,7 @@ setHasUnsavedChanges(false);
         style={styles.container}
         contentStyle={styles.content}
         offset={Platform.OS === 'ios' ? 80 : 0}
-        edges={['top', 'left', 'right']}
+        edges={['left', 'right']}
       >
        <TouchableWithoutFeedback
   accessible={false}   // ✅ allow touches to pass through for scrolling
@@ -548,9 +549,9 @@ setHasUnsavedChanges(false);
 >
   <Animated.View style={[styles.content, { opacity: fadeAnim, transform: [{ scale: scaleAnim }] }]}>
 
-            <View style={styles.header}>
+            <View style={[styles.header, { paddingTop: Math.max(insets.top + Spacing.sm, Spacing.lg) }]}>
               <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-                <ArrowLeft size={24} color={Colors.text.secondary} />
+                <ArrowLeft size={20} color={Colors.text.secondary} />
               </TouchableOpacity>
               <Text style={styles.headerTitle}>Profile Settings</Text>
               <View style={styles.placeholder} />
@@ -590,7 +591,7 @@ setHasUnsavedChanges(false);
                     <Image source={{ uri: profile.avatar_url }} style={styles.avatarClean} />
                   ) : (
                     <View style={styles.avatarCircle}>
-  <User size={24} color="#FFEB3B" />
+  <User size={20} color="#FFEB3B" />
 </View>
 
                   )}
@@ -616,13 +617,13 @@ setHasUnsavedChanges(false);
 />
 
                     <TouchableOpacity onPress={() => setEditingFirstName(false)}>
-                      <Check size={20} color={Colors.success[500]} />
+                      <Check size={16} color={Colors.success[500]} />
                     </TouchableOpacity>
                   </View>
                 ) : (
                   <TouchableOpacity style={styles.row} onPress={() => setEditingFirstName(true)}>
                     <Text style={styles.value}>{tempFirstName || 'Not set'}</Text>
-                    <Edit3 size={16} color={Colors.text.tertiary} />
+                    <Edit3 size={14} color={Colors.text.tertiary} />
                   </TouchableOpacity>
                 )}
               </View>
@@ -652,7 +653,7 @@ setHasUnsavedChanges(false);
                 ) : (
                   <TouchableOpacity style={styles.row} onPress={() => setEditingLastName(true)}>
                     <Text style={styles.value}>{tempLastName || 'Not set'}</Text>
-                    <Edit3 size={16} color={Colors.text.tertiary} />
+                    <Edit3 size={14} color={Colors.text.tertiary} />
                   </TouchableOpacity>
                 )}
               </View>
@@ -682,7 +683,7 @@ setHasUnsavedChanges(false);
                 ) : (
                   <TouchableOpacity style={styles.row} onPress={() => setEditingNickname(true)}>
                     <Text style={styles.value}>{tempNickname || 'Not set'}</Text>
-                    <Edit3 size={16} color={Colors.text.tertiary} />
+                    <Edit3 size={14} color={Colors.text.tertiary} />
                   </TouchableOpacity>
                 )}
               </View>
@@ -705,7 +706,7 @@ setHasUnsavedChanges(false);
           <Text style={styles.dropdownText}>
             {selectedPhoneCountry?.dialCode || '+1'}
           </Text>
-          <ChevronDown size={16} color={Colors.text.tertiary} />
+          <ChevronDown size={14} color={Colors.text.tertiary} />
         </TouchableOpacity>
       </View>
 
@@ -792,7 +793,7 @@ setHasUnsavedChanges(false);
               {country.code} - {country.name} ({country.dialCode})
             </Text>
             {selectedPhoneCountry?.code === country.code && (
-              <Check size={16} color={Colors.primary[500]} />
+              <Check size={14} color={Colors.primary[500]} />
             )}
           </TouchableOpacity>
         ))}
@@ -854,7 +855,7 @@ setHasUnsavedChanges(false);
                   {country.code} - {country.name} ({country.dialCode})
                 </Text>
                 {selectedCountry?.code === country.code && (
-                  <Check size={16} color={Colors.primary[500]} />
+                  <Check size={14} color={Colors.primary[500]} />
                 )}
               </TouchableOpacity>
             ))}
@@ -936,7 +937,7 @@ setHasUnsavedChanges(false);
           onPress={() => setShowDatePicker(!showDatePicker)}
           style={{ marginLeft: 8 }}
         >
-          <Calendar size={20} color={Colors.primary[500]} />
+          <Calendar size={16} color={Colors.primary[500]} />
         </TouchableOpacity>
 
         {/* ✅ Save button */}
@@ -990,7 +991,7 @@ setHasUnsavedChanges(false);
 </View>
 
               {/* Account Information */}
-              <View style={{ marginTop: Spacing.lg }}>
+              <View style={{ marginTop: Spacing.md }}>
                 <Text style={styles.sectionTitle}>Account Information</Text>
               </View>
               <View style={styles.infoCard}>
@@ -1038,7 +1039,7 @@ setHasUnsavedChanges(false);
         onPress={discardChanges}
         disabled={saving}
       >
-        <X size={18} color={Colors.text.secondary} />
+        <X size={16} color={Colors.text.secondary} />
         <Text style={styles.discardButtonText}>Discard</Text>
       </TouchableOpacity>
       
@@ -1050,7 +1051,7 @@ setHasUnsavedChanges(false);
         {saving ? (
           <ActivityIndicator size="small" color="#FFFFFF" />
         ) : (
-          <Check size={18} color="#FFFFFF" />
+          <Check size={16} color="#FFFFFF" />
         )}
         <Text style={styles.saveButtonText}>
           {saving ? 'Saving...' : 'Save Changes'}
@@ -1067,7 +1068,7 @@ setHasUnsavedChanges(false);
           <SafeAreaView style={styles.modalContainer}>
             <View style={styles.modalHeader}>
               <TouchableOpacity onPress={() => setShowAvatarModal(false)}>
-                <X size={24} color={Colors.text.secondary} />
+                <X size={20} color={Colors.text.secondary} />
               </TouchableOpacity>
               <Text style={styles.modalTitle}>Profile Picture</Text>
               <View style={styles.placeholder} />
@@ -1075,14 +1076,14 @@ setHasUnsavedChanges(false);
             <View style={styles.modalContent}>
               <TouchableOpacity style={styles.avatarOption} onPress={takePhoto}>
                 <View style={styles.avatarOptionIcon}>
-                  <Camera size={24} color={Colors.primary[500]} />
+                  <Camera size={18} color={Colors.primary[500]} />
                 </View>
                 <Text style={styles.avatarOptionText}>Take Photo</Text>
               </TouchableOpacity>
               
               <TouchableOpacity style={styles.avatarOption} onPress={pickImage}>
                 <View style={styles.avatarOptionIcon}>
-                  <Upload size={24} color={Colors.primary[500]} />
+                  <Upload size={18} color={Colors.primary[500]} />
                 </View>
                 <Text style={styles.avatarOptionText}>Choose from Library</Text>
               </TouchableOpacity>
@@ -1090,7 +1091,7 @@ setHasUnsavedChanges(false);
               {profile?.avatar_url && (
                 <TouchableOpacity style={[styles.avatarOption, styles.removeOption]} onPress={removeAvatar}>
                   <View style={[styles.avatarOptionIcon, styles.removeOptionIcon]}>
-                    <Trash2 size={24} color={Colors.error[500]} />
+                    <Trash2 size={18} color={Colors.error[500]} />
                   </View>
                   <Text style={[styles.avatarOptionText, styles.removeOptionText]}>Remove Photo</Text>
                 </TouchableOpacity>
@@ -1127,16 +1128,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.lg,
+    paddingHorizontal: Spacing.md,
+    paddingBottom: Spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: Colors.borderLight,
     backgroundColor: Colors.surfaceElevated,
     ...Shadows.small,
   },
   backButton: {
-    width: 40,
-    height: 40,
+    width: 36,
+    height: 36,
     borderRadius: BorderRadius.lg,
     backgroundColor: Colors.surface,
     justifyContent: 'center',
@@ -1144,26 +1145,26 @@ const styles = StyleSheet.create({
     ...Shadows.small,
   },
   headerTitle: { 
-    fontSize: Typography.fontSize.xl, 
+    fontSize: Typography.fontSize.lg, 
     fontWeight: Typography.fontWeight.bold, 
     color: Colors.text.primary 
   },
   placeholder: { 
-    width: 40 
+    width: 36 
   },
   scrollView: { 
     flex: 1 
   },
   scrollContent: { 
-    paddingHorizontal: Spacing.sm,
-    paddingTop: 4,
+    paddingHorizontal: Spacing.md,
+    paddingTop: Spacing.md,
     paddingBottom: 60,
   },
   profilePictureSection: {
     marginBottom: Spacing.xs,
     backgroundColor: 'transparent',
     borderRadius: BorderRadius.lg,
-    padding: Spacing.sm,
+    padding: Spacing.xs,
   },
   section: { 
   marginBottom: Spacing.sm,
@@ -1176,9 +1177,9 @@ const styles = StyleSheet.create({
 },
 
   sectionTitle: { 
-  fontSize: Typography.fontSize.sm, 
+  fontSize: Typography.fontSize.xs, 
   fontWeight: Typography.fontWeight.semibold, 
-  marginBottom: Spacing.xs, 
+  marginBottom: 4, 
   color: '#0288D1', // dark sky blue / navy accent
 },
 
@@ -1214,11 +1215,11 @@ const styles = StyleSheet.create({
     flex: 2,
   },
   value: { 
-    fontSize: Typography.fontSize.sm, 
+    fontSize: Typography.fontSize.xs, 
     color: Colors.text.secondary, 
   },
   subValue: { 
-    fontSize: Typography.fontSize.sm, 
+    fontSize: Typography.fontSize.xs, 
     color: Colors.text.tertiary 
   },
   avatarContainer: {
@@ -1291,7 +1292,7 @@ avatarPlaceholderClean: {
     ...Shadows.small,
   },
   dropdownText: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     color: Colors.text.primary,
   },
   dropdownItem: {
@@ -1353,17 +1354,17 @@ avatarPlaceholderClean: {
     paddingVertical: Spacing.sm,
   },
   infoLabel: {
-    fontSize: Typography.fontSize.sm,
+    fontSize: Typography.fontSize.xs,
     color: Colors.text.secondary,
     fontWeight: Typography.fontWeight.semibold,
     marginBottom: 2,
     letterSpacing: 0.5,
   },
 infoValue: {
-  fontSize: Typography.fontSize.sm,
+  fontSize: Typography.fontSize.xs,
   color: Colors.text.primary,
   fontWeight: Typography.fontWeight.regular,
-  lineHeight: Typography.lineHeight.normal * Typography.fontSize.sm,
+  lineHeight: Typography.fontSize.xs * 1.3,
   width: '100%',
 },
 
@@ -1376,28 +1377,28 @@ infoValue: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: Spacing.xl,
-    paddingVertical: Spacing.lg,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: Colors.borderLight,
     backgroundColor: Colors.surfaceElevated,
   },
   modalTitle: {
-    fontSize: Typography.fontSize.lg,
+    fontSize: Typography.fontSize.base,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.text.primary,
   },
   modalContent: {
     flex: 1,
-    padding: Spacing.xl,
+    padding: Spacing.md,
   },
   avatarOption: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: Colors.surfaceElevated,
-    borderRadius: BorderRadius.xl,
-    padding: Spacing.lg,
-    marginBottom: Spacing.md,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    marginBottom: Spacing.sm,
     borderWidth: 1,
     borderColor: Colors.borderLight,
     ...Shadows.small,
@@ -1407,21 +1408,21 @@ infoValue: {
     backgroundColor: Colors.error[50],
   },
   avatarOptionIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: BorderRadius.lg,
+    width: 36,
+    height: 36,
+    borderRadius: BorderRadius.md,
    backgroundColor: '#FFEB3B',
    borderWidth: 2,
    borderColor: '#0277BD',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: Spacing.lg,
+    marginRight: Spacing.md,
   },
   removeOptionIcon: {
     backgroundColor: Colors.error[100],
   },
   avatarOptionText: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.medium,
     color: Colors.text.primary,
   },
@@ -1461,7 +1462,7 @@ infoValue: {
     ...Shadows.small,
   },
   discardButtonText: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     color: Colors.text.secondary,
     fontWeight: Typography.fontWeight.medium,
   },
@@ -1483,7 +1484,7 @@ infoValue: {
     opacity: 0.6,
   },
   saveButtonText: {
-    fontSize: Typography.fontSize.base,
+    fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.bold,
     color: '#0277BD',
     textShadowColor: '#FFD700',

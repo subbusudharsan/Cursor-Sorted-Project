@@ -631,12 +631,14 @@ const performBulkDelete = async () => {
   return (
     <KeyboardSafeView
       style={styles.container}
-      contentStyle={styles.content}
-      offset={(insets.top || 0) + 8}
+      
       edges={['top', 'left', 'right']}
     >
-      <View style={[styles.content, { paddingTop: insets.top }] }>
-        <View style={styles.centeredContainer}>
+     
+     <View style={styles.content}>
+<View style={[styles.centeredContainer, { paddingTop: insets.top }]}>
+
+
           <View style={styles.header}>
             <Text style={styles.title}>Contacts</Text>
           </View>
@@ -804,6 +806,10 @@ const performBulkDelete = async () => {
               <Text style={styles.cancelButtonText}>Cancel</Text>
             </TouchableOpacity>
             <TouchableOpacity
+              style={[
+                styles.deleteButton,
+                (bulkDeleting || selectedContacts.length === 0) && styles.deleteButtonDisabled
+              ]}
               onPress={confirmBulkDelete}
               disabled={bulkDeleting || selectedContacts.length === 0}
             >
@@ -950,9 +956,11 @@ const styles = StyleSheet.create({
   },
   centeredContainer: {
     flex: 1,
-    paddingHorizontal: Spacing.md,
-    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.lg,
+    paddingBottom: Spacing.md,
   },
+  
+  
   header: {
     marginBottom: Spacing.md,
   },
@@ -966,12 +974,14 @@ const styles = StyleSheet.create({
     color: '#6b7280',
   },
   title: {
-    fontSize: Typography.fontSize.lg,
+    fontSize: Typography.fontSize['2xl'] + 4,
     fontWeight: Typography.fontWeight.bold,
-    color: Colors.secondary[700],
-    textAlign: 'left',
-    marginBottom: Spacing.sm,
-    letterSpacing: 0.2,
+    color: '#FFACC4', // coral
+    letterSpacing: 0.5,
+  
+    textShadowColor: 'rgba(110, 200, 245, 0.8)', // sky blue
+    textShadowOffset: { width: 1, height: 1 },
+    textShadowRadius: 3,
   },
   searchContainer: {
     flexDirection: 'row',

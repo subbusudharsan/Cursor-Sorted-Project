@@ -1,10 +1,25 @@
-import { Tabs } from 'expo-router';
+import { Tabs, useRouter } from 'expo-router';
 import { MessageCircle, Users, Heart, Settings } from 'lucide-react-native';
 import { useChatBadge } from '@/contexts/ChatBadgeContext';
 import { View, Text, StyleSheet } from 'react-native';
+import { useAuth } from '@/contexts/AuthContext';
+import { useEffect } from 'react';
 
 function TabLayout() {
   const { unreadContactCount } = useChatBadge();
+  const { user, loading } = useAuth();
+  const router = useRouter();
+
+  // ✅ FIX: Navigation guard - redirect to landing if not authenticated
+  // This prevents users from accessing tabs after signing out
+  useEffect(() => {
+    if (!loading && !user) {
+      // User is not authenticated, redirect to landing page immediately
+      console.log('🚫 User not authenticated, redirecting to landing page');
+      // Use replace to prevent back navigation
+      router.replace('/');
+    }
+  }, [user, loading, router]);
 
   return (
     <Tabs

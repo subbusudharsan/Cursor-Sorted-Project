@@ -117,18 +117,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             const { data: p, error: pErr } = await supabase
               .from("profiles")
               .select("id")
-              .eq("id", user.id);
-            if (pErr) throw pErr;
-            if (!p || p.length === 0) {
+              .eq("id", user.id)
+              .maybeSingle();
+            if (pErr && pErr.code !== 'PGRST116') throw pErr;
+            if (!p) {
               const { error: insErr } = await supabase.from("profiles").insert({
                 id: user.id,
                 email: user.email!,
-                full_name: user.user_metadata.full_name,
+                full_name: user.user_metadata?.full_name,
               });
-              if (insErr) throw insErr;
+              // Ignore duplicate key errors (profile already exists from signIn)
+              if (insErr && insErr.code !== '23505') {
+                console.error("⚠️ Profile creation error:", insErr);
+              } else if (!insErr) {
+                console.log("✅ Profile created in onAuthStateChange");
+              }
             }
-          } catch (e) {
-            console.error("⚠️ Profile creation error:", e);
+          } catch (e: any) {
+            // Ignore duplicate key errors
+            if (e?.code !== '23505') {
+              console.error("⚠️ Profile creation error:", e);
+            }
           }
         })();
       }
@@ -267,16 +276,74 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         .from('profiles')
         .select('id')
         .eq('id', data.user.id)
-        .single();
+        .maybeSingle();
       
       if (profileError || !profileData) {
-        // User is authenticated but profile doesn't exist - unregistered user
-        console.warn('⚠️ User authenticated but profile not found - unregistered user');
-        // Sign out the user since they can't use the app without a profile
-        await supabase.auth.signOut();
-        const customError: any = new Error('UNREGISTERED_USER');
-        customError.userId = data.user.id;
-        throw customError;
+        // Profile doesn't exist - try to create it (for newly verified users)
+        console.log('⚠️ Profile not found, attempting to create profile for user:', data.user.id);
+        
+        try {
+          // Check if this is a newly verified user (has full_name in metadata from signup)
+          const fullName = data.user.user_metadata?.full_name;
+          
+          if (fullName) {
+            // This is a verified user from signup - create their profile
+            const { error: createError } = await supabase.from('profiles').insert({
+              id: data.user.id,
+              email: data.user.email!,
+              full_name: fullName,
+            });
+            
+            if (createError) {
+              // Check if it's a duplicate key error (profile already exists)
+              if (createError.code === '23505') {
+                console.log('ℹ️ Profile already exists (created by another process)');
+                // Profile exists - continue normally
+              } else {
+                console.error('❌ Failed to create profile:', createError);
+                // If profile creation fails, check if it was created by another process
+                // Wait a bit and check again
+                await new Promise(resolve => setTimeout(resolve, 500));
+                const { data: retryProfileData } = await supabase
+                  .from('profiles')
+                  .select('id')
+                  .eq('id', data.user.id)
+                  .maybeSingle();
+                
+                if (!retryProfileData) {
+                  // Still no profile - this is truly an unregistered user
+                  console.warn('⚠️ User authenticated but profile not found after creation attempt - unregistered user');
+                  await supabase.auth.signOut();
+                  const customError: any = new Error('UNREGISTERED_USER');
+                  customError.userId = data.user.id;
+                  throw customError;
+                }
+                // Profile was created by another process - continue
+                console.log('✅ Profile found after retry');
+              }
+            } else {
+              console.log('✅ Profile created successfully for verified user');
+            }
+          } else {
+            // No full_name in metadata - this is likely an unregistered user
+            console.warn('⚠️ User authenticated but profile not found and no signup metadata - unregistered user');
+            await supabase.auth.signOut();
+            const customError: any = new Error('UNREGISTERED_USER');
+            customError.userId = data.user.id;
+            throw customError;
+          }
+        } catch (error: any) {
+          // If it's already an UNREGISTERED_USER error, rethrow it
+          if (error.message === 'UNREGISTERED_USER') {
+            throw error;
+          }
+          // Other errors - treat as unregistered
+          console.error('❌ Error handling missing profile:', error);
+          await supabase.auth.signOut();
+          const customError: any = new Error('UNREGISTERED_USER');
+          customError.userId = data.user.id;
+          throw customError;
+        }
       }
     }
     
