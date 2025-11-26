@@ -311,15 +311,8 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           console.log("🛑 Chat is closed/resolved - hiding options");
           setShowSuggestedOptions(false);
           setSuggestedOptions([]);
-          // ✅ FIX: If chat is already closed when loading, navigate to history tab
-          // This handles the case where user opens a closed chat
-          setTimeout(() => {
-            console.log('🚀 Chat already closed - navigating to history tab');
-            router.replace({
-              pathname: '/contact-chat-details',
-              params: { contactId: contactId || '', autoSwitchToHistory: 'true' }
-            });
-          }, 1000);
+          // ✅ FIX: User can stay on closed chat screen - no automatic navigation
+          // User can manually navigate back when they're ready
         }
         
         if (data.context_data) {
@@ -402,7 +395,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           showNotification('error', 'Loading Failed', 'Could not load messages');
           setInitialLoading(false);
         });
-        fetchInitialOptions(id, user.id);
+        fetchInitialOptions(id, user.id, 0, { force: true }); // ✅ FIX: Always force fresh fetch on navigation
         unsubscribeOptions = subscribeToOptions(id, user.id);
         // ✅ FIX: Delay ensureInitialOptions to avoid race condition with fetchInitialOptions
         setTimeout(() => {
@@ -514,8 +507,13 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           style={{ paddingLeft: 16 }}
           onPress={async () => {
             if (hasSentMessage.current) {
-              // ✅ After first message sent → go to My Talks/Contact Talks
-              router.replace('/(tabs)/chats');
+              // ✅ After first message sent → go to My Talks/Contact Talks conversation page
+              if (contactId) {
+                router.replace(`/contact-chat-details?contactId=${contactId}`);
+              } else {
+                // Fallback to chats tab if no contactId
+                router.replace('/(tabs)/chats');
+              }
             } else {
               // ✅ Before first message sent → go back to Stage 4 to edit details
               // Get the AI source chat ID if not already stored
@@ -930,13 +928,12 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       }
       
       const signature = `${data[0].id || ""}|${JSON.stringify(data[0].options || [])}`;
-      if (signature && lastOptionsSignatureRef.current === signature) {
-        console.log("ℹ️ Options already applied from initial fetch");
-        // ✅ FIX: Only resolve if options are actually displayed
-        if (showSuggestedOptions && suggestedOptions.length > 0) {
-          isFetchingOptionsRef.current = false;
-          resolveWaitingForOptions(userId);
-        }
+      
+      // ✅ FIX: Only skip if signature matches AND not forcing AND options already displayed
+      if (!force && signature && lastOptionsSignatureRef.current === signature && showSuggestedOptions && suggestedOptions.length > 0) {
+        console.log("ℹ️ Options already applied from initial fetch (signature match)");
+        isFetchingOptionsRef.current = false;
+        resolveWaitingForOptions(userId);
         return;
       }
       const fetchedOptionId = data[0].id ? String(data[0].id) : null;
@@ -977,18 +974,37 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         resolveWaitingForOptions(userId);
         return;
       }
+      
+      // ✅ FIX: If forcing, clear old options first to ensure fresh display
+      if (force) {
+        setShowSuggestedOptions(false);
+        setSuggestedOptions([]);
+      }
+      
       const cleanedOptions = cleanOptionsForDisplay(data[0].options || [], contact?.full_name || null);
       console.log("✅ Applying initial options:", cleanedOptions);
-      // ✅ FIX: Set options first, then resolve waiting state after state update
-      setSuggestedOptions(cleanedOptions);
-      setShowSuggestedOptions(true);
-      pendingOptionsSinceRef.current = null;
-      isFetchingOptionsRef.current = false; // Clear fetching flag
-      // ✅ FIX: Use setTimeout to ensure state is updated before resolving
-      setTimeout(() => {
-        resolveWaitingForOptions(userId);
-      }, 0);
-      setLastOptionRefreshTime(Date.now());
+      
+      // ✅ FIX: Use setTimeout when forcing to ensure state clears first
+      if (force) {
+        setTimeout(() => {
+          setSuggestedOptions(cleanedOptions);
+          setShowSuggestedOptions(true);
+          pendingOptionsSinceRef.current = null;
+          isFetchingOptionsRef.current = false;
+          resolveWaitingForOptions(userId);
+          setLastOptionRefreshTime(Date.now());
+          console.log("✅ Fresh options displayed (forced fetch):", cleanedOptions.length);
+        }, 50);
+      } else {
+        setSuggestedOptions(cleanedOptions);
+        setShowSuggestedOptions(true);
+        pendingOptionsSinceRef.current = null;
+        isFetchingOptionsRef.current = false;
+        setTimeout(() => {
+          resolveWaitingForOptions(userId);
+        }, 0);
+        setLastOptionRefreshTime(Date.now());
+      }
       // 🌟 Capture extra fields if present
       if (data[0].context_data) {
         setAiPerspective(data[0].context_data.newPerspective || "");
@@ -1277,7 +1293,16 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         isSubsequent: isFinalSubsequentOptions,
         optionsCount: optionsArray.length
       });
-      lastOptionsSignatureRef.current = `${row.id || ""}|${JSON.stringify(row.options || [])}`;
+      
+      const newSignature = `${row.id || ""}|${JSON.stringify(row.options || [])}`;
+      
+      // ✅ FIX: Always update if signature is different OR if we're waiting for options
+      if (lastOptionsSignatureRef.current === newSignature && !waitingForOptions) {
+        console.log("ℹ️ Options signature matches and not waiting - already displayed");
+        return;
+      }
+      
+      lastOptionsSignatureRef.current = newSignature;
 
       // ✅ CRITICAL: Don't apply options if chat is closed
       if (isChatClosed) {
@@ -1285,11 +1310,20 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         resolveWaitingForOptions(recipientId);
         return;
       }
-      const cleanedOptions = cleanOptionsForDisplay(optionsArray, contact?.full_name || null);
-      setSuggestedOptions(cleanedOptions);
-      setShowSuggestedOptions(true);
-      resolveWaitingForOptions(recipientId);
-      setLastOptionRefreshTime(Date.now());
+      
+      // ✅ FIX: Clear old options first to ensure UI updates properly
+      setShowSuggestedOptions(false);
+      setSuggestedOptions([]);
+      
+      // Use small delay to ensure state clears before setting new options
+      setTimeout(() => {
+        const cleanedOptions = cleanOptionsForDisplay(optionsArray, contact?.full_name || null);
+        setSuggestedOptions(cleanedOptions);
+        setShowSuggestedOptions(true);
+        resolveWaitingForOptions(recipientId);
+        setLastOptionRefreshTime(Date.now());
+        console.log("✅ New options displayed via realtime:", cleanedOptions.length);
+      }, 50);
 
       if (row.context_data) {
         setAiPerspective(row.context_data.newPerspective || "");
@@ -1381,44 +1415,24 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           console.log("🎉 CLOSURE STATE CHANGED", updatedChat);
           // FIX: Removed duplicate if-block; consolidated logic
           if (updatedChat.closure_state === 'closed' && updatedChat.is_resolved) {
-            console.log("🎉 Both smileys detected → showing closure banner");
+            console.log("🎉 Both smileys detected → chat closed, navigating immediately");
             // ✅ FIX: Immediately hide options when chat closes
             setIsChatClosed(true);
             setShowSuggestedOptions(false);
             setSuggestedOptions([]);
             resolveWaitingForOptions(String(user?.id || ''));
-            setIsResolved(true);
-            showNotification('success', 'Conversation Closed', '🌈 This conversation has peacefully concluded.');
-            // FIX: Stop before new anim to clear native state
-            closureAnim.stopAnimation();
-            Animated.timing(closureAnim, {
-              toValue: 1,
-              duration: 600,
-              useNativeDriver: true,
-            }).start();
-            setTimeout(() => {
-              Animated.timing(closureAnim, {
-                toValue: 0,
-                duration: 800,
-                useNativeDriver: true,
-              }).start(() => setIsResolved(false));
-            }, 5000);
-            // ✅ FIX: Navigate to history tab instead of chats tab
-            // Use replace to prevent back navigation to closed chat
-            // Navigate after closure animation (2 seconds) to show the closure message
-            setTimeout(() => {
-              console.log('🚀 Navigating to history tab after closure');
-              if (contactId) {
-                router.replace({
-                  pathname: '/contact-chat-details',
-                  params: { contactId: contactId, autoSwitchToHistory: 'true' }
-                });
-              } else {
-                // Fallback: navigate to chats if contactId is missing
-                console.warn('⚠️ contactId missing, navigating to chats tab');
-                router.replace('/(tabs)/chats');
-              }
-            }, 2000);
+            // ✅ FIX: Navigate to history tab immediately (no delay, no notification, no animation)
+            console.log('🚀 Navigating to history tab immediately after closure (from realtime)');
+            if (contactId) {
+              router.replace({
+                pathname: '/contact-chat-details',
+                params: { contactId: contactId, autoSwitchToHistory: 'true' }
+              });
+            } else {
+              // Fallback: navigate to chats if contactId is missing
+              console.warn('⚠️ contactId missing, navigating to chats tab');
+              router.replace('/(tabs)/chats');
+            }
           }
         }
       )
@@ -1499,6 +1513,11 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           console.log(" Matches (string)?", String(newMsg.sender_id) === String(contactId));
           if (String(newMsg.sender_id) === String(contactId)) {
             // ✅ CRITICAL: Check if conversation is closed before generating options
+            if (isChatClosed) {
+              console.log("🛑 Chat is closed (local state) - skipping option generation");
+              resolveWaitingForOptions(currentUserId);
+              return;
+            }
             const { data: closureCheck } = await supabase
               .from("chats")
               .select("is_resolved, closure_state")
@@ -1507,6 +1526,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
 
             if (closureCheck?.is_resolved === true && closureCheck?.closure_state === 'closed') {
               console.log("🛑 Conversation is closed - skipping option generation");
+              setIsChatClosed(true);
               resolveWaitingForOptions(currentUserId);
               return;
             }
@@ -2001,9 +2021,21 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             updateData.closure_achieved_at = new Date().toISOString();
             console.log("✅ Both users sent smileys - conversation closed!");
             // ✅ FIX: Immediately hide options and stop generating new ones
+            setIsChatClosed(true);
             setShowSuggestedOptions(false);
             setSuggestedOptions([]);
             resolveWaitingForOptions(String(user?.id || ''));
+            // ✅ FIX: Navigate to history tab immediately (no delay, no notification)
+            console.log('🚀 Navigating to history tab immediately after closure (from message send)');
+            if (contactId) {
+              router.replace({
+                pathname: '/contact-chat-details',
+                params: { contactId: contactId, autoSwitchToHistory: 'true' }
+              });
+            } else {
+              console.warn('⚠️ contactId missing, navigating to chats tab');
+              router.replace('/(tabs)/chats');
+            }
             // Notify both via Supabase trigger — don't show banner here yet
           } else {
             // 🕊 One user sent smiley → only mark pending, no closure yet
@@ -2379,8 +2411,24 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           /^(ok|okay|sure|yeah|yes),/i.test(option.trim())
         );
         
-        // Only add acknowledgment if it's missing
-        if (!hasAcknowledgment) {
+        // ✅ NEW: Detect if option is a casual/social response (greeting, check-in, pleasantry)
+        // These don't need acknowledgments prepended - they're already complete responses
+        const isCasualResponse = (
+          optionLower.startsWith('hi') ||
+          optionLower.startsWith('hey') ||
+          optionLower.startsWith('hello') ||
+          optionLower.startsWith('thanks') ||
+          optionLower.startsWith('thank you') ||
+          optionLower.startsWith('appreciate') ||
+          /hope.*doing|how are you|how.*going|have a (nice|good|great) (day|weekend)/i.test(optionLower) ||
+          /you're welcome|i'm doing|doing great|doing well|sending.*vibes|positive.*vibes/i.test(optionLower) ||
+          /glad to hear|good to hear|great to hear|nice to hear/i.test(optionLower) ||
+          /i'm doing (good|great|well|fine)/i.test(optionLower) ||
+          /^[\p{Emoji}]+/u.test(option.trim()) // Emoji-only or emoji-starting messages
+        );
+        
+        // Only add acknowledgment if it's missing AND it's not a casual response
+        if (!hasAcknowledgment && !isCasualResponse) {
           let acknowledgment = '';
           
           // ✅ Detect emotional tone of the message
@@ -2469,6 +2517,11 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
   // 🔄 Regenerate options function
   const regenerateOptions = async () => {
     if (!currentChatId || !user) return;
+    // ✅ CRITICAL: Don't regenerate options if chat is closed
+    if (isChatClosed) {
+      console.log("🛑 Chat is closed - cannot regenerate options");
+      return;
+    }
     setOptionsGenerationFailed(false);
     enterWaitingForOptions(String(user.id));
     await fetchInitialOptions(currentChatId, user.id, 0, { force: true });
@@ -3323,6 +3376,11 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                       setShowTipBox(false);
                       setHintSubmitted(true);
                       // ✅ FIX: Always regenerate options immediately after hint submission
+                      // ✅ CRITICAL: Don't regenerate options if chat is closed
+                      if (isChatClosed) {
+                        console.log("🛑 Chat is closed - cannot regenerate options after hint submission");
+                        return;
+                      }
                       console.log("🔄 Hint submitted - regenerating options immediately with hint context");
                       enterWaitingForOptions(user?.id ? String(user.id) : undefined);
                       // Get latest message from contact to respond to
@@ -3421,7 +3479,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               </Text>
             </Animated.View>
           )}
-  {shouldShowComposing && (
+  {shouldShowComposing && !isChatClosed && (
     <View style={styles.notificationContainer}>
       <Text style={styles.notificationText}>
       💞 Composing some thoughtful replies... one sec!

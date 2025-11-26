@@ -636,29 +636,12 @@ const cleanPerspective = (text: string | undefined): string => {
         cleaned = cleaned.replace(new RegExp(`\\b${escaped}'\\b`, 'gi'), (match, offset, source) =>
           applySentenceCase('your', offset, source)
         );
-        
-        // ✅ FIX: Handle @ tags for names WITH spaces too
-        if (hasSpace) {
-          // For names with spaces: @Sudharsan Prasadh, @ Sudharsan Prasadh
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'s\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('your', offset, source)
-          );
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('your', offset, source)
-          );
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('you', offset, source)
-          );
-        } else {
-          // For single-word names: @Sudharsan, @ Sudharsan
+        if (!hasSpace) {
           cleaned = cleaned.replace(new RegExp(`@${escaped}'s\\b`, 'gi'), (match, offset, source) =>
             applySentenceCase('your', offset, source)
           );
           cleaned = cleaned.replace(new RegExp(`@${escaped}'\\b`, 'gi'), (match, offset, source) =>
             applySentenceCase('your', offset, source)
-          );
-          cleaned = cleaned.replace(new RegExp(`@${escaped}\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('you', offset, source)
           );
         }
 
@@ -666,6 +649,11 @@ const cleanPerspective = (text: string | undefined): string => {
         cleaned = cleaned.replace(new RegExp(`\\b${escaped}\\b`, 'gi'), (match, offset, source) =>
           applySentenceCase('you', offset, source)
         );
+        if (!hasSpace) {
+          cleaned = cleaned.replace(new RegExp(`@${escaped}\\b`, 'gi'), (match, offset, source) =>
+            applySentenceCase('you', offset, source)
+          );
+        }
       });
       console.log(`   ✅ User A speaking TO User B: Replaced ${listenerVariants.join(', ')} with "you/your"`);
     }
@@ -680,15 +668,7 @@ const cleanPerspective = (text: string | undefined): string => {
         cleaned = cleaned.replace(new RegExp(`\\b${escaped}'s\\b`, 'gi'), 'my');
         cleaned = cleaned.replace(new RegExp(`\\b${escaped}'\\b`, 'gi'), 'my');
         cleaned = cleaned.replace(new RegExp(`\\b${escaped}\\b`, 'gi'), 'I');
-        
-        // ✅ FIX: Handle @ tags for names WITH spaces too
-        if (hasSpace) {
-          // For names with spaces: @Sudharsan Prasadh, @ Sudharsan Prasadh
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'s\\b`, 'gi'), 'my');
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'\\b`, 'gi'), 'my');
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}\\b`, 'gi'), 'I');
-        } else {
-          // For single-word names: @Sudharsan, @ Sudharsan
+        if (!hasSpace) {
           cleaned = cleaned.replace(new RegExp(`@${escaped}'s\\b`, 'gi'), 'my');
           cleaned = cleaned.replace(new RegExp(`@${escaped}'\\b`, 'gi'), 'my');
           cleaned = cleaned.replace(new RegExp(`@${escaped}\\b`, 'gi'), 'I');
@@ -709,35 +689,23 @@ const cleanPerspective = (text: string | undefined): string => {
         cleaned = cleaned.replace(new RegExp(`\\b${escaped}'\\b`, 'gi'), (match, offset, source) =>
           applySentenceCase('your', offset, source)
         );
-        
-        // ✅ FIX: Handle @ tags for names WITH spaces too
-        if (hasSpace) {
-          // For names with spaces: @UserAName, @ UserAName
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'s\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('your', offset, source)
-          );
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('your', offset, source)
-          );
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('you', offset, source)
-          );
-        } else {
-          // For single-word names: @UserAName, @ UserAName
+        if (!hasSpace) {
           cleaned = cleaned.replace(new RegExp(`@${escaped}'s\\b`, 'gi'), (match, offset, source) =>
             applySentenceCase('your', offset, source)
           );
           cleaned = cleaned.replace(new RegExp(`@${escaped}'\\b`, 'gi'), (match, offset, source) =>
             applySentenceCase('your', offset, source)
           );
-          cleaned = cleaned.replace(new RegExp(`@${escaped}\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('you', offset, source)
-          );
         }
 
         cleaned = cleaned.replace(new RegExp(`\\b${escaped}\\b`, 'gi'), (match, offset, source) =>
           applySentenceCase('you', offset, source)
         );
+        if (!hasSpace) {
+          cleaned = cleaned.replace(new RegExp(`@${escaped}\\b`, 'gi'), (match, offset, source) =>
+            applySentenceCase('you', offset, source)
+          );
+        }
       });
       console.log(`   ✅ User B speaking TO User A: Replaced ${listenerVariants.join(', ')} with "you/your"`);
     }

@@ -166,14 +166,11 @@ Deno.serve(async (req) => {
 
     const isRecipientUserA = recipientId === chatData?.user_id;
     const isRecipientUserB = recipientId === chatData?.contact_id;
+    const shouldUseHint = isRecipientUserB && hintFromB;
 
     // ✅ Extract context data early to avoid initialization errors
     const contextData = chatData?.context_data || {};
     const summarySharedNeutral = summary_shared_neutral || contextData.summary_shared_neutral || '';
-    
-    // ✅ FIX: Retrieve hintFromB from context_data as fallback (similar to summarySharedNeutral)
-    const hintFromBWithFallback = hintFromB || hint_from_b || contextData.hint_from_b || contextData.hintFromB || '';
-    const shouldUseHint = isRecipientUserB && hintFromBWithFallback;
     
     // ✅ Extract thoughts and session data early
     const thoughtsA = contextData.thoughts_a || contextData.thoughts || thoughts || '';
@@ -636,29 +633,12 @@ const cleanPerspective = (text: string | undefined): string => {
         cleaned = cleaned.replace(new RegExp(`\\b${escaped}'\\b`, 'gi'), (match, offset, source) =>
           applySentenceCase('your', offset, source)
         );
-        
-        // ✅ FIX: Handle @ tags for names WITH spaces too
-        if (hasSpace) {
-          // For names with spaces: @Sudharsan Prasadh, @ Sudharsan Prasadh
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'s\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('your', offset, source)
-          );
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('your', offset, source)
-          );
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('you', offset, source)
-          );
-        } else {
-          // For single-word names: @Sudharsan, @ Sudharsan
+        if (!hasSpace) {
           cleaned = cleaned.replace(new RegExp(`@${escaped}'s\\b`, 'gi'), (match, offset, source) =>
             applySentenceCase('your', offset, source)
           );
           cleaned = cleaned.replace(new RegExp(`@${escaped}'\\b`, 'gi'), (match, offset, source) =>
             applySentenceCase('your', offset, source)
-          );
-          cleaned = cleaned.replace(new RegExp(`@${escaped}\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('you', offset, source)
           );
         }
 
@@ -666,6 +646,11 @@ const cleanPerspective = (text: string | undefined): string => {
         cleaned = cleaned.replace(new RegExp(`\\b${escaped}\\b`, 'gi'), (match, offset, source) =>
           applySentenceCase('you', offset, source)
         );
+        if (!hasSpace) {
+          cleaned = cleaned.replace(new RegExp(`@${escaped}\\b`, 'gi'), (match, offset, source) =>
+            applySentenceCase('you', offset, source)
+          );
+        }
       });
       console.log(`   ✅ User A speaking TO User B: Replaced ${listenerVariants.join(', ')} with "you/your"`);
     }
@@ -680,15 +665,7 @@ const cleanPerspective = (text: string | undefined): string => {
         cleaned = cleaned.replace(new RegExp(`\\b${escaped}'s\\b`, 'gi'), 'my');
         cleaned = cleaned.replace(new RegExp(`\\b${escaped}'\\b`, 'gi'), 'my');
         cleaned = cleaned.replace(new RegExp(`\\b${escaped}\\b`, 'gi'), 'I');
-        
-        // ✅ FIX: Handle @ tags for names WITH spaces too
-        if (hasSpace) {
-          // For names with spaces: @Sudharsan Prasadh, @ Sudharsan Prasadh
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'s\\b`, 'gi'), 'my');
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'\\b`, 'gi'), 'my');
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}\\b`, 'gi'), 'I');
-        } else {
-          // For single-word names: @Sudharsan, @ Sudharsan
+        if (!hasSpace) {
           cleaned = cleaned.replace(new RegExp(`@${escaped}'s\\b`, 'gi'), 'my');
           cleaned = cleaned.replace(new RegExp(`@${escaped}'\\b`, 'gi'), 'my');
           cleaned = cleaned.replace(new RegExp(`@${escaped}\\b`, 'gi'), 'I');
@@ -709,35 +686,23 @@ const cleanPerspective = (text: string | undefined): string => {
         cleaned = cleaned.replace(new RegExp(`\\b${escaped}'\\b`, 'gi'), (match, offset, source) =>
           applySentenceCase('your', offset, source)
         );
-        
-        // ✅ FIX: Handle @ tags for names WITH spaces too
-        if (hasSpace) {
-          // For names with spaces: @UserAName, @ UserAName
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'s\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('your', offset, source)
-          );
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('your', offset, source)
-          );
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('you', offset, source)
-          );
-        } else {
-          // For single-word names: @UserAName, @ UserAName
+        if (!hasSpace) {
           cleaned = cleaned.replace(new RegExp(`@${escaped}'s\\b`, 'gi'), (match, offset, source) =>
             applySentenceCase('your', offset, source)
           );
           cleaned = cleaned.replace(new RegExp(`@${escaped}'\\b`, 'gi'), (match, offset, source) =>
             applySentenceCase('your', offset, source)
           );
-          cleaned = cleaned.replace(new RegExp(`@${escaped}\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('you', offset, source)
-          );
         }
 
         cleaned = cleaned.replace(new RegExp(`\\b${escaped}\\b`, 'gi'), (match, offset, source) =>
           applySentenceCase('you', offset, source)
         );
+        if (!hasSpace) {
+          cleaned = cleaned.replace(new RegExp(`@${escaped}\\b`, 'gi'), (match, offset, source) =>
+            applySentenceCase('you', offset, source)
+          );
+        }
       });
       console.log(`   ✅ User B speaking TO User A: Replaced ${listenerVariants.join(', ')} with "you/your"`);
     }
@@ -830,7 +795,7 @@ const generatingFor = isRecipientUserA ? 'User A' : 'User B';
 
 const isFirstResponseForUserB = !isRecipientUserA && safeConversationHistory.length <= 1;
 
-const hintPromptSnippet = shouldUseHint ? cleanPerspective(hintFromBWithFallback || '') : '';
+const hintPromptSnippet = shouldUseHint ? cleanPerspective(hintFromB || '') : '';
 
 // ✅ Extract neutral topic from conversation (factual only, no emotions)
 const extractNeutralTopic = (): string => {
@@ -1585,8 +1550,6 @@ ANY option containing the listener's name will be automatically REJECTED.
 - "I acknowledge your feelings and want to communicate better"
 - "Can we work together to resolve this issue?"
 
-(Note: You are using the Haiku model, which should mimic the warmth and quality of larger models while staying fast and stable.)
-
 CRITICAL PRONOUN RULES - PERSPECTIVE-AWARE TAG REPLACEMENT:
 ${isRecipientUserA ? `
 🎯 USER A SPEAKING TO USER B (${generatingFor === 'User A' ? 'You are User A' : 'You are User B'}):
@@ -1996,7 +1959,7 @@ ${isRecipientUserB ? `
 ${shouldUseHint && isRecipientUserB ? `
 ✅ USER B HAS HINT - USE HINT AS PRIMARY PERSPECTIVE (PRIVATE TO USER B ONLY):
 🔐 USER B'S PRIVATE PERSPECTIVE (PERSISTENT CORE CONTEXT FOR ALL TURNS):
-"${hintFromBWithFallback}"
+"${hintFromB}"
 
 ⚠️ CRITICAL: This hint is PRIVATE to User B and MUST NEVER be shown to User A.
 
@@ -2126,7 +2089,7 @@ ${cleanRecipientThoughts && cleanRecipientThoughts.length > 100 ? `
 
 ${shouldUseHint && isRecipientUserB ? `
 🔐 USER B'S PRIVATE PERSPECTIVE (PERSISTENT CORE CONTEXT FOR ALL TURNS):
-"${hintFromBWithFallback}"
+"${hintFromB}"
 
 ⚠️ CRITICAL: This hint is PRIVATE to User B and MUST NEVER be shown to User A.
 
@@ -2145,7 +2108,7 @@ The hint reveals:
 
 🎯 CRITICAL: COMPARE HINT WITH NEUTRAL TOPIC SUMMARY:
 Topic context (neutral, factual): "${cleanSummarySharedNeutral || cleanOriginalIssueSummary || cleanSummary}"
-User B's Hint (User B's perspective): "${hintFromBWithFallback}"
+User B's Hint (User B's perspective): "${hintFromB}"
 
 The AI must understand:
 1. Why User B behaved the way they did (from the hint)
@@ -3892,7 +3855,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       }
     }
 
-    const hintPerspective = shouldUseHint && !isRecipientUserA ? cleanPerspective(hintFromBWithFallback || '') : '';
+    const hintPerspective = shouldUseHint && !isRecipientUserA ? cleanPerspective(hintFromB || '') : '';
     const hintKeywords = shouldUseHint && !isRecipientUserA ? extractKeywords(hintPerspective, 12) : [];
 
       // ✅ REFINED FIX 2: Block explanation-invitation options based on refined logic
@@ -4245,7 +4208,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       });
 
       if (!hasHintOption) {
-        const hintSnippet = getPrimaryStatement(hintPerspective || hintFromBWithFallback || '');
+        const hintSnippet = getPrimaryStatement(hintPerspective || hintFromB || '');
         if (hintSnippet) {
           const fallbackHintOption = hintSnippet.endsWith('.') ? hintSnippet : `${hintSnippet}.`;
           // ✅ REFINED FIX 2: Only add explanation invitation if User B can ask to explain
@@ -4876,7 +4839,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
           validated: true,
           conversationStage: conversationPhase || 'discussion',
           turnCount: safeConversationHistory.length,
-          hintUsed: !!hintFromBWithFallback,
+          hintUsed: !!hintFromB,
           hintReasoning: optionsData.reasoning || null,
           isVeryFirstMessage,
           conversationTimingContext

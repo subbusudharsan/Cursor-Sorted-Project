@@ -166,14 +166,11 @@ Deno.serve(async (req) => {
 
     const isRecipientUserA = recipientId === chatData?.user_id;
     const isRecipientUserB = recipientId === chatData?.contact_id;
+    const shouldUseHint = isRecipientUserB && hintFromB;
 
     // ✅ Extract context data early to avoid initialization errors
     const contextData = chatData?.context_data || {};
     const summarySharedNeutral = summary_shared_neutral || contextData.summary_shared_neutral || '';
-    
-    // ✅ FIX: Retrieve hintFromB from context_data as fallback (similar to summarySharedNeutral)
-    const hintFromBWithFallback = hintFromB || hint_from_b || contextData.hint_from_b || contextData.hintFromB || '';
-    const shouldUseHint = isRecipientUserB && hintFromBWithFallback;
     
     // ✅ Extract thoughts and session data early
     const thoughtsA = contextData.thoughts_a || contextData.thoughts || thoughts || '';
@@ -636,29 +633,12 @@ const cleanPerspective = (text: string | undefined): string => {
         cleaned = cleaned.replace(new RegExp(`\\b${escaped}'\\b`, 'gi'), (match, offset, source) =>
           applySentenceCase('your', offset, source)
         );
-        
-        // ✅ FIX: Handle @ tags for names WITH spaces too
-        if (hasSpace) {
-          // For names with spaces: @Sudharsan Prasadh, @ Sudharsan Prasadh
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'s\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('your', offset, source)
-          );
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('your', offset, source)
-          );
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('you', offset, source)
-          );
-        } else {
-          // For single-word names: @Sudharsan, @ Sudharsan
+        if (!hasSpace) {
           cleaned = cleaned.replace(new RegExp(`@${escaped}'s\\b`, 'gi'), (match, offset, source) =>
             applySentenceCase('your', offset, source)
           );
           cleaned = cleaned.replace(new RegExp(`@${escaped}'\\b`, 'gi'), (match, offset, source) =>
             applySentenceCase('your', offset, source)
-          );
-          cleaned = cleaned.replace(new RegExp(`@${escaped}\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('you', offset, source)
           );
         }
 
@@ -666,6 +646,11 @@ const cleanPerspective = (text: string | undefined): string => {
         cleaned = cleaned.replace(new RegExp(`\\b${escaped}\\b`, 'gi'), (match, offset, source) =>
           applySentenceCase('you', offset, source)
         );
+        if (!hasSpace) {
+          cleaned = cleaned.replace(new RegExp(`@${escaped}\\b`, 'gi'), (match, offset, source) =>
+            applySentenceCase('you', offset, source)
+          );
+        }
       });
       console.log(`   ✅ User A speaking TO User B: Replaced ${listenerVariants.join(', ')} with "you/your"`);
     }
@@ -680,15 +665,7 @@ const cleanPerspective = (text: string | undefined): string => {
         cleaned = cleaned.replace(new RegExp(`\\b${escaped}'s\\b`, 'gi'), 'my');
         cleaned = cleaned.replace(new RegExp(`\\b${escaped}'\\b`, 'gi'), 'my');
         cleaned = cleaned.replace(new RegExp(`\\b${escaped}\\b`, 'gi'), 'I');
-        
-        // ✅ FIX: Handle @ tags for names WITH spaces too
-        if (hasSpace) {
-          // For names with spaces: @Sudharsan Prasadh, @ Sudharsan Prasadh
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'s\\b`, 'gi'), 'my');
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'\\b`, 'gi'), 'my');
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}\\b`, 'gi'), 'I');
-        } else {
-          // For single-word names: @Sudharsan, @ Sudharsan
+        if (!hasSpace) {
           cleaned = cleaned.replace(new RegExp(`@${escaped}'s\\b`, 'gi'), 'my');
           cleaned = cleaned.replace(new RegExp(`@${escaped}'\\b`, 'gi'), 'my');
           cleaned = cleaned.replace(new RegExp(`@${escaped}\\b`, 'gi'), 'I');
@@ -709,35 +686,23 @@ const cleanPerspective = (text: string | undefined): string => {
         cleaned = cleaned.replace(new RegExp(`\\b${escaped}'\\b`, 'gi'), (match, offset, source) =>
           applySentenceCase('your', offset, source)
         );
-        
-        // ✅ FIX: Handle @ tags for names WITH spaces too
-        if (hasSpace) {
-          // For names with spaces: @UserAName, @ UserAName
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'s\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('your', offset, source)
-          );
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('your', offset, source)
-          );
-          cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('you', offset, source)
-          );
-        } else {
-          // For single-word names: @UserAName, @ UserAName
+        if (!hasSpace) {
           cleaned = cleaned.replace(new RegExp(`@${escaped}'s\\b`, 'gi'), (match, offset, source) =>
             applySentenceCase('your', offset, source)
           );
           cleaned = cleaned.replace(new RegExp(`@${escaped}'\\b`, 'gi'), (match, offset, source) =>
             applySentenceCase('your', offset, source)
           );
-          cleaned = cleaned.replace(new RegExp(`@${escaped}\\b`, 'gi'), (match, offset, source) =>
-            applySentenceCase('you', offset, source)
-          );
         }
 
         cleaned = cleaned.replace(new RegExp(`\\b${escaped}\\b`, 'gi'), (match, offset, source) =>
           applySentenceCase('you', offset, source)
         );
+        if (!hasSpace) {
+          cleaned = cleaned.replace(new RegExp(`@${escaped}\\b`, 'gi'), (match, offset, source) =>
+            applySentenceCase('you', offset, source)
+          );
+        }
       });
       console.log(`   ✅ User B speaking TO User A: Replaced ${listenerVariants.join(', ')} with "you/your"`);
     }
@@ -830,7 +795,7 @@ const generatingFor = isRecipientUserA ? 'User A' : 'User B';
 
 const isFirstResponseForUserB = !isRecipientUserA && safeConversationHistory.length <= 1;
 
-const hintPromptSnippet = shouldUseHint ? cleanPerspective(hintFromBWithFallback || '') : '';
+const hintPromptSnippet = shouldUseHint ? cleanPerspective(hintFromB || '') : '';
 
 // ✅ Extract neutral topic from conversation (factual only, no emotions)
 const extractNeutralTopic = (): string => {
@@ -873,8 +838,8 @@ const neutralTopic = isRecipientUserB ? extractNeutralTopic() : '';
 // ✅ Define perspective clearly (who's speaking to whom)
 const perspectiveLine =
   generatingFor === 'User A'
-    ? "🚫 YOU ARE NOT AN AI ASSISTANT. You are generating what User A would say DIRECTLY to User B in a text message. User A is talking TO User B - NOT to an AI. Write as if User A is texting User B right now. Use 'I/me/my' for User A and 'you/your' for User B."
-    : "🚫 YOU ARE NOT AN AI ASSISTANT. You are generating what User B would say DIRECTLY to User A in a text message. User B is talking TO User A - NOT to an AI. Write as if User B is texting User A right now. Use 'I/me/my' for User B and 'you/your' for User A.";
+    ? "You are writing AS User A, talking TO User B. Use 'I/me/my' for yourself and 'you/your' for User B."
+    : "You are writing AS User B, talking TO User A. Use 'I/me/my' for yourself and 'you/your' for User A.";
 
 // ✅ Define third-party pronoun rule separately
 const thirdPartyLine = `
@@ -1509,54 +1474,7 @@ const lastTwoMessages = cleanConversationHistory.slice(-2).map((msg) => {
 Tone: Warm, caring, non-judgmental, genuinely supportive.`;
 
     const systemPrompt = `${perspectiveLine} ${thirdPartyLine} ${summarySourceOfTruthRules}
-
-🚫🚫🚫 CRITICAL: YOUR ROLE - READ THIS FIRST 🚫🚫🚫
-
-YOU ARE NOT AN AI ASSISTANT TALKING TO USERS.
-YOU ARE GENERATING WHAT ${isRecipientUserA ? 'USER A' : 'USER B'} WOULD SAY DIRECTLY TO ${isRecipientUserA ? 'USER B' : 'USER A'} IN A TEXT MESSAGE.
-
-${isRecipientUserA ? `
-- Generate options as if User A is texting User B right now
-- User A is speaking TO User B - NOT to an AI assistant
-- Write exactly what User A would type in a chat message
-` : `
-- Generate options as if User B is texting User A right now
-- User B is speaking TO User A - NOT to an AI assistant
-- Write exactly what User B would type in a chat message
-`}
-
-You are writing what one person would DIRECTLY SAY to another person. You are NOT an AI mediator or counselor - you are generating the exact words User A or User B would speak TO each other in a real conversation.
-
-CRITICAL: DIRECT HUMAN-TO-HUMAN DIALOGUE ONLY
-You're writing Person A talking TO Person B (or vice versa). Not about them, not narrating, not coaching - just direct speech.
-The speaker is the human user themself (${isRecipientUserA ? 'User B' : 'User A'})
-talking directly to the other person (${isRecipientUserA ? 'User A' : 'User B'}).
-Do NOT write as an assistant, counselor, or observer.
-Write the exact words they would send in the chat.
-
-${!isVeryFirstMessage ? `
-🔥🔥🔥 CRITICAL - HIGHEST PRIORITY - READ THIS FIRST 🔥🔥🔥
-
-✅ MANDATORY FOR ALL OPTIONS - USE SPECIFIC WORDS FROM ISSUE/HINT:
-${isRecipientUserA ? `
-- YOUR ISSUE CONTEXT (MUST USE IN OPTIONS): "${cleanOriginalIssueSummary || cleanSummary || 'Not specified'}"
-- ✅ EVERY option MUST include specific words/phrases/events from the issue above
-- ✅ Examples: If issue says "office party" → use "office party" in options
-- ✅ Examples: If issue says "didn't reply" → use "didn't reply" or "didn't respond"  
-- ✅ Examples: If issue mentions a name → reference that name naturally
-- ✅ The issue context is YOUR story - use it to explain your side when ready
-` : shouldUseHint ? `
-- YOUR HINT CONTEXT (MUST USE IN OPTIONS): "${hintPromptSnippet.substring(0, 200)}${hintPromptSnippet.length > 200 ? '...' : ''}"
-- ✅ EVERY option MUST include specific words/phrases/events from your hint above
-- ✅ Examples: If hint says "phone died" → use "phone died" in options
-- ✅ Examples: If hint says "stressed with work" → use "stressed with work" in options
-- ✅ Examples: If hint mentions an event → reference that event naturally
-- ✅ The hint is YOUR story - use it to explain your side when ready
-` : ''}
-- ✅ ALSO respond to latest message: "${cleanCurrentMessage}"
-- ✅ Combine: Use issue/hint words + respond to latest message = complete options
-- ❌ DO NOT use generic phrases when specific words from issue/hint are available
-` : ''}
+"You are the Haiku model, but you should mimic the warmth, emotional intelligence, and conversation-flow quality of larger models like Claude 3.7 Sonnet, Claude 3.5 Sonnet, GPT-4.1, and OpenAI o1 — while staying fast, lightweight, and stable like Haiku."
 
 🚫 ABSOLUTE RULE - NAME USAGE FORBIDDEN:
 The listener (the person you're speaking TO) MUST NEVER be called by their name in the generated options.
@@ -1566,6 +1484,15 @@ The listener (the person you're speaking TO) MUST NEVER be called by their name 
 - CORRECT: "Your comment made me..." ✅
 The listener is ALWAYS addressed as "you/your/yours" - NEVER by their real name.
 ANY option containing the listener's name will be automatically REJECTED.
+
+You are writing what one person would DIRECTLY SAY to another person. You are NOT an AI mediator or counselor - you are generating the exact words User A or User B would speak TO each other in a real conversation.
+
+CRITICAL: DIRECT HUMAN-TO-HUMAN DIALOGUE ONLY
+You're writing Person A talking TO Person B (or vice versa). Not about them, not narrating, not coaching - just direct speech.
+The speaker is the human user themself (${isRecipientUserA ? 'User B' : 'User A'})
+talking directly to the other person (${isRecipientUserA ? 'User A' : 'User B'}).
+Do NOT write as an assistant, counselor, or observer.
+Write the exact words they would send in the chat.
 
 
 ✅ GOOD EXAMPLES (User A talking TO User B directly):
@@ -1584,8 +1511,6 @@ ANY option containing the listener's name will be automatically REJECTED.
 - "Let's find common ground and move forward together"
 - "I acknowledge your feelings and want to communicate better"
 - "Can we work together to resolve this issue?"
-
-(Note: You are using the Haiku model, which should mimic the warmth and quality of larger models while staying fast and stable.)
 
 CRITICAL PRONOUN RULES - PERSPECTIVE-AWARE TAG REPLACEMENT:
 ${isRecipientUserA ? `
@@ -1996,7 +1921,7 @@ ${isRecipientUserB ? `
 ${shouldUseHint && isRecipientUserB ? `
 ✅ USER B HAS HINT - USE HINT AS PRIMARY PERSPECTIVE (PRIVATE TO USER B ONLY):
 🔐 USER B'S PRIVATE PERSPECTIVE (PERSISTENT CORE CONTEXT FOR ALL TURNS):
-"${hintFromBWithFallback}"
+"${hintFromB}"
 
 ⚠️ CRITICAL: This hint is PRIVATE to User B and MUST NEVER be shown to User A.
 
@@ -2126,7 +2051,7 @@ ${cleanRecipientThoughts && cleanRecipientThoughts.length > 100 ? `
 
 ${shouldUseHint && isRecipientUserB ? `
 🔐 USER B'S PRIVATE PERSPECTIVE (PERSISTENT CORE CONTEXT FOR ALL TURNS):
-"${hintFromBWithFallback}"
+"${hintFromB}"
 
 ⚠️ CRITICAL: This hint is PRIVATE to User B and MUST NEVER be shown to User A.
 
@@ -2145,7 +2070,7 @@ The hint reveals:
 
 🎯 CRITICAL: COMPARE HINT WITH NEUTRAL TOPIC SUMMARY:
 Topic context (neutral, factual): "${cleanSummarySharedNeutral || cleanOriginalIssueSummary || cleanSummary}"
-User B's Hint (User B's perspective): "${hintFromBWithFallback}"
+User B's Hint (User B's perspective): "${hintFromB}"
 
 The AI must understand:
 1. Why User B behaved the way they did (from the hint)
@@ -2716,9 +2641,6 @@ ${needsClarification ? `
 - ✅ Natural human behavior: Say issue once → wait for response → respond to their response
 ` : `
 🔑 USER A - INITIAL MODE (Issue Not Yet Explained):
-- 🔥 YOUR ISSUE IS YOUR STORY - USE IT IN OPTIONS: "${cleanOriginalIssueSummary || cleanSummary}"
-- ✅ EVERY option should help you tell your side using words from the issue above
-- ✅ When you're ready to share, use specific words/events from: "${cleanOriginalIssueSummary || cleanSummary}"
 ${shouldUserATransitionToIssue ? `
 - ⚠️ CRITICAL: User B indicated they're ready to listen - NOW explain the issue DIRECTLY (not vague intent)
 - ❌ DO NOT generate vague options like:
@@ -2745,7 +2667,6 @@ ${shouldUserATransitionToIssue ? `
 - Balance: Respond to them while introducing your concern if needed
 - ✅ When discussing issue: Use SPECIFIC WORDS from: "${cleanOriginalIssueSummary || cleanSummary}"
 - Natural flow: Greet once (if needed), then discuss the issue
-- ✅ Your issue is your story - use it to explain your side when ready
 `}
 - ✅ CRITICAL: Include specific words/phrases from the issue summary in your options
 `}
@@ -2783,15 +2704,11 @@ ${isCasualOrSocialMessage ? `
 - Only move to issue-focused responses when they actually share an issue or explanation
 ` : `
 ✅ USER B - RESPONDING MODE:
-- 🔥 YOUR HINT IS YOUR STORY - USE IT IN OPTIONS: "${shouldUseHint ? hintPromptSnippet.substring(0, 200) + (hintPromptSnippet.length > 200 ? '...' : '') : 'No hint available'}"
-- ✅ EVERY option should help you tell your side using words from your hint above
 - You are responding to User A's latest message: "${cleanCurrentMessage}"
 - ALL options must directly address what User A just said - use their words/phrases
 ${shouldUseHint ? `
-- ✅ MANDATORY: Include SPECIFIC WORDS from your hint: "${hintPromptSnippet.substring(0, 150)}${hintPromptSnippet.length > 150 ? '...' : ''}"
-- ✅ MANDATORY: Use actual words/phrases from your hint when explaining your perspective
-- ✅ When you're ready to share your side, use specific words/events from your hint
-- ✅ Your hint is your story - use it to explain your side when ready
+- ✅ MANDATORY: Also include SPECIFIC WORDS from your hint: "${hintPromptSnippet.substring(0, 150)}${hintPromptSnippet.length > 150 ? '...' : ''}"
+- ✅ Use actual words/phrases from your hint when explaining your perspective
 ` : ''}
 - ✅ MANDATORY: Reference specific words/events from the issue summary: "${cleanOriginalIssueSummary || cleanSummary || 'Not specified'}"
 - Do NOT ask generic questions like "can you tell me more" or "what do you want to talk about"
@@ -3892,7 +3809,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       }
     }
 
-    const hintPerspective = shouldUseHint && !isRecipientUserA ? cleanPerspective(hintFromBWithFallback || '') : '';
+    const hintPerspective = shouldUseHint && !isRecipientUserA ? cleanPerspective(hintFromB || '') : '';
     const hintKeywords = shouldUseHint && !isRecipientUserA ? extractKeywords(hintPerspective, 12) : [];
 
       // ✅ REFINED FIX 2: Block explanation-invitation options based on refined logic
@@ -4245,7 +4162,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       });
 
       if (!hasHintOption) {
-        const hintSnippet = getPrimaryStatement(hintPerspective || hintFromBWithFallback || '');
+        const hintSnippet = getPrimaryStatement(hintPerspective || hintFromB || '');
         if (hintSnippet) {
           const fallbackHintOption = hintSnippet.endsWith('.') ? hintSnippet : `${hintSnippet}.`;
           // ✅ REFINED FIX 2: Only add explanation invitation if User B can ask to explain
@@ -4363,32 +4280,14 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
 
       if (isRecipientUserA) {
         issueKeywords.forEach(keyword => {
-          if (lower.includes(keyword)) {
-            // ✅ EQUAL WEIGHT: Issue keywords are CRITICAL for User A - same weight as hint for User B
-            score += acknowledgementMode ? 1.0 : 3.0; // Increased from 0.5/1.5 to 1.0/3.0 (equal to hint)
-          }
+          if (lower.includes(keyword)) score += acknowledgementMode ? 0.5 : 1.5;
         });
-        
-        // ✅ NEW: Extra bonus if option contains MULTIPLE issue keywords (shows comprehensive issue explanation)
-        const issueKeywordCount = issueKeywords.filter(kw => lower.includes(kw.toLowerCase())).length;
-        if (issueKeywordCount >= 2) {
-          score += 2.0; // Bonus for using multiple issue keywords
-        }
       }
 
       if (shouldUseHint && !isRecipientUserA) {
         hintKeywords.forEach(keyword => {
-          if (lower.includes(keyword)) {
-            // ✅ EQUAL WEIGHT: Hint keywords are CRITICAL for User B - same weight as issue for User A
-            score += acknowledgementMode ? 1.0 : 3.0; // Increased from 0.75/1.5 to 1.0/3.0 (equal to issue)
-          }
+          if (lower.includes(keyword)) score += acknowledgementMode ? 0.75 : 1.5;
         });
-        
-        // ✅ NEW: Extra bonus if option contains MULTIPLE hint keywords (shows comprehensive hint explanation)
-        const hintKeywordCount = hintKeywords.filter(kw => lower.includes(kw.toLowerCase())).length;
-        if (hintKeywordCount >= 2) {
-          score += 2.0; // Bonus for using multiple hint keywords
-        }
       }
 
       if (containsTalkPhrase(opt) && !finalClosureDetected) score -= 1.5;
@@ -4414,43 +4313,6 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
 
     let selected: string[] = [];
     let talkOptionUsed = false;
-
-    // ✅ CRITICAL: Ensure at least one option contains issue/hint keywords
-    if (isRecipientUserA && issueKeywords.length > 0) {
-      const hasIssueOption = scoredOptions.some(candidate => 
-        issueKeywords.some(keyword => candidate.opt.toLowerCase().includes(keyword.toLowerCase()))
-      );
-      
-      if (!hasIssueOption && scoredOptions.length > 0) {
-        // Boost scores of options that contain issue keywords
-        scoredOptions.forEach(candidate => {
-          const lower = candidate.opt.toLowerCase();
-          const issueKeywordCount = issueKeywords.filter(kw => lower.includes(kw.toLowerCase())).length;
-          if (issueKeywordCount > 0) {
-            candidate.score += 5.0; // Heavy boost to ensure issue options are selected
-          }
-        });
-        console.log("✅ Boosted scores for options containing issue keywords");
-      }
-    }
-
-    if (shouldUseHint && !isRecipientUserA && hintKeywords.length > 0) {
-      const hasHintOption = scoredOptions.some(candidate => 
-        hintKeywords.some(keyword => candidate.opt.toLowerCase().includes(keyword.toLowerCase()))
-      );
-      
-      if (!hasHintOption && scoredOptions.length > 0) {
-        // Boost scores of options that contain hint keywords
-        scoredOptions.forEach(candidate => {
-          const lower = candidate.opt.toLowerCase();
-          const hintKeywordCount = hintKeywords.filter(kw => lower.includes(kw.toLowerCase())).length;
-          if (hintKeywordCount > 0) {
-            candidate.score += 5.0; // Heavy boost to ensure hint options are selected
-          }
-        });
-        console.log("✅ Boosted scores for options containing hint keywords");
-      }
-    }
 
     const primaryPool = scoredOptions.filter(candidate => candidate.latestMatches > 0);
     const secondaryPool = scoredOptions.filter(candidate => candidate.latestMatches === 0);
@@ -4585,9 +4447,6 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       
       // Apply friendly tone processing to all selected options
       selected = selected.map(opt => makeFriendlyAndNatural(opt));
-      
-      // ✅ CRITICAL: Apply pronoun fixing to ALL selected options (not just fallbacks)
-      selected = selected.map(opt => fixPronounMistakes(removeListenerName(stripTagSymbols(opt))));
 
       const fallbackLatestRaw = primaryFocus
         ? `Thanks for sharing that about ${primaryFocus}. Can we talk it through?`
@@ -4876,7 +4735,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
           validated: true,
           conversationStage: conversationPhase || 'discussion',
           turnCount: safeConversationHistory.length,
-          hintUsed: !!hintFromBWithFallback,
+          hintUsed: !!hintFromB,
           hintReasoning: optionsData.reasoning || null,
           isVeryFirstMessage,
           conversationTimingContext

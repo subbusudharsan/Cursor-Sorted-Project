@@ -683,17 +683,20 @@ Context (brief):
       if (comingBack && !hasSent) {
         kickedOff = true;
         setShowReturnFromChatBanner(String(skipReturnBannerValue || '') === '1' ? false : true);
-        // ✅ FIX: Ensure loading is false so buttons are clickable
+        // ✅ FIX: Ensure both loading and initializing are false so buttons are clickable
         setLoading(false);
+        setInitializing(false); // ✅ ADD THIS: Clear initializing state
         if (chatIdValue) {
           (async () => {
             await loadExistingChat();
             setFlowStage('ready');
             setLoading(false); // ✅ Ensure loading is false after load completes
+            setInitializing(false); // ✅ ADD THIS: Ensure initializing is false after load
           })();
         } else {
           setFlowStage('ready');
           setLoading(false); // ✅ Ensure loading is false
+          setInitializing(false); // ✅ ADD THIS: Ensure initializing is false
         }
         // Skip initialization to avoid jumping back to Stage 1
       } else if (mode === 'continue' && chatIdValue) {
@@ -2083,6 +2086,14 @@ const inferEntityCategory = (name: string): string => {
     } finally {
       setInitializing(false);
       setLoading(false); // ✅ Also clear loading state to ensure buttons are clickable
+      // ✅ FIX: Add explicit check to ensure we're not stuck in loading state
+      if (returnStageValue === 'ready') {
+        // When returning to ready stage, ensure everything is cleared
+        setTimeout(() => {
+          setLoading(false);
+          setInitializing(false);
+        }, 100);
+      }
     }
   };
 
@@ -2517,7 +2528,103 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
     
     const normalizedTitle = chatTitle.trim() || contextDataRef.current.chat_title || '';
     
-    await updateChatRecord(
+    // ✅ Show notice modal after saving 2nd answer (BEFORE checking pre-generated questions)
+    if (updatedPairs.length === 2) {
+      setShowSummaryNoticeModal(true);
+      // Update database in background
+      updateChatRecord(
+        {},
+        {
+          qa_pairs: updatedPairs,
+          initial_description: initialDescription,
+          flowStage: 'qa',
+          questionCount: updatedPairs.length,
+          taggedEntities,
+          currentAnswer: '',
+          selectedOption: null,
+          chat_title: normalizedTitle,
+        }
+      ).catch(err => console.error('Background DB update failed:', err));
+      scrollToEnd();
+      return; // Show modal and stop here - user can choose to generate summary or see next question
+    }
+    
+    // ✅ FIX: Show next question IMMEDIATELY if using pre-generated questions (no lag)
+    // ✅ NEW: Use pre-generated questions if available - show immediately
+    if (preGeneratedQuestions.length > 0 && currentQuestionIndex < preGeneratedQuestions.length - 1) {
+      const nextIndex = currentQuestionIndex + 1;
+      setCurrentQuestionIndex(nextIndex);
+      setCurrentQuestion(preGeneratedQuestions[nextIndex]);
+      setQuestionCount(nextIndex + 1);
+      setCurrentAnswerSaved(false);
+      setCurrentAnswerSavedText('');
+      
+      // ✅ Update database in background (non-blocking)
+      updateChatRecord(
+        {},
+        {
+          qa_pairs: updatedPairs,
+          initial_description: initialDescription,
+          flowStage: 'qa',
+          questionCount: nextIndex + 1,
+          taggedEntities,
+          currentAnswer: '',
+          selectedOption: null,
+          currentQuestion: preGeneratedQuestions[nextIndex],
+          chat_title: normalizedTitle,
+        }
+      ).catch(err => console.error('Background DB update failed:', err));
+      
+      scrollToEnd();
+      return;
+    }
+    
+    // ✅ Enforce max 5 questions total
+    if (updatedPairs.length >= 5) {
+      setShowGenerateSummaryButton(true);
+      setCurrentQuestion("");
+      // Update database in background
+      updateChatRecord(
+        {},
+        {
+          qa_pairs: updatedPairs,
+          initial_description: initialDescription,
+          flowStage: 'qa',
+          questionCount: updatedPairs.length,
+          taggedEntities,
+          currentAnswer: '',
+          selectedOption: null,
+          chat_title: normalizedTitle,
+        }
+      ).catch(err => console.error('Background DB update failed:', err));
+      scrollToEnd();
+      return;
+    }
+    
+    // If summary button already shown, do not generate more questions
+    if (showGenerateSummaryButton) {
+      setCurrentQuestion("");
+      // Update database in background
+      updateChatRecord(
+        {},
+        {
+          qa_pairs: updatedPairs,
+          initial_description: initialDescription,
+          flowStage: 'qa',
+          questionCount: updatedPairs.length,
+          taggedEntities,
+          currentAnswer: '',
+          selectedOption: null,
+          chat_title: normalizedTitle,
+        }
+      ).catch(err => console.error('Background DB update failed:', err));
+      scrollToEnd();
+      return;
+    }
+    
+    // ✅ Fallback: Only use old method if pre-generated questions exhausted
+    // Update database in background first
+    updateChatRecord(
       {},
       {
         qa_pairs: updatedPairs,
@@ -2529,35 +2636,13 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
         selectedOption: null,
         chat_title: normalizedTitle,
       }
-    );
+    ).catch(err => console.error('Background DB update failed:', err));
     
-    // ✅ Enforce max 5 questions total
-    if (updatedPairs.length >= 5) {
-      setShowGenerateSummaryButton(true);
-      setCurrentQuestion("");
-      scrollToEnd();
-      return;
-    }
-    
-    // If summary button already shown, do not generate more questions
-    if (showGenerateSummaryButton) {
-      setCurrentQuestion("");
-      scrollToEnd();
-      return;
-    }
-    
-    // Show notice modal after saving 2nd answer (same logic as "Next prompt" button)
-    if (updatedPairs.length === 2) {
-      setShowSummaryNoticeModal(true);
-      scrollToEnd();
-      return;
-    }
-    
-    // Generate next question (same logic as handleAnswerSubmit)
+    // Generate next question (only if no pre-generated questions available)
     if (updatedPairs.length >= 2) {
-      await checkIfSufficientInfo(updatedPairs);
+      checkIfSufficientInfo(updatedPairs).catch(err => console.error('Failed to check info:', err));
     } else {
-      await generateNextQuestion(updatedPairs);
+      generateNextQuestion(updatedPairs).catch(err => console.error('Failed to generate question:', err));
     }
     
     // Ensure the newest content is visible
@@ -2823,7 +2908,82 @@ for (const [idx, pair] of qaPairs.entries()) {
     // keep questionCount in sync with visible progress
     setQuestionCount(updatedPairs.length);
 
-    await updateChatRecord(
+    // ✅ FIX: Show next question IMMEDIATELY if using pre-generated questions (no lag)
+    // ✅ NEW: Use pre-generated questions if available - show immediately
+    if (preGeneratedQuestions.length > 0 && currentQuestionIndex < preGeneratedQuestions.length - 1) {
+      const nextIndex = currentQuestionIndex + 1;
+      setCurrentQuestionIndex(nextIndex);
+      setCurrentQuestion(preGeneratedQuestions[nextIndex]);
+      setQuestionCount(nextIndex + 1);
+      setCurrentAnswerSaved(false);
+      setCurrentAnswerSavedText('');
+      
+      // ✅ Update database in background (non-blocking)
+      updateChatRecord(
+        {},
+        {
+          qa_pairs: updatedPairs,
+          initial_description: initialDescription,
+          flowStage: 'qa',
+          questionCount: nextIndex + 1,
+          taggedEntities,
+          currentAnswer: '',
+          selectedOption: null,
+          currentQuestion: preGeneratedQuestions[nextIndex],
+          chat_title: normalizedTitle,
+        }
+      ).catch(err => console.error('Background DB update failed:', err));
+      
+      scrollToEnd();
+      return;
+    }
+
+    // ✅ Enforce max 5 questions total
+    if (updatedPairs.length >= 5) {
+      setShowGenerateSummaryButton(true);
+      setCurrentQuestion(""); // stop showing new question
+      // Update database in background
+      updateChatRecord(
+        {},
+        {
+          qa_pairs: updatedPairs,
+          initial_description: initialDescription,
+          flowStage: 'qa',
+          questionCount: updatedPairs.length,
+          taggedEntities,
+          currentAnswer: '',
+          selectedOption: null,
+          chat_title: normalizedTitle,
+        }
+      ).catch(err => console.error('Background DB update failed:', err));
+      scrollToEnd();
+      return;
+    }
+
+    // If summary button already shown, do not generate more questions
+    if (showGenerateSummaryButton) {
+      setCurrentQuestion("");
+      // Update database in background
+      updateChatRecord(
+        {},
+        {
+          qa_pairs: updatedPairs,
+          initial_description: initialDescription,
+          flowStage: 'qa',
+          questionCount: updatedPairs.length,
+          taggedEntities,
+          currentAnswer: '',
+          selectedOption: null,
+          chat_title: normalizedTitle,
+        }
+      ).catch(err => console.error('Background DB update failed:', err));
+      scrollToEnd();
+      return;
+    }
+
+    // ✅ Fallback: Only use old method if pre-generated questions exhausted
+    // Update database in background first
+    updateChatRecord(
       {},
       {
         qa_pairs: updatedPairs,
@@ -2835,40 +2995,13 @@ for (const [idx, pair] of qaPairs.entries()) {
         selectedOption: null,
         chat_title: normalizedTitle,
       }
-    );
+    ).catch(err => console.error('Background DB update failed:', err));
 
-    // ✅ Enforce max 5 questions total
-    if (updatedPairs.length >= 5) {
-      setShowGenerateSummaryButton(true);
-      setCurrentQuestion(""); // stop showing new question
-      scrollToEnd();
-      return;
-    }
-
-    // If summary button already shown, do not generate more questions
-    if (showGenerateSummaryButton) {
-      setCurrentQuestion("");
-      scrollToEnd();
-      return;
-    }
-
-    // ✅ NEW: Use pre-generated questions if available
-    if (preGeneratedQuestions.length > 0 && currentQuestionIndex < preGeneratedQuestions.length - 1) {
-      const nextIndex = currentQuestionIndex + 1;
-      setCurrentQuestionIndex(nextIndex);
-      setCurrentQuestion(preGeneratedQuestions[nextIndex]);
-      setQuestionCount(nextIndex + 1);
-      setCurrentAnswerSaved(false);
-      setCurrentAnswerSavedText('');
-      scrollToEnd();
-      return;
-    }
-
-    // Fallback to old method if pre-generated questions exhausted
+    // Generate next question (only if no pre-generated questions available)
     if (updatedPairs.length >= 2) {
-      await checkIfSufficientInfo(updatedPairs);
+      checkIfSufficientInfo(updatedPairs).catch(err => console.error('Failed to check info:', err));
     } else {
-      await generateNextQuestion(updatedPairs);
+      generateNextQuestion(updatedPairs).catch(err => console.error('Failed to generate question:', err));
     }
     // Ensure the newest content is visible
     scrollToEnd();
@@ -2880,6 +3013,17 @@ for (const [idx, pair] of qaPairs.entries()) {
       setIsGeneratingSummary(true);
       setCurrentQuestion("");
       await generateSummary(pairs);
+      return;
+    }
+
+    // ✅ FIX: Skip AI check if using pre-generated questions (they're already validated)
+    if (preGeneratedQuestions.length > 0 && currentQuestionIndex < preGeneratedQuestions.length - 1) {
+      const nextIndex = currentQuestionIndex + 1;
+      setCurrentQuestionIndex(nextIndex);
+      setCurrentQuestion(preGeneratedQuestions[nextIndex]);
+      setQuestionCount(nextIndex + 1);
+      setCurrentAnswerSaved(false);
+      setCurrentAnswerSavedText('');
       return;
     }
 
@@ -2928,29 +3072,31 @@ Minimum 2 questions answered. Consider sufficient if we understand: what happene
         }
       }
 
-      // ✅ NEW: Use pre-generated questions if available
-      if (preGeneratedQuestions.length > 0 && currentQuestionIndex < preGeneratedQuestions.length - 1) {
+      // ✅ Fallback: Only generate if no pre-generated questions available
+      if (preGeneratedQuestions.length === 0 || currentQuestionIndex >= preGeneratedQuestions.length - 1) {
+        await generateNextQuestion(pairs);
+      } else {
+        // Use pre-generated questions
         const nextIndex = currentQuestionIndex + 1;
         setCurrentQuestionIndex(nextIndex);
         setCurrentQuestion(preGeneratedQuestions[nextIndex]);
         setQuestionCount(nextIndex + 1);
         setCurrentAnswerSaved(false);
         setCurrentAnswerSavedText('');
-      } else {
-        await generateNextQuestion(pairs);
       }
     } catch (err) {
       console.error("Failed to check info completeness:", err);
-      // ✅ NEW: Use pre-generated questions if available
-      if (preGeneratedQuestions.length > 0 && currentQuestionIndex < preGeneratedQuestions.length - 1) {
+      // ✅ Fallback: Only generate if no pre-generated questions available
+      if (preGeneratedQuestions.length === 0 || currentQuestionIndex >= preGeneratedQuestions.length - 1) {
+        await generateNextQuestion(pairs);
+      } else {
+        // Use pre-generated questions
         const nextIndex = currentQuestionIndex + 1;
         setCurrentQuestionIndex(nextIndex);
         setCurrentQuestion(preGeneratedQuestions[nextIndex]);
         setQuestionCount(nextIndex + 1);
         setCurrentAnswerSaved(false);
         setCurrentAnswerSavedText('');
-      } else {
-        await generateNextQuestion(pairs);
       }
     } finally {
       setLoading(false);
@@ -4405,13 +4551,15 @@ CRITICAL:
   };
 
   const handleReadyToChat = async () => {
-    // ✅ FIX: Add check for initializing state and ensure all required data is loaded
-    if (!user || !currentChatId || !contactIdValue || initializing) {
+    // ✅ FIX: Don't block on initializing if we're in ready stage (returning from chat)
+    const isReadyStage = flowStage === 'ready';
+    if (!user || !currentChatId || !contactIdValue || (initializing && !isReadyStage)) {
       console.log('⚠️ Cannot send to contact yet - data still loading:', {
         hasUser: !!user,
         hasChatId: !!currentChatId,
         hasContactId: !!contactIdValue,
-        isInitializing: initializing
+        isInitializing: initializing,
+        isReadyStage: isReadyStage
       });
       return;
     }
@@ -5974,12 +6122,15 @@ Respond ONLY with valid JSON:
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.fullWidthButton, styles.primaryButton, loading && styles.primaryButtonDisabled]}
+            style={[styles.fullWidthButton, styles.primaryButton, (loading || initializing) && styles.primaryButtonDisabled]}
             onPress={handleReadyToChat}
-            disabled={loading}
+            disabled={loading || initializing}
           >
             {loading ? (
-              <ActivityIndicator color="#fff" size="small" />
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <ActivityIndicator color="#fff" size="small" />
+                <Text style={styles.primaryButtonText}>Sending...</Text>
+              </View>
             ) : (
               <Text style={styles.primaryButtonText}>Send to contact</Text>
             )}

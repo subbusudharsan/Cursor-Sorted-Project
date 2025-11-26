@@ -688,10 +688,18 @@ setContactChats(finalChats);
                           <Text style={styles.chatTime}>{formatRecentOrDate(contactChat.last_received_at || contactChat.last_message_at || '')}</Text>
                         </View>
 
-                        <Text style={styles.chatSubtitle} numberOfLines={1}>{displaySubtitle}</Text>
+                        <View style={styles.subtitleRow}>
+                          <Text style={styles.chatSubtitle} numberOfLines={1}>{displaySubtitle}</Text>
+                          {(contactChat.context_data?.is_resolved || contactChat.is_resolved) && (
+                            <View style={styles.resolvedPill}>
+                              <Text style={styles.resolvedPillEmoji}>✅</Text>
+                              <Text style={styles.resolvedPillText}>Closed peacefully</Text>
+                            </View>
+                          )}
+                        </View>
                         {/* message preview row removed to keep rows thin */}
 
-                        {(contactChat.ongoing_count > 0 || (contactChat.total_ongoing_count || 0) > 0 || contactChat.context_data?.is_resolved || contactChat.is_resolved) && (
+                        {(contactChat.ongoing_count > 0 || (contactChat.total_ongoing_count || 0) > 0) && (
                           <View style={styles.metaRow}>
                             {contactChat.ongoing_count > 0 && (
                               <View style={styles.metaBadge}>
@@ -703,11 +711,6 @@ setContactChats(finalChats);
                                 <Text style={[styles.metaBadgeText, styles.metaBadgeTextAlt]}>{contactChat.total_ongoing_count} total</Text>
                               </View>
                             )}
-                            {contactChat.context_data?.is_resolved || contactChat.is_resolved ? (
-                              <View style={styles.resolvedPill}>
-                                <Text style={styles.resolvedPillText}>✅ Closed peacefully</Text>
-                              </View>
-                            ) : null}
                           </View>
                         )}
                       </View>
@@ -1020,13 +1023,21 @@ const styles = StyleSheet.create({
   },
   chatTime: {
     fontSize: Typography.fontSize.xs,
-    color: Colors.success[600],
+    color: Colors.primary[700],
     fontWeight: Typography.fontWeight.medium,
+  },
+  subtitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    flexWrap: 'wrap',
   },
   chatSubtitle: {
     fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.regular,
     color: Colors.text.secondary,
+    flex: 1,
+    flexShrink: 1,
   },
   messageRow: {
     flexDirection: 'row',
@@ -1116,11 +1127,20 @@ hintBadgeText: {
     borderRadius: BorderRadius.sm,
     paddingHorizontal: Spacing.xs,
     paddingVertical: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 0,
+  },
+  resolvedPillEmoji: {
+    fontSize: Typography.fontSize.xs,
+    lineHeight: Typography.fontSize.xs,
+    marginRight: 2,
   },
   resolvedPillText: {
     color: Colors.success[700],
     fontSize: Typography.fontSize.xs,
     fontWeight: Typography.fontWeight.semibold,
+    lineHeight: Typography.fontSize.xs,
   },
 
 });
