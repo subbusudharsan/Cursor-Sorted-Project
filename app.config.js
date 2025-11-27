@@ -5,7 +5,7 @@ module.exports = {
   expo: {
     name: "Sorted",
     slug: "sorted-app",
-    version: "1.0.0",
+    version: "1.0.1",
     orientation: "portrait",
     icon: "./assets/images/icon.png",
     scheme: "sorted",
@@ -33,7 +33,7 @@ module.exports = {
         backgroundColor: "#FFFFFF"
       },
       package: "com.sorted.app",
-      versionCode: 2,
+      versionCode: 3,
       permissions: [
         "android.permission.CAMERA",
         "android.permission.READ_EXTERNAL_STORAGE",

@@ -57,7 +57,7 @@ interface Contact {
   email: string;
 }
 
-type FlowStage = "welcome" | "qa" | "summary" | "ready";
+type FlowStage = "welcome" | "qa" | "summary";
 type TagStage = 'description' | 'answer' | 'additionalInfo' | 'editAnswer';
 type TypingTagMatch = ReturnType<typeof getLastTypingTag>;
 
@@ -677,7 +677,7 @@ Context (brief):
     });
     let kickedOff = false;
     if (user) {
-      // If returning from contact chat, prioritize showing Stage 4 (Ready)
+      // If returning from contact chat, prioritize showing Stage 3 (Summary)
       const comingBack = String(fromContactChatValue || '') === '1';
       const hasSent = String(sentValue || '') === '1';
       if (comingBack && !hasSent) {
@@ -689,12 +689,12 @@ Context (brief):
         if (chatIdValue) {
           (async () => {
             await loadExistingChat();
-            setFlowStage('ready');
+            setFlowStage('summary');
             setLoading(false); // ✅ Ensure loading is false after load completes
             setInitializing(false); // ✅ ADD THIS: Ensure initializing is false after load
           })();
         } else {
-          setFlowStage('ready');
+          setFlowStage('summary');
           setLoading(false); // ✅ Ensure loading is false
           setInitializing(false); // ✅ ADD THIS: Ensure initializing is false
         }
@@ -2000,7 +2000,7 @@ const inferEntityCategory = (name: string): string => {
         const summaryAPerspective = ctx.summary_a_perspective || '';
         
         // Only check for summary_a_perspective if we're in a stage where summary should exist
-        const shouldHaveSummary = ctx.flowStage === 'summary' || ctx.flowStage === 'ready';
+        const shouldHaveSummary = ctx.flowStage === 'summary';
         
         if (summaryAPerspective) {
           console.log('✅ Found summary_a_perspective for Stage 3:', summaryAPerspective.substring(0, 100));
@@ -2062,7 +2062,7 @@ const inferEntityCategory = (name: string): string => {
           const mappedStage = ctx.flowStage === 'description' ? 'welcome' : ctx.flowStage;
           setFlowStage(mappedStage as FlowStage);
         } else if (chatData.is_resolved) {
-          setFlowStage('ready');
+          setFlowStage('summary');
         } else if (summaryAPerspective) {
           setFlowStage('summary');
         } else if (ctx.qa_pairs && ctx.qa_pairs.length > 0) {
@@ -2088,7 +2088,7 @@ const inferEntityCategory = (name: string): string => {
       setLoading(false); // ✅ Also clear loading state to ensure buttons are clickable
       // ✅ FIX: Add explicit check to ensure we're not stuck in loading state
       if (returnStageValue === 'ready') {
-        // When returning to ready stage, ensure everything is cleared
+        // When returning to summary stage, ensure everything is cleared
         setTimeout(() => {
           setLoading(false);
           setInitializing(false);
@@ -2100,7 +2100,7 @@ const inferEntityCategory = (name: string): string => {
   // If explicitly asked to show a particular stage on return (e.g., from contact-selection)
   useEffect(() => {
     if (returnStageValue === 'ready') {
-      setFlowStage('ready');
+      setFlowStage('summary');
       setShowReturnFromChatBanner(true);
     }
   }, [returnStageValue]);
@@ -2771,19 +2771,7 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
         contextPatch.additional_info_tags = additionalInfoTags || [];
       }
       
-      // Stage 4 (ready): Save everything from Stage 3
-      if (flowStage === 'ready') {
-        contextPatch.qa_pairs = qaPairs;
-        contextPatch.summary = summary;
-        // ✅ CRITICAL: Always save summary_a_perspective - use summary state if contextDataRef doesn't have it
-        contextPatch.summary_a_perspective = contextDataRef.current?.summary_a_perspective || summary || '';
-        contextPatch.summary_shared_neutral = contextDataRef.current?.summary_shared_neutral || '';
-        contextPatch.thoughts = thoughts;
-        contextPatch.thoughts_a = thoughts;
-        // ✅ Always save additionalInfo if it exists (even if empty, to preserve user's edits)
-        contextPatch.additional_info = additionalInfo || '';
-        contextPatch.additional_info_tags = additionalInfoTags || [];
-      }
+      // ✅ REMOVED: Stage 4 (ready) save logic - Stage 3 (summary) already handles all saving
       
       // Determine last_message based on stage
       let lastMessage = '';
@@ -2795,8 +2783,6 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
         lastMessage = `In progress: ${qaPairs.length} question${qaPairs.length !== 1 ? 's' : ''} answered`;
       } else if (flowStage === 'summary') {
         lastMessage = 'Summary generated';
-      } else if (flowStage === 'ready') {
-        lastMessage = 'Ready to launch';
       }
       
       // ✅ Navigate immediately for faster UX, save in background
@@ -4537,7 +4523,8 @@ CRITICAL:
 
   const handleSummaryApprove = () => {
     setIsEditingMode(false);
-    setFlowStage("ready");
+    // Directly call handleReadyToChat instead of moving to Stage 4
+    handleReadyToChat();
   };
 
   const restartFlowToInitial = () => {
@@ -4551,15 +4538,13 @@ CRITICAL:
   };
 
   const handleReadyToChat = async () => {
-    // ✅ FIX: Don't block on initializing if we're in ready stage (returning from chat)
-    const isReadyStage = flowStage === 'ready';
-    if (!user || !currentChatId || !contactIdValue || (initializing && !isReadyStage)) {
+    // ✅ REMOVED: isReadyStage check since we're removing Stage 4
+    if (!user || !currentChatId || !contactIdValue || initializing) {
       console.log('⚠️ Cannot send to contact yet - data still loading:', {
         hasUser: !!user,
         hasChatId: !!currentChatId,
         hasContactId: !!contactIdValue,
-        isInitializing: initializing,
-        isReadyStage: isReadyStage
+        isInitializing: initializing
       });
       return;
     }
@@ -5722,7 +5707,25 @@ Respond ONLY with valid JSON:
   
         <TouchableOpacity
           style={[styles.fullWidthButton, styles.secondaryButton]}
-          onPress={() => setShowEditMode(false)}
+          onPress={() => {
+            Alert.alert(
+              "Cancel without saving?",
+              "Your changes will be lost.",
+              [
+                {
+                  text: "Stay",
+                  style: "cancel"
+                },
+                {
+                  text: "Cancel",
+                  style: "destructive",
+                  onPress: () => {
+                    router.push('/(tabs)/chats');
+                  }
+                }
+              ]
+            );
+          }}
           disabled={loading}
         >
           <Text style={styles.secondaryButtonText}>Cancel</Text>
@@ -6003,15 +6006,19 @@ Respond ONLY with valid JSON:
           style={[
             styles.fullWidthButton,
             styles.primaryButton,
-            summaryJustRegenerated && styles.primaryButtonDisabled,
+            (loading || initializing) && styles.primaryButtonDisabled,
           ]}
-          onPress={handleSummaryApprove}
-          disabled={loading || summaryJustRegenerated}
+          onPress={handleReadyToChat}
+          disabled={loading || initializing}
         >
-          <Check size={20} color="#fff" />
-          <Text style={styles.primaryButtonText}>
-            {summaryJustRegenerated ? 'Recap refreshed…' : 'Looks solid'}
-          </Text>
+          {loading ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <ActivityIndicator color="#fff" size="small" />
+              <Text style={styles.primaryButtonText}>Sending...</Text>
+            </View>
+          ) : (
+            <Text style={styles.primaryButtonText}>Send to contact</Text>
+          )}
         </TouchableOpacity>
       </View>
     );
@@ -6047,99 +6054,6 @@ Respond ONLY with valid JSON:
     );
   };
 
-
-
-  const handleBackToSummary = () => {
-    setFlowStage("summary");
-    console.log("🔙 Navigating back to Stage 3 (Summary) from Stage 4");
-  };
-
-  const renderReadyStage = () => (
-    <View style={styles.stageContainer}>
-      <ScrollView
-        ref={scrollViewRef}
-        style={styles.stageScroll}
-        contentContainerStyle={styles.stageContent}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
-      >
-        <View style={styles.headerSection}>
-          <View style={styles.headerTitleRow}>
-            <Text style={styles.stageIcon}>🟢</Text>
-            <OutlineText style={styles.stageTitle} outlineStyle={styles.outlineLayer}>Stage 4 - Launch Time</OutlineText>
-          </View>
-        </View>
-
-        <View style={styles.stageBodyInset}>
-      {showReturnFromChatBanner && (
-        <View style={styles.returnBanner}>
-          <Text style={styles.returnBannerText}>Need to jump anywhere else?</Text>
-          <View style={styles.returnBannerRow}>
-            <TouchableOpacity style={styles.smallPillButton} onPress={() => router.push('/(tabs)/chats')}>
-              <Text style={styles.smallPillButtonText}>Open Chats Home</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      )}
-
-      {((summary || '').trim().length > 0 || (thoughts || '').trim().length > 0) ? (
-        <View style={styles.summaryCard}>
-          <Text style={styles.summaryLabel}>📌 Discussion Summary</Text>
-          <Text style={styles.summaryTextWithSpacing}>{summary}</Text>
-
-          <Text style={styles.summaryLabel}>💡 My Thoughts</Text>
-          <Text style={styles.summaryText}>{thoughts}</Text>
-        </View>
-      ) : (
-        <View style={styles.loadingInfoBox}>
-          <ActivityIndicator color={Colors.primary[500]} size="small" />
-          <Text style={styles.loadingText}>Grabbing your recap…</Text>
-        </View>
-      )}
-        </View>
-      </ScrollView>
-
-      <View style={styles.stageFooter}>
-        <View style={styles.buttonColumn}>
-          <TouchableOpacity
-            style={[styles.fullWidthButton, styles.secondaryButton]}
-            onPress={handleSaveAndExit}
-            disabled={loading}
-          >
-            <Text style={styles.secondaryButtonText}>Save & Exit</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.fullWidthButton, styles.secondaryButton]}
-            onPress={handleBackToSummary}
-            disabled={
-              loading ||
-              (((summary || '').trim().length === 0) && ((thoughts || '').trim().length === 0))
-            }
-          >
-            <Eye size={16} color={Colors.primary[600]} />
-            <Text style={styles.secondaryButtonText}>Edit Summary</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.fullWidthButton, styles.primaryButton, (loading || initializing) && styles.primaryButtonDisabled]}
-            onPress={handleReadyToChat}
-            disabled={loading || initializing}
-          >
-            {loading ? (
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <ActivityIndicator color="#fff" size="small" />
-                <Text style={styles.primaryButtonText}>Sending...</Text>
-              </View>
-            ) : (
-              <Text style={styles.primaryButtonText}>Send to contact</Text>
-            )}
-          </TouchableOpacity>
-        </View>
-      </View>
-    </View>
-  );
-
   return (
     <>
       <KeyboardSafeView style={styles.container} contentStyle={styles.content} edges={['top', 'left', 'right']}>
@@ -6154,7 +6068,6 @@ Respond ONLY with valid JSON:
           {flowStage === "welcome" && renderWelcomeStage()}
           {flowStage === "qa" && renderQAStage()}
           {flowStage === "summary" && renderSummaryStage()}
-          {flowStage === "ready" && renderReadyStage()}
         </ScrollView>
       </KeyboardSafeView>
 
