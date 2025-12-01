@@ -102,6 +102,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setLoading(false);
       }
 
+      // ✅ Handle token refresh to maintain session
+      if (event === "TOKEN_REFRESHED" && sess) {
+        console.log("✅ Token refreshed, session maintained");
+        if (!cancelled) {
+          setSession(sess);
+          setUser(sess?.user ?? null);
+        }
+      }
+
+      // ✅ Handle signed out event
+      if (event === "SIGNED_OUT") {
+        console.log("👋 User signed out");
+        if (!cancelled) {
+          setSession(null);
+          setUser(null);
+        }
+      }
+
       if (event === "SIGNED_IN" && sess) {
         const { user } = sess;
         (async () => {
@@ -157,6 +175,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     };
   }, []);
+
+  // ✅ Periodic session refresh to maintain login
+  useEffect(() => {
+    if (!session) return;
+
+    const refreshInterval = setInterval(async () => {
+      try {
+        const { data, error } = await supabase.auth.getSession();
+        if (error) {
+          console.warn("⚠️ Session refresh check error:", error.message);
+          // Don't sign out on refresh errors - let autoRefreshToken handle it
+          return;
+        }
+        if (data?.session) {
+          setSession(data.session);
+          setUser(data.session.user);
+        }
+      } catch (err) {
+        console.error("❌ Session refresh check exception:", err);
+      }
+    }, 5 * 60 * 1000); // Check every 5 minutes
+
+    return () => clearInterval(refreshInterval);
+  }, [session]);
 
   const signUp = async (email: string, password: string, fullName: string) => {
     if (!isStrongPassword(password)) {

@@ -674,6 +674,8 @@ Context (brief):
       chatId: chatIdValue,
       userId: user?.id,
       mode,
+      fromContactChat: fromContactChatValue,
+      sent: sentValue,
     });
     let kickedOff = false;
     if (user) {
@@ -683,20 +685,47 @@ Context (brief):
       if (comingBack && !hasSent) {
         kickedOff = true;
         setShowReturnFromChatBanner(String(skipReturnBannerValue || '') === '1' ? false : true);
-        // ✅ FIX: Ensure both loading and initializing are false so buttons are clickable
+        // ✅ CRITICAL FIX: Reset states IMMEDIATELY before any async operations
         setLoading(false);
-        setInitializing(false); // ✅ ADD THIS: Clear initializing state
+        setInitializing(false);
+        
         if (chatIdValue) {
           (async () => {
-            await loadExistingChat();
-            setFlowStage('summary');
-            setLoading(false); // ✅ Ensure loading is false after load completes
-            setInitializing(false); // ✅ ADD THIS: Ensure initializing is false after load
+            try {
+              await loadExistingChat();
+              // ✅ Check if message was actually sent by querying the chat
+              const { data: chatData } = await supabase
+                .from('chats')
+                .select('context_data')
+                .eq('id', chatIdValue)
+                .single();
+              
+              // ✅ If sent_to_contact is true in context_data, user already sent message - buttons should work
+              // ✅ If false, user can still edit and send
+              const actuallySent = chatData?.context_data?.sent_to_contact === true;
+              if (!actuallySent) {
+                // ✅ CRITICAL: User hasn't sent yet - ensure buttons are enabled
+                // Reset states again after async operation completes
+                setLoading(false);
+                setInitializing(false);
+              }
+              
+              setFlowStage('summary');
+            } catch (error) {
+              console.error('❌ Error loading chat:', error);
+              // ✅ CRITICAL: Always reset states on error
+              setLoading(false);
+              setInitializing(false);
+            } finally {
+              // ✅ CRITICAL: Ensure states are cleared after async operations
+              setLoading(false);
+              setInitializing(false);
+            }
           })();
         } else {
           setFlowStage('summary');
-          setLoading(false); // ✅ Ensure loading is false
-          setInitializing(false); // ✅ ADD THIS: Ensure initializing is false
+          setLoading(false);
+          setInitializing(false);
         }
         // Skip initialization to avoid jumping back to Stage 1
       } else if (mode === 'continue' && chatIdValue) {
@@ -717,6 +746,50 @@ Context (brief):
       setInitializing(false);
     }
   }, [contactIdValue, chatIdValue, user, mode, fromContactChatValue, sentValue, skipReturnBannerValue]);
+
+  // ✅ FIX: Reset loading/initializing states when returning from contact chat (swipe back)
+  // This handles the case where user swipes back before navigation completes
+  useEffect(() => {
+    const comingBack = String(fromContactChatValue || '') === '1';
+    const hasSent = String(sentValue || '') === '1';
+    
+    // If coming back and hasn't sent, ensure states are reset
+    if (comingBack && !hasSent) {
+      // Use a small delay to ensure this runs after navigation completes
+      const timer = setTimeout(() => {
+        console.log('🔄 Resetting states after return from contact chat');
+        setLoading(false);
+        setInitializing(false);
+        
+        // Ensure we're on summary stage
+        if (flowStage !== 'summary' && currentChatId) {
+          setFlowStage('summary');
+        }
+      }, 100);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [fromContactChatValue, sentValue, flowStage, currentChatId]);
+
+  // ✅ ADDITIONAL FIX: Watch for loading state and reset if stuck
+  // This handles edge cases where loading gets stuck
+  useEffect(() => {
+    if (loading && flowStage === 'summary') {
+      // If we're on summary stage and loading is true, check if we should reset
+      const comingBack = String(fromContactChatValue || '') === '1';
+      const hasSent = String(sentValue || '') === '1';
+      
+      if (comingBack && !hasSent) {
+        // User came back and hasn't sent - loading should be false
+        const timer = setTimeout(() => {
+          console.log('🔄 Loading state stuck - resetting');
+          setLoading(false);
+        }, 500);
+        
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [loading, flowStage, fromContactChatValue, sentValue]);
 
   // Define initializeChat before it's used in useEffect
   const initializeChat = async () => {
@@ -4162,6 +4235,7 @@ CRITICAL RULES
    - CRITICAL: Preserve ALL key details that explain WHY User A is concerned (e.g., "jealous about accomplishments", "ignored at party", "accused of being rude")
    - NEVER drop emotional context or action words to save space - these are the core of the issue
    - If User A said "accused me of being jealous", the summary MUST include both "accused" and "jealous"
+   - CRITICAL: If "Additional/Edited Information" section exists, you MUST incorporate those details into both the summary and thoughts sections. This additional context is important and should be reflected in the output.
    - Make "Thoughts" a forward-looking first-person reflection.
 6. COMPLETE SENTENCES • Every sentence must be complete and end with proper punctuation (. ! ?). Never end with incomplete phrases like "as", "because", "that", "which", "but", etc. Always finish your thoughts completely. Never produce partial text like "me as" or "I think she…" without finishing.
 7. POLISHED OUTPUT • Ensure every sentence is grammatically correct and makes complete sense on its own. No unfinished thoughts or cut-off sentences.
@@ -4912,9 +4986,48 @@ Respond ONLY with valid JSON:
         }
       }
 
+      // 🔥 CRITICAL: Trigger pre-generation BEFORE navigation
+      // This ensures pre-generated turns exist when User A arrives at contact-chat
+      console.log("⚡ Triggering pre-generation before navigation...");
+      try {
+        const { data: pregenData, error: pregenError } = await supabase.functions.invoke(
+          "generate-pregenerated-turns",
+          {
+            body: { chatId: contactChatId }
+          }
+        );
+        if (pregenError) {
+          console.error("❌ Failed to trigger pre-generation before navigation:", pregenError);
+          console.error("❌ Pre-generation error details:", JSON.stringify(pregenError, null, 2));
+          // Continue navigation even if pre-generation fails (non-blocking)
+        } else {
+          console.log("✅ Pre-generation triggered successfully before navigation");
+          console.log("✅ Pre-generation response:", JSON.stringify(pregenData, null, 2));
+        }
+      } catch (err) {
+        console.error("❌ Error triggering pre-generation before navigation:", err);
+        console.error("❌ Error details:", err instanceof Error ? err.message : String(err));
+        // Continue navigation even if pre-generation fails (non-blocking)
+      }
+
       router.push(
         `/contact-chat?chatId=${contactChatId}&contactId=${contactIdValue}&isOngoing=true`
       );
+      
+      // ✅ FIX: Reset loading after navigation starts (navigation might be interrupted by swipe back)
+      // Use a timeout to reset loading if user swipes back before navigation completes
+      setTimeout(() => {
+        // Check if we're still on this screen (navigation might have been interrupted)
+        // If fromContactChat becomes true, navigation succeeded
+        // If it's still false after timeout, user might have swiped back
+        // Note: We can't directly check route here, but the useEffect hooks above will handle reset
+        // This is a safety net in case the useEffect doesn't catch it
+        if (loading) {
+          console.log('🔄 Navigation completed or interrupted - ensuring loading state is handled');
+          // The useEffect hooks will handle the actual reset based on fromContactChatValue
+        }
+      }, 1000);
+      
     } catch (err: any) {
       console.error("❌ Error in handleReadyToChat:", err);
       const errorMessage = err?.message || "Failed to start contact chat. Please try again.";
@@ -5325,8 +5438,10 @@ Respond ONLY with valid JSON:
         ) : currentQuestion ? (
           <View style={styles.qaCardVertical}>
             <View style={styles.questionSection}>
-              <Text style={styles.questionLabel}>Q{qaPairs.length + 1}</Text>
-              <Text style={styles.questionText}>{currentQuestion}</Text>
+              <View style={styles.questionHeaderLeft}>
+                <Text style={styles.questionLabel}>Q{qaPairs.length + 1}</Text>
+                <Text style={styles.questionText}>{currentQuestion}</Text>
+              </View>
             </View>
             <View style={styles.answerSection}>
               {currentQuestionType === "text" ? (
@@ -5758,8 +5873,10 @@ Respond ONLY with valid JSON:
           {editedQAPairs.map((pair, index) => (
             <View key={index} style={styles.editQACard}>
               <View style={styles.questionSection}>
-                <Text style={styles.questionLabel}>Q{index + 1}</Text>
-                <Text style={styles.editQuestionText}>{pair.question}</Text>
+                <View style={styles.questionHeaderLeft}>
+                  <Text style={styles.questionLabel}>Q{index + 1}</Text>
+                  <Text style={styles.editQuestionText}>{pair.question}</Text>
+                </View>
               </View>
   
               {editModeAnswerIndex === index && editModeContactSuggestions.length > 0 && (
@@ -5977,31 +6094,7 @@ Respond ONLY with valid JSON:
   
     const defaultActions = (
       <View style={styles.buttonColumn}>
-        <TouchableOpacity
-          style={[styles.fullWidthButton, styles.secondaryButton]}
-          onPress={handleSaveAndExit}
-          disabled={loading}
-        >
-          <Text style={styles.secondaryButtonText}>Save & Exit</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.fullWidthButton, styles.secondaryButton]}
-          onPress={() => setFlowStage("welcome")}
-          disabled={loading}
-        >
-          <Text style={styles.secondaryButtonText}>Stage 1</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[styles.fullWidthButton, styles.secondaryButton]}
-          onPress={handleAddExtraInfo}
-          disabled={loading}
-        >
-          <Plus size={16} color={Colors.primary[600]} />
-          <Text style={styles.secondaryButtonText}>Add more context</Text>
-        </TouchableOpacity>
-
+        {/* Primary action - Send to contact */}
         <TouchableOpacity
           style={[
             styles.fullWidthButton,
@@ -6009,7 +6102,7 @@ Respond ONLY with valid JSON:
             (loading || initializing) && styles.primaryButtonDisabled,
           ]}
           onPress={handleReadyToChat}
-          disabled={loading || initializing}
+          disabled={loading || initializing || !currentChatId}
         >
           {loading ? (
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
@@ -6020,6 +6113,44 @@ Respond ONLY with valid JSON:
             <Text style={styles.primaryButtonText}>Send to contact</Text>
           )}
         </TouchableOpacity>
+
+        {/* Secondary actions - grouped in rows */}
+        <View style={styles.buttonRow}>
+          <TouchableOpacity
+            style={[styles.secondaryButton, styles.halfButton]}
+            onPress={handleAddExtraInfo}
+            disabled={loading || initializing}
+          >
+            <Plus size={16} color={Colors.primary[600]} />
+            <Text style={styles.secondaryButtonText}>Add context</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.secondaryButton, styles.halfButton]}
+            onPress={() => setFlowStage("welcome")}
+            disabled={loading || initializing}
+          >
+            <Text style={styles.secondaryButtonText}>Stage 1</Text>
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.buttonRow}>
+          <TouchableOpacity
+            style={[styles.secondaryButton, styles.halfButton]}
+            onPress={handleSaveAndExit}
+            disabled={loading || initializing}
+          >
+            <Text style={styles.secondaryButtonText}>Save & Exit</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.secondaryButton, styles.halfButton]}
+            onPress={() => router.push('/(tabs)/chats')}
+            disabled={loading || initializing}
+          >
+            <Text style={styles.secondaryButtonText}>Cancel</Text>
+          </TouchableOpacity>
+        </View>
       </View>
     );
   
@@ -6336,6 +6467,9 @@ const styles = StyleSheet.create({
   questionHeaderLeft: {
     flex: 1,
     marginRight: Spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
   },
   deleteButton: {
     padding: Spacing.xs,
@@ -6352,8 +6486,8 @@ const styles = StyleSheet.create({
   questionLabel: {
     fontSize: Typography.fontSize.xs,
     fontWeight: Typography.fontWeight.bold,
-    color: Colors.primary[600],
-    marginBottom: Spacing.xs,
+    color: Colors.text.primary, // ✅ Changed from orange/yellow to dark color matching app
+    marginBottom: 0, // ✅ Removed bottom margin to keep on same level
     textTransform: 'uppercase',
   },
  questionText: {
@@ -6404,7 +6538,7 @@ const styles = StyleSheet.create({
     marginLeft: Spacing.sm,
   },
   saveButtonText: {
-    color: '#FFFFFF',
+    color: Colors.secondary[700], // ✅ Changed from white to dark blue for better visibility
     fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.semibold,
   },
@@ -6497,7 +6631,7 @@ summaryText: {
   generatingText: {
     fontSize: Typography.fontSize.base,
     fontWeight: Typography.fontWeight.semibold,
-    color: Colors.primary[600],
+    color: '#d87070', // Brighter but mild/dull red
   },
   generatingLoader: {
     marginLeft: Spacing.xs,

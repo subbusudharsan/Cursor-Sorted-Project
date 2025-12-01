@@ -4888,7 +4888,6 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO ‚ù
         chat_id: chatId,
         recipient_id: recipientId,
         options: normalizedOptions,
-        source: 'generate-contextual-options', // ‚úÖ Track source
         context_data: {
           validated: true,
           conversationStage: conversationPhase || 'discussion',
