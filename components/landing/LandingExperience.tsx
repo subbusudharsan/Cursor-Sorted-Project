@@ -17,7 +17,7 @@ const webShadows = {
 
 export default function LandingExperience() {
   const insets = useSafeAreaInsets();
-  const { loading } = useAuth();
+  const { loading, user } = useAuth();
   const fadeAnim = React.useRef(new Animated.Value(0)).current;
   const slideAnim = React.useRef(new Animated.Value(50)).current;
   const pulseAnim = React.useRef(new Animated.Value(1)).current;
@@ -277,6 +277,15 @@ export default function LandingExperience() {
     outputRange: ['#1976D2', '#FDD835'], // Bright Blue to Bright Yellow
   });
 
+
+  // ✅ Redirect to tabs if user is already signed in
+  useEffect(() => {
+    if (!loading && user) {
+      // User is already signed in, redirect to tabs
+      console.log('✅ User already signed in, redirecting to tabs');
+      router.replace('/(tabs)/chats');
+    }
+  }, [loading, user]);
 
   if (loading) {
     return (

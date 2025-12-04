@@ -370,49 +370,8 @@ If near closure, include 1 smiley-only option as one of the 3
 ` : `
 Generate 3 consecutive turns: ${firstTurnRole === "A" ? "A → B → A" : "B → A → B"}.
 Each turn must include 3 short options.
-
-🔥 MANDATORY TWO-PART STRUCTURE FOR EACH OPTION:
-Each option MUST contain:
-1. RESPONSE PART: Acknowledge/respond to the immediately previous message
-   - Reference specific words, topics, or questions from the previous message
-   - Show understanding: "I hear you", "That makes sense", "I understand", "I'm sorry"
-   
-2. NEW CONTENT PART: Add something new to advance the conversation
-   - Share your own feeling, perspective, or information
-   - Connect to the topic but add your own angle
-   - Move the conversation forward with new information
-
-✅ CORRECT STRUCTURE:
-- Turn 1: User A says "How are you? I am upset about office issue."
-- Turn 2 (User B): Each option should be like:
-  * "Hey, I'm good. I'm also upset about that too" (responds + adds feeling)
-  * "I'm doing okay. I want to understand what happened" (responds + adds intent)
-  * "I'm fine. I felt something was off too" (responds + adds perspective)
-
-- Turn 3 (User A): Each option should respond to Turn 2 AND add new content:
-  * "Thanks for understanding. Can we talk about how to fix this?" (responds + adds action)
-  * "I appreciate that. I think we both need to communicate better" (responds + adds insight)
-
-❌ WRONG EXAMPLES (avoid these):
-- "I'm good" (only response, no new content) ❌
-- "I'm also upset" (only new content, doesn't respond) ❌
-- "How are you?" (ignores previous message completely) ❌
-
 Keep them supportive, natural, and consistent with the conversation.
 If near closure, add a smiley-only option as one of the 3.
-
-CONVERSATION CONTEXT:
-${conversationHistory.length > 0 ? `
-Last ${conversationHistory.length} message(s) in conversation:
-${conversationHistory.map((msg: any, idx: number) => 
-  `${idx + 1}. ${msg.sender_id === userAId ? 'User A' : 'User B'}: "${msg.content}"`
-).join('\n')}
-
-Use this history to understand the conversation flow and ensure your generated turns:
-- Turn 1 (if starting): Begin naturally
-- Turn 2: MUST respond to Turn 1 AND add new content
-- Turn 3: MUST respond to Turn 2 AND add new content
-` : 'This is the start of the conversation.'}
 `}`;
 
     // Call Anthropic API

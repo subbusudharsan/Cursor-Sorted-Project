@@ -117,13 +117,13 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Load last 4 conversation messages (reduced from 8 to minimize token usage)
+    // Load last 8 conversation messages
     const { data: messagesData, error: messagesError } = await supabase
       .from("messages")
       .select("id, sender_id, content, created_at")
       .eq("chat_id", chatId)
       .order("created_at", { ascending: true })
-      .limit(4);
+      .limit(8);
 
     if (messagesError) {
       console.error('❌ Failed to load messages:', messagesError);
@@ -334,85 +334,15 @@ Examples for first turn:
 Keep them natural, human-like, and include casual greetings when appropriate.
 
 For the remaining 2 turns (${firstTurnRole === "A" ? "B → A" : "A → B"}), generate 3 short options each that:
-
-🔥 MANDATORY TWO-PART STRUCTURE FOR EACH OPTION:
-Each option MUST contain:
-1. RESPONSE PART: Acknowledge/respond to the immediately previous message
-   - Reference specific words, topics, or questions from the previous message
-   - Show understanding: "I hear you", "That makes sense", "I understand", "I'm sorry", "I'm good" (if asked how they are)
-   
-2. NEW CONTENT PART: Add something new to advance the conversation
-   - Share your own feeling, perspective, or information
-   - Connect to the topic but add your own angle
-   - Move the conversation forward with new information
-
-✅ CORRECT EXAMPLES:
-- Previous: "How are you? I am upset about office issue."
-  Options:
-  * "Hey, I'm good. I'm also upset about that too" (responds + adds feeling)
-  * "I'm doing okay. I want to understand what happened" (responds + adds intent)
-  * "I'm fine. I felt something was off too" (responds + adds perspective)
-
-- Previous: "I felt hurt when you didn't reply."
-  Options:
-  * "I hear you. I didn't realize it bothered you that much" (responds + adds understanding)
-  * "I understand. My phone died and I couldn't respond" (responds + adds explanation)
-  * "I'm sorry. I was stressed with work and didn't think" (responds + adds context)
-
-❌ WRONG EXAMPLES (avoid these):
-- "I'm good" (only response, no new content) ❌
-- "I'm also upset" (only new content, doesn't respond) ❌
-- "How are you?" (ignores previous message completely) ❌
-
-Continue the conversation naturally
-Are supportive and consistent with the conversation
-If near closure, include 1 smiley-only option as one of the 3
+- Continue the conversation naturally
+- Respond to the previous turn
+- Are supportive and consistent with the conversation
+- If near closure, include 1 smiley-only option as one of the 3
 ` : `
 Generate 3 consecutive turns: ${firstTurnRole === "A" ? "A → B → A" : "B → A → B"}.
 Each turn must include 3 short options.
-
-🔥 MANDATORY TWO-PART STRUCTURE FOR EACH OPTION:
-Each option MUST contain:
-1. RESPONSE PART: Acknowledge/respond to the immediately previous message
-   - Reference specific words, topics, or questions from the previous message
-   - Show understanding: "I hear you", "That makes sense", "I understand", "I'm sorry"
-   
-2. NEW CONTENT PART: Add something new to advance the conversation
-   - Share your own feeling, perspective, or information
-   - Connect to the topic but add your own angle
-   - Move the conversation forward with new information
-
-✅ CORRECT STRUCTURE:
-- Turn 1: User A says "How are you? I am upset about office issue."
-- Turn 2 (User B): Each option should be like:
-  * "Hey, I'm good. I'm also upset about that too" (responds + adds feeling)
-  * "I'm doing okay. I want to understand what happened" (responds + adds intent)
-  * "I'm fine. I felt something was off too" (responds + adds perspective)
-
-- Turn 3 (User A): Each option should respond to Turn 2 AND add new content:
-  * "Thanks for understanding. Can we talk about how to fix this?" (responds + adds action)
-  * "I appreciate that. I think we both need to communicate better" (responds + adds insight)
-
-❌ WRONG EXAMPLES (avoid these):
-- "I'm good" (only response, no new content) ❌
-- "I'm also upset" (only new content, doesn't respond) ❌
-- "How are you?" (ignores previous message completely) ❌
-
 Keep them supportive, natural, and consistent with the conversation.
 If near closure, add a smiley-only option as one of the 3.
-
-CONVERSATION CONTEXT:
-${conversationHistory.length > 0 ? `
-Last ${conversationHistory.length} message(s) in conversation:
-${conversationHistory.map((msg: any, idx: number) => 
-  `${idx + 1}. ${msg.sender_id === userAId ? 'User A' : 'User B'}: "${msg.content}"`
-).join('\n')}
-
-Use this history to understand the conversation flow and ensure your generated turns:
-- Turn 1 (if starting): Begin naturally
-- Turn 2: MUST respond to Turn 1 AND add new content
-- Turn 3: MUST respond to Turn 2 AND add new content
-` : 'This is the start of the conversation.'}
 `}`;
 
     // Call Anthropic API

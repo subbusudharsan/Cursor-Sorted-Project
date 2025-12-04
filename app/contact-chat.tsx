@@ -955,9 +955,29 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       return null;
     }
     
-    // ✅ FIX: Use messagesRef to avoid stale state in async functions
-    const userMessages = messagesRef.current.filter(m => m.sender_id === userId);
-    const messagesSentByUser = userMessages.length;
+    // ✅ FIX: Count messages from database to get accurate count (includes just-sent message)
+    // This prevents turn number mismatch when message is just sent but not yet in messagesRef
+    const { data: allMessages, error: messagesError } = await supabase
+      .from("messages")
+      .select("sender_id")
+      .eq("chat_id", chatId)
+      .order("created_at", { ascending: true });
+    
+    let messagesSentByUser: number;
+    let userMessagesCount: number; // ✅ Declare outside blocks for logging
+    
+    if (messagesError) {
+      console.warn("⚠️ Error fetching messages for turn calculation, using messagesRef fallback:", messagesError);
+      // Fallback to messagesRef if database query fails
+      const userMessages = messagesRef.current.filter(m => m.sender_id === userId);
+      messagesSentByUser = userMessages.length;
+      userMessagesCount = userMessages.length; // ✅ Store for logging
+    } else {
+      // ✅ Use database count (more accurate, includes just-sent message)
+      const userMessages = (allMessages || []).filter(m => String(m.sender_id) === String(userId));
+      messagesSentByUser = userMessages.length;
+      userMessagesCount = userMessages.length; // ✅ Store for logging
+    }
     
     // Calculate expected turn_number based on pre-generation sequence:
     // Turn 0: User A (0 messages sent) → turn_number 0
@@ -976,7 +996,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       isUserA,
       isUserB,
       totalMessages: messagesRef.current.length,
-      userMessagesCount: userMessages.length,
+      userMessagesCount: userMessagesCount, // ✅ FIX: Use stored value instead of userMessages.length
       messagesSentByUser,
       expectedTurn,
       allMessages: messagesRef.current.map(m => ({
@@ -1893,8 +1913,24 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           console.log("📨".repeat(30) + "\n");
           setMessages((prev) => {
             const exists = prev.some((m) => m.id === newMsg.id);
-            console.log(" Message already in list?", exists);
-            if (exists) return prev;
+            console.log(" Message already in list?", exists, "Message ID:", newMsg.id);
+            if (exists) {
+              console.log("⚠️ Duplicate message detected (by ID), skipping:", newMsg.id);
+              return prev; // Return unchanged array
+            }
+            
+            // ✅ FIX: Also check by content + sender_id + timestamp to catch duplicates with different IDs
+            const isDuplicate = prev.some((m) => 
+              m.content === newMsg.content && 
+              m.sender_id === newMsg.sender_id &&
+              Math.abs(new Date(m.created_at).getTime() - new Date(newMsg.created_at).getTime()) < 5000 // Within 5 seconds
+            );
+            
+            if (isDuplicate) {
+              console.log("⚠️ Duplicate message detected by content/timestamp, skipping");
+              return prev;
+            }
+            
             const newMessage: Message = {
               id: newMsg.id,
               content: newMsg.content,
@@ -1970,15 +2006,28 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             
             // ✅ FIX: If options exist, use immediately. Only retry if they don't exist (generation in progress)
             if (!pregen || !pregen.options?.length) {
-              console.log("ℹ️ No pregenerated turn found, doing quick retry in case generation just completed...");
+              console.log("ℹ️ No pregenerated turn found, polling for generation (max 2.5 seconds)...");
               
-              // Quick single retry after 500ms (faster than previous 1s, 2s, 3s delays)
-              // Realtime subscription will handle new options when they're ready
-              await new Promise(resolve => setTimeout(resolve, 500));
-              pregen = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
+              // ✅ FIX: Poll with increasing intervals (faster initial checks, longer later)
+              // Generation takes 2-5 seconds, so we poll for up to 2.5 seconds
+              const maxWaitTime = 2500; // 2.5 seconds max
+              const checkInterval = 300; // Check every 300ms
+              let waited = 0;
+              
+              while (waited < maxWaitTime && (!pregen || !pregen.options?.length)) {
+                await new Promise(resolve => setTimeout(resolve, checkInterval));
+                waited += checkInterval;
+                pregen = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
+                
+                if (pregen && pregen.options?.length > 0) {
+                  console.log(`✅ Found pregenerated turn after ${waited}ms`);
+                  break;
+                }
+              }
               
               if (!pregen || !pregen.options?.length) {
-                console.log("ℹ️ No pregenerated turn found after quick retry, will fall back to generate-contextual-options");
+                console.log("ℹ️ No pregenerated turn found after polling, will fall back to generate-contextual-options");
+                // Realtime subscription will still handle new options when they're ready
               }
             }
             
@@ -2015,16 +2064,29 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             console.log("🔍 Double-checking pregenerated turns before orchestration:", { chatId, userId: recipientIdForOptions });
             let pregenCheck = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
             
-            // ✅ FIX: Quick retry only if options don't exist (realtime will handle new options)
+            // ✅ FIX: Poll for pregenerated turns if they don't exist (generation in progress)
             if (!pregenCheck || !pregenCheck.options?.length) {
-              console.log("ℹ️ Double-check: No pregenerated turn found, doing quick retry...");
+              console.log("ℹ️ Double-check: No pregenerated turn found, polling for generation (max 2.5 seconds)...");
               
-              // Quick single retry after 500ms (realtime subscription will handle new options)
-              await new Promise(resolve => setTimeout(resolve, 500));
-              pregenCheck = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
+              // ✅ FIX: Poll with increasing intervals (faster initial checks, longer later)
+              const maxWaitTime = 2500; // 2.5 seconds max
+              const checkInterval = 300; // Check every 300ms
+              let waited = 0;
+              
+              while (waited < maxWaitTime && (!pregenCheck || !pregenCheck.options?.length)) {
+                await new Promise(resolve => setTimeout(resolve, checkInterval));
+                waited += checkInterval;
+                pregenCheck = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
+                
+                if (pregenCheck && pregenCheck.options?.length > 0) {
+                  console.log(`✅ Double-check: Found pregenerated turn after ${waited}ms`);
+                  break;
+                }
+              }
               
               if (!pregenCheck || !pregenCheck.options?.length) {
-                console.log("ℹ️ Double-check: No pregenerated turn found after quick retry, will fall back to orchestration");
+                console.log("ℹ️ Double-check: No pregenerated turn found after polling, will fall back to orchestration");
+                // Realtime subscription will still handle new options when they're ready
               }
             }
             
@@ -2410,6 +2472,24 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       console.log("✅ MESSAGE INSERTED INTO DATABASE");
       console.log(" Message ID:", data.id);
       
+      // ✅ FIX: Update messagesRef immediately so turn calculation is accurate
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === data.id)) return prev;
+        const newMessages = [
+          ...prev,
+          {
+            id: data.id,
+            content: data.content,
+            sender_type: "user",
+            sender_id: user?.id || "",
+            created_at: data.created_at,
+          },
+        ];
+        // ✅ CRITICAL: Update messagesRef immediately for accurate turn calculation
+        messagesRef.current = newMessages;
+        return newMessages;
+      });
+      
       // ✅ CRITICAL: Only mark as sent_to_contact AFTER successful message insert
       if (isFirstMessage && sourceChatId) {
         const { data: sourceChat } = await supabase
@@ -2560,7 +2640,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               ? 'pending_user_b_smiley'
               : 'pending_user_a_smiley';
             console.log(`⏳ Waiting for ${isUserA ? 'User B' : 'User A'} to send emoji`);
-            showNotification('info', 'Closure Pending', 'Waiting for the other person to confirm completion');
+            showNotification('success', 'Closure Pending', 'Waiting for the other person to confirm completion');
           }
           await supabase
             .from("chats")
@@ -2647,19 +2727,6 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       console.log("📤 USER SENT MESSAGE - GENERATING OPTIONS FOR RECIPIENT");
       console.log("=".repeat(60));
       console.log("📬 User's message (currentMessage for recipient):", content.substring(0, 80));
-      setMessages((prev) => {
-        if (prev.some((m) => m.id === data.id)) return prev;
-        return [
-          ...prev,
-          {
-            id: data.id,
-            content: data.content,
-            sender_type: "user",
-            sender_id: user?.id || "",
-            created_at: data.created_at,
-          },
-        ];
-      });
       const updatedContextData = chatData?.context_data
         ? { ...chatData.context_data, initial_pending: false, session_promoted: true }
         : { initial_pending: false, session_promoted: true };
@@ -2671,9 +2738,28 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           context_data: updatedContextData,
         })
         .eq("id", currentChatId);
+      
+      // ✅ CRITICAL: Trigger pregenerated turns generation IMMEDIATELY after message is sent
+      // This ensures turns are ready before the recipient checks
       if (recipientId) {
+        console.log("🚀 Triggering pregenerated turns generation immediately after message send for recipient:", recipientId);
+        // Trigger in background (non-blocking)
+        supabase.functions.invoke("generate-pregenerated-turns", {
+          body: { chatId: currentChatId }
+        }).then(({ data: pregenData, error: pregenError }) => {
+          if (pregenError) {
+            console.error("❌ Failed to trigger pregenerated turns:", pregenError);
+          } else {
+            console.log("✅ Pregenerated turns generation triggered:", pregenData);
+          }
+        }).catch(err => {
+          console.error("❌ Error triggering pregenerated turns:", err);
+        });
+        
+        // Enter waiting state - realtime subscription will show options when ready
         enterWaitingForOptions(recipientId);
       }
+      
       const conversationHistory = buildHistory({
         sender_id: String(user?.id || ""),
         content,
@@ -2744,16 +2830,29 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         console.log("🔍 Checking pregenerated turns before orchestration (sendMessage):", { chatId: currentChatId, userId: recipientId });
         let pregenCheck = await fetchPregeneratedTurn(currentChatId, recipientId);
         
-        // ✅ FIX: Quick retry only if options don't exist (realtime will handle new options)
+        // ✅ FIX: Poll for pregenerated turns if they don't exist (generation in progress)
         if (!pregenCheck || !pregenCheck.options?.length) {
-          console.log("ℹ️ No pregenerated turn found, doing quick retry in case generation just completed...");
+          console.log("ℹ️ No pregenerated turn found, polling for generation (max 2.5 seconds)...");
           
-          // Quick single retry after 500ms (realtime subscription will handle new options)
-          await new Promise(resolve => setTimeout(resolve, 500));
-          pregenCheck = await fetchPregeneratedTurn(currentChatId, recipientId);
+          // ✅ FIX: Poll with increasing intervals (faster initial checks, longer later)
+          const maxWaitTime = 2500; // 2.5 seconds max
+          const checkInterval = 300; // Check every 300ms
+          let waited = 0;
+          
+          while (waited < maxWaitTime && (!pregenCheck || !pregenCheck.options?.length)) {
+            await new Promise(resolve => setTimeout(resolve, checkInterval));
+            waited += checkInterval;
+            pregenCheck = await fetchPregeneratedTurn(currentChatId, recipientId);
+            
+            if (pregenCheck && pregenCheck.options?.length > 0) {
+              console.log(`✅ Found pregenerated turn after ${waited}ms (sendMessage)`);
+              break;
+            }
+          }
           
           if (!pregenCheck || !pregenCheck.options?.length) {
-            console.log("ℹ️ No pregenerated turn found after quick retry, will fall back to orchestration - sendMessage");
+            console.log("ℹ️ No pregenerated turn found after polling, will fall back to orchestration - sendMessage");
+            // Realtime subscription will still handle new options when they're ready
           }
         }
         
@@ -3382,7 +3481,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               updateData.closure_state = isUserA
                 ? 'pending_user_b_smiley'
                 : 'pending_user_a_smiley';
-              showNotification('info', 'Closure Pending', 'Waiting for the other person to confirm completion');
+              showNotification('success', 'Closure Pending', 'Waiting for the other person to confirm completion');
             }
             
             await supabase
@@ -4358,91 +4457,117 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                       console.log("✅ Hint saved:", tipText.substring(0, 50));
                       setShowTipBox(false);
                       setHintSubmitted(true);
-                      // ✅ FIX: Always regenerate options immediately after hint submission
+                      
                       // ✅ CRITICAL: Don't regenerate options if chat is closed
                       if (isChatClosed) {
                         console.log("🛑 Chat is closed - cannot regenerate options after hint submission");
                         return;
                       }
-                      console.log("🔄 Hint submitted - regenerating options immediately with hint context");
-                      enterWaitingForOptions(user?.id ? String(user.id) : undefined);
-                      // Get latest message from contact to respond to
-                      const latestContactMessage = messages
-                        .filter((m) => m.sender_id !== user?.id)
-                        .pop();
-                      if (latestContactMessage) {
-                        const conversationHistory = buildHistory();
-                        // Determine if current user is User A or User B
-                        const isCurrentUserA = user?.id === existing?.user_id;
-                        console.log("📤 Regenerating options with hint:", {
-                          currentUserRole: isCurrentUserA ? "User A" : "User B",
-                          hintLength: tipText.length,
-                          latestMessagePreview: latestContactMessage.content.substring(0, 50),
-                        });
-                        // Regenerate options with hint included - CRITICAL: Include ALL context
-                        const summaryA = existing?.context_data?.summary_a || existing?.context_data?.summary || "";
-                        const thoughtsA = existing?.context_data?.thoughts_a || existing?.context_data?.thoughts || "";
-                        if (!user) {
-                          console.error('User not available for regenerating options');
-                          return;
-                        }
-                        const { error: regenError } = await supabase.functions.invoke(
-                          "generate-contextual-options",
-                          {
-                            body: {
-                              chatId: currentChatId,
-                              recipientId: user.id,
-                              currentUserId: user.id,
-                              currentMessage: latestContactMessage.content,
-                              summary: isCurrentUserA
-                                ? summaryA
-                                : (existing?.context_data?.summary_b || ""),
-                              thoughts: isCurrentUserA
-                                ? thoughtsA
-                                : (existing?.context_data?.thoughts_b || ""),
-                              // ✅ CRITICAL: Always include User A's original issue
-                              originalIssue: {
-                                summary: summaryA,
-                                thoughts: thoughtsA,
-                              },
-                              hintFromB: tipText.trim(), // ⭐ NEW HINT - User B's perspective
-                              hintToContact: existing?.context_data?.hint_to_contact || null,
-                              summaryB: existing?.context_data?.summary_b || "",
-                              thoughtsB: existing?.context_data?.thoughts_b || "",
-                              conversationHistory,
-                              isInitial: false,
-                              contactCategory: contact?.category || "General",
-                              conversationPhase: conversationPhase,
-                              resolutionDetected: false,
-                              lastMessageTimestamp: latestContactMessage.created_at, // ⏰ For timing-aware context
-                              wordLimit: 15, // ✅ Pass word limit
-                            },
-                          }
-                        );
-                        if (regenError) {
-                          console.error("❌ Failed to regenerate options with hint:", regenError);
-                          showNotification(
-                            'warning',
-                            'Context Saved',
-                            'Your perspective is saved but options could not be updated'
-                          );
-                          // ✅ Make sure 💞 composing banner does not get stuck forever
-                          if (user?.id) {
-                            resolveWaitingForOptions(String(user.id));
-                          } else {
-                            resolveWaitingForOptions(null);
-                          }
-                        } else {
-                          console.log("✅ Options regenerated with hint context");
-                          showNotification(
-                            'success',
-                            'Options Updated',
-                            'Your response choices now reflect your perspective'
-                          );
-                        }
-                        
-                      } else {
+                      
+                      // ✅ CRITICAL FIX: Check if it's actually User B's turn before showing options
+                      const { data: chatData } = await supabase
+                        .from("chats")
+                        .select("user_id, contact_id")
+                        .eq("id", currentChatId)
+                        .single();
+
+                      if (!chatData || !user) {
+                        console.error("❌ Could not determine turn status");
                         showNotification('success', 'Context Saved', 'Your perspective will guide future responses');
+                        return;
+                      }
+
+                      const isUserB = user.id === chatData.contact_id;
+                      const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
+                      // User B's turn if last message was from User A (not from User B)
+                      const isUserBTurn = isUserB && lastMessage && lastMessage.sender_id !== user.id;
+
+                      console.log("🔍 Turn check after hint submission:", {
+                        isUserB,
+                        lastMessageSender: lastMessage?.sender_id,
+                        currentUserId: user.id,
+                        isUserBTurn,
+                        hasOptionsShowing: showSuggestedOptions
+                      });
+
+                      if (isUserBTurn && showSuggestedOptions) {
+                        // ✅ SCENARIO 1: It IS User B's turn AND options are already showing
+                        // → Refresh options immediately with hint context
+                        console.log("✅ User B's turn with options showing - refreshing options with hint");
+                        enterWaitingForOptions(user?.id ? String(user.id) : undefined);
+                        
+                        const latestContactMessage = messages
+                          .filter((m) => m.sender_id !== user?.id)
+                          .pop();
+                        
+                        if (latestContactMessage) {
+                          const conversationHistory = buildHistory();
+                          const isCurrentUserA = user?.id === existing?.user_id;
+                          console.log("📤 Regenerating options with hint:", {
+                            currentUserRole: isCurrentUserA ? "User A" : "User B",
+                            hintLength: tipText.length,
+                            latestMessagePreview: latestContactMessage.content.substring(0, 50),
+                          });
+                          
+                          const summaryA = existing?.context_data?.summary_a || existing?.context_data?.summary || "";
+                          const thoughtsA = existing?.context_data?.thoughts_a || existing?.context_data?.thoughts || "";
+                          
+                          const { error: regenError } = await supabase.functions.invoke(
+                            "generate-contextual-options",
+                            {
+                              body: {
+                                chatId: currentChatId,
+                                recipientId: user.id,
+                                currentUserId: user.id,
+                                currentMessage: latestContactMessage.content,
+                                summary: isCurrentUserA
+                                  ? summaryA
+                                  : (existing?.context_data?.summary_b || ""),
+                                thoughts: isCurrentUserA
+                                  ? thoughtsA
+                                  : (existing?.context_data?.thoughts_b || ""),
+                                originalIssue: {
+                                  summary: summaryA,
+                                  thoughts: thoughtsA,
+                                },
+                                hintFromB: tipText.trim(), // ⭐ NEW HINT - User B's perspective
+                                hintToContact: existing?.context_data?.hint_to_contact || null,
+                                summaryB: existing?.context_data?.summary_b || "",
+                                thoughtsB: existing?.context_data?.thoughts_b || "",
+                                conversationHistory,
+                                isInitial: false,
+                                contactCategory: contact?.category || "General",
+                                conversationPhase: conversationPhase,
+                                resolutionDetected: false,
+                                lastMessageTimestamp: latestContactMessage.created_at,
+                                wordLimit: 15,
+                              },
+                            }
+                          );
+                          
+                          if (regenError) {
+                            console.error("❌ Failed to regenerate options with hint:", regenError);
+                            showNotification('warning', 'Context Saved', 'Your perspective is saved but options could not be updated');
+                            if (user?.id) {
+                              resolveWaitingForOptions(String(user.id));
+                            }
+                          } else {
+                            console.log("✅ Options regenerated with hint context");
+                            showNotification('success', 'Options Updated', 'Your response choices now reflect your perspective');
+                          }
+                        }
+                      } else if (!isUserBTurn) {
+                        // ✅ SCENARIO 2: It's NOT User B's turn
+                        // → Just store hint, invalidate future turns, trigger regeneration, but DON'T show options
+                        console.log("ℹ️ Not User B's turn - storing hint for next turn, not showing options");
+                        showNotification('success', 'Context Saved', 'Your perspective will guide your next response');
+                        // Don't enter waiting state - it's not User B's turn
+                      } else {
+                        // ✅ SCENARIO 3: It IS User B's turn but no options showing yet
+                        // → Wait for pregenerated turns to be regenerated with hint
+                        console.log("ℹ️ User B's turn but no options yet - waiting for regenerated turns with hint");
+                        enterWaitingForOptions(user?.id ? String(user.id) : undefined);
+                        showNotification('info', 'Context Saved', 'Options will update shortly with your perspective');
                       }
                     } catch (err) {
                       console.error("❌ Failed to save hint:", err);

@@ -3248,7 +3248,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
           }
           
           // ✅ For other errors or final attempt, throw
-          throw lastError || new Error("Failed to call Anthropic API after retries");
+          throw lastError;
         }
       }
       
@@ -4599,24 +4599,8 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
         return friendly;
       };
       
-      // ✅ FIX: Replace "between you two" with "between us" for relationship language
-      // This handles cases where User B talks about the relationship with User A
-      const fixRelationshipPronouns = (text: string): string => {
-        let fixed = text;
-        // Replace "between you two" with "between us" (works for both User A and User B)
-        fixed = fixed.replace(/\bbetween you two\b/gi, "between us");
-        fixed = fixed.replace(/\bbetween the two of you\b/gi, "between us");
-        // Replace "you two" when in relationship context (between, for, with, etc.)
-        fixed = fixed.replace(/\bfor you two\b/gi, "for us");
-        fixed = fixed.replace(/\bwith you two\b/gi, "with us");
-        return fixed;
-      };
-      
       // Apply friendly tone processing to all selected options
       selected = selected.map(opt => makeFriendlyAndNatural(opt));
-      
-      // ✅ FIX: Apply relationship pronoun fix to all selected options
-      selected = selected.map(opt => fixRelationshipPronouns(opt));
       
       // ✅ CRITICAL: Apply pronoun fixing to ALL selected options (not just fallbacks)
       selected = selected.map(opt => fixPronounMistakes(removeListenerName(stripTagSymbols(opt))));
