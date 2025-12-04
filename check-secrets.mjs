@@ -9,17 +9,25 @@ const API_BASE = "https://api.supabase.io/v1/projects";
 
 const REQUIRED_SECRETS = [
   "CLAUDE_API_KEY",
+  "GROQ_API_KEY", // ✅ NEW: Required for Groq/Llama edge functions
   "SUPABASE_URL",
   "SUPABASE_ANON_KEY",
   "SUPABASE_SERVICE_ROLE_KEY",
 ];
 
 const FUNCTIONS_SECRETS_MAP = {
-  "invoke-claude": ["CLAUDE_API_KEY"],
-  "orchestrate-conversation": ["CLAUDE_API_KEY", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"],
-  "generate-contextual-options": ["CLAUDE_API_KEY", "SUPABASE_URL", "SUPABASE_ANON_KEY"],
-  "analyze-conversation-state": ["CLAUDE_API_KEY"],
-  "validate-option-relevance": ["CLAUDE_API_KEY"],
+  "invoke-claude": ["CLAUDE_API_KEY"], // Still uses Claude
+  "orchestrate-conversation": ["GROQ_API_KEY", "SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"], // ✅ Updated to Groq
+  "generate-contextual-options": ["GROQ_API_KEY", "SUPABASE_URL", "SUPABASE_ANON_KEY"], // ✅ Updated to Groq
+  "generate-summary": ["GROQ_API_KEY"], // ✅ Uses Groq
+  "analyze-and-generate-questions": ["GROQ_API_KEY"], // ✅ Uses Groq
+  "generate-pregenerated-turns": ["GROQ_API_KEY"], // ✅ Uses Groq
+  "analyze-conversation-state": ["GROQ_API_KEY"], // ✅ Updated to Groq
+  "validate-option-relevance": ["GROQ_API_KEY"], // ✅ Updated to Groq
+  "voice-reflection": ["GROQ_API_KEY"], // ✅ Uses Groq
+  "generate-ai-insight": ["GROQ_API_KEY"], // ✅ Uses Groq
+  "analyze-reflection": ["GROQ_API_KEY"], // ✅ Uses Groq
+  "generate-coach-nudge": ["GROQ_API_KEY"], // ✅ Uses Groq
   "evaluate-closure-readiness": ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"],
   "validate-context-quality": ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"],
 };
@@ -30,6 +38,7 @@ async function checkLocalEnv() {
 
   const localSecrets = {
     CLAUDE_API_KEY: process.env.CLAUDE_API_KEY,
+    GROQ_API_KEY: process.env.GROQ_API_KEY, // ✅ NEW: Required for Groq/Llama edge functions
     SUPABASE_URL: process.env.EXPO_PUBLIC_SUPABASE_URL,
     SUPABASE_ANON_KEY: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
     SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,

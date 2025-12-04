@@ -2331,65 +2331,43 @@ const inferEntityCategory = (name: string): string => {
         ? `\n\nIMPORTANT: The description mentions third parties: ${thirdPersonEntities.map(e => e.entity_name || e.name).join(', ')}. Consider asking about their role, relationship, or what happened involving them.`
         : '';
 
-      const systemPrompt = `You are a thoughtful assistant helping someone prepare for a conversation with ${contact?.full_name || "their contact"}.
-
-You already know the following from what they said:
-"${initialDescription}"${tagContext}${thirdPersonContext}
-
-📌 CRITICAL INSTRUCTIONS:
-- Generate EXACTLY 5 questions that explore DIFFERENT aspects of the issue
-- Each question must be COMPLETELY different from the others - not just name variations or slight rewordings
-- Questions should explore different dimensions:
-  * Question 1: Emotions/Feelings (how they feel about it)
-  * Question 2: Facts/Details (specific information not yet mentioned)
-  * Question 3: Intentions/Goals (what they want to achieve)
-  * Question 4: Outcomes/Desired Results (how they want it to end)
-  * Question 5: Relationships/Context (involvement of others or background)
-${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${thirdPersonEntities.map((e: any) => e.entity_name || e.name).join(', ')}). Include questions about their role, relationship, or involvement, but make each question explore a DIFFERENT aspect.` : ''}
-- Do NOT ask about things already mentioned (who, where, when, event type, relationship, etc.)
-- Each question must be a SINGLE sentence, 6-10 words, medium length
-- Do NOT generate questions like "What does X say?" and "What does Y say?" - these are too similar
-- Ensure questions ask about DIFFERENT topics, not just different people
-- Keep tone caring and human, not robotic
-- Return ONLY the 5 questions, one per line, numbered 1-5`;
-
-      const response = await fetch(CLAUDE_EDGE_FUNCTION_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY}`,
-        },
-        body: JSON.stringify({
-          model: "claude-3-5-haiku-20241022",
-          max_tokens: 300,
-          system: systemPrompt,
-          messages: [
-            { role: "user", content: "Generate 5 completely different questions, one per line, numbered 1-5." },
-          ],
-        }),
+      // ✅ FIX: Use the new analyze-and-generate-questions edge function (Groq/Llama)
+      console.log('🔍 Calling analyze-and-generate-questions edge function...');
+      
+      const { data, error } = await supabase.functions.invoke('analyze-and-generate-questions', {
+        body: {
+          description: initialDescription,
+          user_id: user?.id,
+          available_contacts: contact ? [{
+            full_name: contact.full_name || contact.email || 'Contact',
+            category: (contact as any).category || 'General'
+          }] : []
+        }
       });
 
-      const result = await response.json();
-      
-      if (!result?.content) {
-        throw new Error("No content in response");
+      if (error) {
+        console.error('❌ Error calling analyze-and-generate-questions:', error);
+        throw new Error(`Failed to generate questions: ${error.message || 'Unknown error'}`);
       }
 
-      // Parse the response to extract questions
-      const content = result.content.trim();
-      const lines = content.split('\n').filter((line: string) => line.trim().length > 0);
-      
+      if (!data?.questions || !Array.isArray(data.questions) || data.questions.length === 0) {
+        console.error('❌ No questions in response:', data);
+        throw new Error("No questions in response");
+      }
+
+      // ✅ Extract question text from structured format
+      // The edge function returns 3 questions, but we need 5, so we'll use fallbacks for the remaining 2
       let questions: string[] = [];
-      for (const line of lines) {
-        // Remove numbering (1., 2., etc.) and extract question
-        const cleaned = line.replace(/^\d+[\.\)]\s*/, '').trim();
-        if (cleaned.endsWith('?')) {
-          questions.push(cleaned);
-        } else if (cleaned.length > 0) {
-          // Add ? if missing
-          questions.push(cleaned + '?');
+      for (const q of data.questions) {
+        const questionText = q.question || '';
+        if (questionText.trim().length > 0) {
+          // Ensure question ends with ?
+          const finalQ = questionText.endsWith('?') ? questionText.trim() : questionText.trim() + '?';
+          questions.push(finalQ);
         }
       }
+      
+      console.log(`✅ Received ${questions.length} questions from edge function`);
 
       // Validate and filter questions
       const validQuestions: string[] = [];

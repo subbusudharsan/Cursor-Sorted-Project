@@ -9,6 +9,7 @@ const API_BASE = "https://api.supabase.io/v1/projects";
 
 const REQUIRED_SECRETS = {
   CLAUDE_API_KEY: process.env.CLAUDE_API_KEY,
+  GROQ_API_KEY: process.env.GROQ_API_KEY, // ✅ NEW: Required for Groq/Llama edge functions
   PUBLIC_SUPABASE_URL: process.env.EXPO_PUBLIC_SUPABASE_URL,
   PUBLIC_SUPABASE_ANON_KEY: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
   SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,

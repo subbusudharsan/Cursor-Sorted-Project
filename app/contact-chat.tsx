@@ -1037,8 +1037,25 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
   ) => {
     const { force = false } = options;
     
-    // 🔥 CRITICAL: Check pregenerated turns FIRST - before ANY other logic
-    // This ensures pregenerated options are ALWAYS used when available
+    // ✅ CRITICAL FIX: Check if conversation is closed FIRST - before ANY other logic
+    // This prevents showing options or "Composing" message after chat is closed
+    const { data: closureCheck } = await supabase
+      .from("chats")
+      .select("is_resolved, closure_state")
+      .eq("id", chatId)
+      .single();
+
+    if (closureCheck?.is_resolved === true && closureCheck?.closure_state === 'closed') {
+      console.log("🛑 Conversation is closed - skipping all option fetching (including pregenerated)");
+      isFetchingOptionsRef.current = false;
+      resolveWaitingForOptions(userId);
+      setShowSuggestedOptions(false);
+      setSuggestedOptions([]);
+      return; // Exit early - don't check pregenerated turns or generate new options
+    }
+    
+    // 🔥 CRITICAL: Check pregenerated turns SECOND - only if chat is still active
+    // This ensures pregenerated options are ALWAYS used when available (but not after closure)
     console.log("🔍 Checking pregenerated turns:", { chatId, userId });
     const pregen = await fetchPregeneratedTurn(chatId, userId);
     if (pregen && pregen.options?.length > 0) {
@@ -1077,19 +1094,8 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     
     console.log("🔍 FETCHING INITIAL OPTIONS", { chatId, userId, forced: force, retryCount: _retryCount });
     
-    // ✅ CRITICAL: Check if conversation is closed before fetching options
-    const { data: closureCheck } = await supabase
-      .from("chats")
-      .select("is_resolved, closure_state")
-      .eq("id", chatId)
-      .single();
-
-    if (closureCheck?.is_resolved === true && closureCheck?.closure_state === 'closed') {
-      console.log("🛑 Conversation is closed - no initial options needed");
-      isFetchingOptionsRef.current = false; // Clear fetching flag
-      resolveWaitingForOptions(userId);
-      return;
-    }
+    // ✅ NOTE: Closure check already done at the beginning of this function
+    // No need to check again here
     if (!force) {
       const { data: messagesData } = await supabase
         .from("messages")
@@ -1815,14 +1821,44 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                 const { error: archiveError } = await supabase.functions.invoke("archive-pregenerated-turns", {
                   body: { chatId: chatId }
                 });
+                
                 if (archiveError) {
                   console.error("❌ Failed to archive pregenerated turns:", archiveError);
+                  
+                  // ✅ FALLBACK: Direct deletion if archive fails
+                  console.log("🔄 Attempting direct deletion as fallback...");
+                  const { error: deleteError } = await supabase
+                    .from("pregenerated_turns")
+                    .delete()
+                    .eq("chat_id", chatId);
+                  
+                  if (deleteError) {
+                    console.error("❌ Fallback deletion also failed:", deleteError);
+                  } else {
+                    console.log("✅ Fallback: Directly deleted unused pregenerated turns");
+                  }
                 } else {
                   console.log("✅ Pregenerated turns archived successfully");
                 }
               } catch (err) {
                 console.error("❌ Error archiving pregenerated turns:", err);
-                // Non-blocking - continue with closure even if archiving fails
+                
+                // ✅ FALLBACK: Direct deletion if archive throws error
+                try {
+                  console.log("🔄 Attempting direct deletion as fallback...");
+                  const { error: deleteError } = await supabase
+                    .from("pregenerated_turns")
+                    .delete()
+                    .eq("chat_id", chatId);
+                  
+                  if (deleteError) {
+                    console.error("❌ Fallback deletion also failed:", deleteError);
+                  } else {
+                    console.log("✅ Fallback: Directly deleted unused pregenerated turns");
+                  }
+                } catch (fallbackErr) {
+                  console.error("❌ Fallback deletion error:", fallbackErr);
+                }
               }
             })();
             
@@ -1831,6 +1867,8 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             setShowSuggestedOptions(false);
             setSuggestedOptions([]);
             resolveWaitingForOptions(String(user?.id || ''));
+            // ✅ CRITICAL FIX: Clear fetching flag to prevent "Composing" message from showing
+            isFetchingOptionsRef.current = false;
             // ✅ FIX: Navigate to history tab immediately (no delay, no notification, no animation)
             console.log('🚀 Navigating to history tab immediately after closure (from realtime)');
             if (contactId) {
@@ -1940,6 +1978,9 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               console.log("🛑 Conversation is closed - skipping option generation");
               setIsChatClosed(true);
               resolveWaitingForOptions(currentUserId);
+              isFetchingOptionsRef.current = false; // Clear fetching flag
+              setShowSuggestedOptions(false);
+              setSuggestedOptions([]);
               return;
             }
             
@@ -2124,6 +2165,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                       thoughts: thoughtsA,
                     },
                     hintFromB: chatCtx?.context_data?.hint_from_b || "",
+                    hint_from_b: chatCtx?.context_data?.hint_from_b || "", // ✅ Also pass as hint_from_b for compatibility
                     hintToContact: chatCtx?.context_data?.hint_to_contact || null,
                     summaryB: summaryB,
                     thoughtsB: thoughtsB,
@@ -2166,6 +2208,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                     orchestrationGuidance,
                     // ✅ CRITICAL: Always pass hintFromB for context, but edge function MUST enforce perspective isolation based on recipientId
                     hintFromB: chatCtx?.context_data?.hint_from_b || "",
+                    hint_from_b: chatCtx?.context_data?.hint_from_b || "", // ✅ Also pass as hint_from_b for compatibility
                     hintToContact: chatCtx?.context_data?.hint_to_contact || null,
                     conversationPhase,
                     lastMessage: newMsg.content || "",
@@ -2519,6 +2562,13 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             updateData.closure_achieved_at = new Date().toISOString();
             console.log("✅ Both users sent smileys - conversation closed!");
             
+            // ✅ CRITICAL FIX: Clear waiting state immediately when chat closes
+            setIsChatClosed(true);
+            setShowSuggestedOptions(false);
+            setSuggestedOptions([]);
+            resolveWaitingForOptions(String(user?.id || ''));
+            isFetchingOptionsRef.current = false; // Clear fetching flag
+            
             // ✅ NEW: Archive pregenerated turns when chat closes
             (async () => {
               try {
@@ -2526,14 +2576,44 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                 const { error: archiveError } = await supabase.functions.invoke("archive-pregenerated-turns", {
                   body: { chatId: currentChatId }
                 });
+                
                 if (archiveError) {
                   console.error("❌ Failed to archive pregenerated turns:", archiveError);
+                  
+                  // ✅ FALLBACK: Direct deletion if archive fails
+                  console.log("🔄 Attempting direct deletion as fallback...");
+                  const { error: deleteError } = await supabase
+                    .from("pregenerated_turns")
+                    .delete()
+                    .eq("chat_id", currentChatId);
+                  
+                  if (deleteError) {
+                    console.error("❌ Fallback deletion also failed:", deleteError);
+                  } else {
+                    console.log("✅ Fallback: Directly deleted unused pregenerated turns");
+                  }
                 } else {
                   console.log("✅ Pregenerated turns archived successfully");
                 }
               } catch (err) {
                 console.error("❌ Error archiving pregenerated turns:", err);
-                // Non-blocking - continue with closure even if archiving fails
+                
+                // ✅ FALLBACK: Direct deletion if archive throws error
+                try {
+                  console.log("🔄 Attempting direct deletion as fallback...");
+                  const { error: deleteError } = await supabase
+                    .from("pregenerated_turns")
+                    .delete()
+                    .eq("chat_id", currentChatId);
+                  
+                  if (deleteError) {
+                    console.error("❌ Fallback deletion also failed:", deleteError);
+                  } else {
+                    console.log("✅ Fallback: Directly deleted unused pregenerated turns");
+                  }
+                } catch (fallbackErr) {
+                  console.error("❌ Fallback deletion error:", fallbackErr);
+                }
               }
             })();
             
@@ -2542,6 +2622,8 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             setShowSuggestedOptions(false);
             setSuggestedOptions([]);
             resolveWaitingForOptions(String(user?.id || ''));
+            // ✅ CRITICAL FIX: Clear fetching flag to prevent "Composing" message from showing
+            isFetchingOptionsRef.current = false;
             // ✅ FIX: Navigate to history tab immediately (no delay, no notification)
             console.log('🚀 Navigating to history tab immediately after closure (from message send)');
             if (contactId) {
@@ -2560,7 +2642,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               ? 'pending_user_b_smiley'
               : 'pending_user_a_smiley';
             console.log(`⏳ Waiting for ${isUserA ? 'User B' : 'User A'} to send emoji`);
-            showNotification('info', 'Closure Pending', 'Waiting for the other person to confirm completion');
+            showNotification('success', 'Closure Pending', 'Waiting for the other person to confirm completion');
           }
           await supabase
             .from("chats")
@@ -2811,6 +2893,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               // ✅ CRITICAL: Always pass hintFromB for context, but edge function MUST enforce perspective isolation based on recipientId
               // recipientId determines the perspective - hints are shared for empathy but POV remains locked
               hintFromB: chatData.context_data?.hint_from_b || "",
+              hint_from_b: chatData.context_data?.hint_from_b || "", // ✅ Also pass as hint_from_b for compatibility
               conversationHistory,
               contactCategory: contact?.category || "General",
               isInitial: false,
@@ -3072,6 +3155,20 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         }
       }
       
+      // ✅ CRITICAL FIX: Validate finalMessage before sending
+      // This prevents selected_message from being null
+      if (!finalMessage || finalMessage.trim().length === 0) {
+        console.error("❌ CRITICAL: finalMessage is empty or null! Using original option as fallback.");
+        finalMessage = option; // Fallback to original option
+      }
+      
+      // ✅ Double-check: Ensure finalMessage is still valid
+      if (!finalMessage || finalMessage.trim().length === 0) {
+        console.error("❌ CRITICAL: finalMessage is still empty after fallback! Cannot send message.");
+        showNotification('error', 'Message Error', 'Unable to prepare message. Please try again.');
+        return; // Don't send empty message
+      }
+      
       sendMessage(finalMessage);
 
       // ✅ NEW: Mark the selected option as used in the correct table based on source
@@ -3103,6 +3200,12 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               const turnToMark = unusedTurns[0].turn_number;
               console.log(`✅ Fallback: Found unused turn ${turnToMark} for user ${user.id}`);
               
+              // ✅ CRITICAL FIX: Validate finalMessage before saving
+              if (!finalMessage || finalMessage.trim().length === 0) {
+                console.error(`❌ CRITICAL: finalMessage is empty when marking pregen turn ${turnToMark} as used!`);
+                finalMessage = option; // Fallback to original option
+              }
+              
               // Mark this turn as used
               const { error: markError } = await supabase
                 .from("pregenerated_turns")
@@ -3117,7 +3220,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                 .is("used_at", null);
               
               if (!markError) {
-                console.log(`✅ Fallback: Marked pregen turn ${turnToMark} as used`);
+                console.log(`✅ Fallback: Marked pregen turn ${turnToMark} as used with message: "${finalMessage.substring(0, 50)}"`);
                 
                 // Also delete future turns
                 await supabase
@@ -3143,6 +3246,12 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               if (chatData) {
                 const isUserA = user.id === chatData.user_id;
                 const expectedTurn = isUserA ? messagesSentByUser * 2 : messagesSentByUser * 2 + 1;
+                
+                // ✅ CRITICAL FIX: Validate finalMessage before saving
+                if (!finalMessage || finalMessage.trim().length === 0) {
+                  console.error(`❌ CRITICAL: finalMessage is empty when marking pregen turn ${expectedTurn} as used!`);
+                  finalMessage = option; // Fallback to original option
+                }
                 
                 // Try to mark this turn as used
                 const { error: markError } = await supabase
@@ -3197,18 +3306,24 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             return;
           }
 
+          // ✅ CRITICAL FIX: Validate finalMessage before saving
+          if (!finalMessage || finalMessage.trim().length === 0) {
+            console.error(`❌ CRITICAL: finalMessage is empty when marking pregen turn ${turnNumberToMark} as used!`);
+            finalMessage = option; // Fallback to original option
+          }
+          
           // Mark this pregenerated turn as used with source tracking
           const { error: markError } = await supabase
-            .from("pregenerated_turns")
-            .update({
-              selected_message: finalMessage,
-              used_at: new Date().toISOString(),
-              source: 'pregenerated_turns' // ✅ Set source ONLY when user selects (not on insert)
-            })
-            .eq("chat_id", currentChatId)
-            .eq("recipient_id", user.id)
-            .eq("turn_number", turnNumberToMark)
-            .is("used_at", null);
+                  .from("pregenerated_turns")
+                  .update({
+                    selected_message: finalMessage,
+                    used_at: new Date().toISOString(),
+                    source: 'pregenerated_turns' // ✅ Set source ONLY when user selects (not on insert)
+                  })
+                  .eq("chat_id", currentChatId)
+                  .eq("recipient_id", user.id)
+                  .eq("turn_number", turnNumberToMark)
+                  .is("used_at", null);
 
           if (markError) {
             console.error("❌ Failed to mark pregenerated turn as used:", markError);
@@ -3351,17 +3466,58 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               updateData.closure_achieved_at = new Date().toISOString();
               console.log("✅ Both users sent smileys - conversation closed!");
               
+              // ✅ CRITICAL FIX: Clear waiting state immediately when chat closes
+              setIsChatClosed(true);
+              setShowSuggestedOptions(false);
+              setSuggestedOptions([]);
+              resolveWaitingForOptions(String(user?.id || ''));
+              isFetchingOptionsRef.current = false; // Clear fetching flag
+              
               // Archive pregenerated turns
               (async () => {
                 try {
+                  console.log("📦 Archiving pregenerated turns for closed chat (from hint submit)...");
                   const { error: archiveError } = await supabase.functions.invoke("archive-pregenerated-turns", {
                     body: { chatId: currentChatId }
                   });
+                  
                   if (archiveError) {
                     console.error("❌ Failed to archive pregenerated turns:", archiveError);
+                    
+                    // ✅ FALLBACK: Direct deletion if archive fails
+                    console.log("🔄 Attempting direct deletion as fallback...");
+                    const { error: deleteError } = await supabase
+                      .from("pregenerated_turns")
+                      .delete()
+                      .eq("chat_id", currentChatId);
+                    
+                    if (deleteError) {
+                      console.error("❌ Fallback deletion also failed:", deleteError);
+                    } else {
+                      console.log("✅ Fallback: Directly deleted unused pregenerated turns");
+                    }
+                  } else {
+                    console.log("✅ Pregenerated turns archived successfully");
                   }
                 } catch (err) {
-                  console.error("❌ Error archiving:", err);
+                  console.error("❌ Error archiving pregenerated turns:", err);
+                  
+                  // ✅ FALLBACK: Direct deletion if archive throws error
+                  try {
+                    console.log("🔄 Attempting direct deletion as fallback...");
+                    const { error: deleteError } = await supabase
+                      .from("pregenerated_turns")
+                      .delete()
+                      .eq("chat_id", currentChatId);
+                    
+                    if (deleteError) {
+                      console.error("❌ Fallback deletion also failed:", deleteError);
+                    } else {
+                      console.log("✅ Fallback: Directly deleted unused pregenerated turns");
+                    }
+                  } catch (fallbackErr) {
+                    console.error("❌ Fallback deletion error:", fallbackErr);
+                  }
                 }
               })();
               
@@ -3369,6 +3525,8 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               setShowSuggestedOptions(false);
               setSuggestedOptions([]);
               resolveWaitingForOptions(String(user?.id || ''));
+              // ✅ CRITICAL FIX: Clear fetching flag to prevent "Composing" message from showing
+              isFetchingOptionsRef.current = false;
               
               // Navigate to history
               if (contactId) {
@@ -3382,7 +3540,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               updateData.closure_state = isUserA
                 ? 'pending_user_b_smiley'
                 : 'pending_user_a_smiley';
-              showNotification('info', 'Closure Pending', 'Waiting for the other person to confirm completion');
+              showNotification('success', 'Closure Pending', 'Waiting for the other person to confirm completion');
             }
             
             await supabase
@@ -3789,8 +3947,8 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     return String(pendingId) === String(target);
   }, [waitingForOptions, user?.id]);
   const isPendingForCurrentUser = computeIsPendingForUser();
-  // ✅ FIX: Show composing notice ONLY when waiting for current user's options AND it's their turn
-  const shouldShowComposing = waitingForOptions && isPendingForCurrentUser && isUserTurn;
+  // ✅ FIX: Show composing notice ONLY when waiting for current user's options AND it's their turn AND chat is not closed
+  const shouldShowComposing = waitingForOptions && isPendingForCurrentUser && isUserTurn && !isChatClosed;
   const recentThreshold = Math.max(0, displayedMessages.length - 2);
 
   if (initialLoading) {
@@ -4377,7 +4535,12 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                         console.log("📤 Regenerating options with hint:", {
                           currentUserRole: isCurrentUserA ? "User A" : "User B",
                           hintLength: tipText.length,
+                          hintPreview: tipText.substring(0, 100),
                           latestMessagePreview: latestContactMessage.content.substring(0, 50),
+                          recipientId: user?.id,
+                          existing_contact_id: existing?.contact_id,
+                          user_id: user?.id,
+                          willPassHint: true
                         });
                         // Regenerate options with hint included - CRITICAL: Include ALL context
                         const summaryA = existing?.context_data?.summary_a || existing?.context_data?.summary || "";
@@ -4406,6 +4569,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                                 thoughts: thoughtsA,
                               },
                               hintFromB: tipText.trim(), // ⭐ NEW HINT - User B's perspective
+                              hint_from_b: tipText.trim(), // ✅ Also pass as hint_from_b for compatibility
                               hintToContact: existing?.context_data?.hint_to_contact || null,
                               summaryB: existing?.context_data?.summary_b || "",
                               thoughtsB: existing?.context_data?.thoughts_b || "",

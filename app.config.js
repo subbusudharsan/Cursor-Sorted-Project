@@ -29,9 +29,10 @@ module.exports = {
     },
     android: {
       adaptiveIcon: {
-        foregroundImage: "./assets/images/icon.png",
-        backgroundColor: "#FFFFFF"
+        foregroundImage: "./assets/images/icon-foreground.png",
+        backgroundImage: "./assets/images/icon-background.png"
       },
+    
       package: "com.sorted.app",
       versionCode: 3,
       permissions: [
