@@ -2039,15 +2039,9 @@ const inferEntityCategory = (name: string): string => {
           throw new Error('Contact profile not found. The contact may have been deleted.');
         }
 
-        const limitContactId = contactProfile?.id || contactIdToLoad;
-        const completedMyTalks = await getCompletedMyTalksCount(user.id, limitContactId);
-        if (completedMyTalks >= MY_TALKS_LIMIT) {
-          const friendlyName = contactProfile?.full_name || contactProfile?.email || 'this contact';
-          Alert.alert('Limit Reached', buildMyTalksLimitMessage(friendlyName));
-          setInitializing(false);
-          router.push('/ai-assistant');
-          return;
-        }
+        // ✅ FIX: Removed limit check when loading EXISTING chat
+        // Limit check should only happen when creating NEW chat (handled at line 844)
+        // This prevents "Limit Reached" notification from appearing during active chats
       } catch (contactErr) {
         console.error('❌ Contact loading error:', contactErr);
         throw new Error('Failed to load contact information');
@@ -4642,12 +4636,11 @@ CRITICAL:
         user?.email?.split("@")[0] ||
         "Someone";
 
-      const completedMyTalks = await getCompletedMyTalksCount(user.id, contactIdValue);
-      if (completedMyTalks >= MY_TALKS_LIMIT) {
-        Alert.alert('Limit Reached', buildMyTalksLimitMessage(contactName));
-        setLoading(false);
-        return;
-      }
+      // ✅ REMOVED: Limit check from handleReadyToChat
+      // Reason: Limit check already happens in contact-selection.tsx when creating NEW chat
+      // handleReadyToChat is for continuing/navigating to existing chat, not creating new one
+      // Once chat exists and is active, no limit check should run
+      // This prevents unwanted "Take a pause" notification during active chats
 
       const hintPrompt = `Extract a 2-3 word issue summary and timeline from: "${summary}"
 
@@ -4997,16 +4990,18 @@ Respond ONLY with valid JSON:
           }
         );
         if (pregenError) {
-          console.error("❌ Failed to trigger pre-generation before navigation:", pregenError);
-          console.error("❌ Pre-generation error details:", JSON.stringify(pregenError, null, 2));
+          // ✅ FIX: Change to console.warn to prevent showing error to user
+          console.warn("⚠️ Pre-generation failed before navigation (non-critical):", pregenError);
+          // ✅ REMOVED: console.error details - don't show error details to user
           // Continue navigation even if pre-generation fails (non-blocking)
         } else {
           console.log("✅ Pre-generation triggered successfully before navigation");
           console.log("✅ Pre-generation response:", JSON.stringify(pregenData, null, 2));
         }
       } catch (err) {
-        console.error("❌ Error triggering pre-generation before navigation:", err);
-        console.error("❌ Error details:", err instanceof Error ? err.message : String(err));
+        // ✅ FIX: Change to console.warn to prevent showing error to user
+        console.warn("⚠️ Error triggering pre-generation before navigation (non-critical):", err instanceof Error ? err.message : String(err));
+        // ✅ REMOVED: console.error details - don't show error details to user
         // Continue navigation even if pre-generation fails (non-blocking)
       }
 

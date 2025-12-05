@@ -183,10 +183,12 @@ const fetchConversations = useCallback(async () => {
 
 
   useEffect(() => {
-  if (user && contactId) {
-    fetchContactName();
-  }
-}, [user, contactId]);
+    // ✅ PERFORMANCE FIX: Fetch contact name in parallel with conversations if contactId exists
+    // This prevents blocking the page load
+    if (user && contactId) {
+      fetchContactName().catch(err => console.error('❌ Error fetching contact name:', err));
+    }
+  }, [user, contactId]);
 
   useEffect(() => {
     if (!user?.id) return;

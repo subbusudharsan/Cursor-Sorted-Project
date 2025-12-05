@@ -365,20 +365,19 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             setHintToContact(data.context_data.hint_to_contact);
             setShowHintBanner(true);
           }
-          // ✅ FIX 4: Only show tip box if User B hasn't provided hint yet AND hasn't seen/dismissed it before
+          // ✅ FIX: Show hint box when User B enters chat, stay until submitted, never show after submission
           if (user?.id === data.contact_id) {
-            // ✅ CRITICAL: Check multiple conditions to ensure hint box never shows if hint exists
             const hasHint = Boolean(data.context_data?.hint_from_b);
-            const hasSeenHint = hasSeenHintBoxRef.current;
             
-            if (hasHint || hasSeenHint) {
-              // ✅ CRITICAL: If hint exists OR has been seen, NEVER show hint box
+            if (hasHint) {
+              // ✅ Hint exists in DB → hide box permanently (already submitted)
               hasSeenHintBoxRef.current = true;
               setShowTipBox(false);
             } else {
-              // Only show if no hint exists and hasn't been seen
+              // ✅ No hint exists → show box (don't check hasSeenHintRef - allow it to show)
+              // ✅ CRITICAL: Don't mark as seen when showing - only mark after submission
               setShowTipBox(true);
-              hasSeenHintBoxRef.current = true; // Mark as seen immediately when shown
+              // ❌ REMOVED: hasSeenHintBoxRef.current = true; // Don't mark as seen when showing
             }
           }
           // 🎯 Update AI confidence and phase
@@ -428,6 +427,15 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       // ✅ FIX: Reset initialization flag when chatId changes
       hasInitializedOptionsRef.current = false;
       
+      // ✅ CRITICAL: Clear messagesRef when chatId changes to prevent stale data
+      // This fixes the issue where messagesSentByUser is calculated incorrectly for new chats
+      messagesRef.current = [];
+      setMessages([]);
+      // ✅ FIX: Reset hint box ref when chatId changes (allows showing for new chats)
+      hasSeenHintBoxRef.current = false;
+      setShowTipBox(false);
+      console.log("🧹 Cleared messagesRef and reset hint box for new chat:", id);
+      
       // ✅ CRITICAL: Clean up any existing subscriptions first
       if (messageSubscriptionRef.current) {
         console.log('🧹 Cleaning up existing message subscription before setting up new one');
@@ -447,11 +455,43 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           showNotification('error', 'Loading Failed', 'Could not load messages');
           setInitialLoading(false);
         });
-        fetchInitialOptions(id, user.id, 0, { force: true }); // ✅ FIX: Always force fresh fetch on navigation
+        
         unsubscribeOptions = subscribeToOptions(id, user.id);
-        // ✅ FIX: Check for pregenerated options immediately (they exist instantly, no delay needed)
+        
+        // ✅ CRITICAL: Wait for pregenerated turns before showing options (for new chats from Stage 3)
+        // This ensures User A sees pregenerated turns immediately, not generate-contextual-options
         if (!showSuggestedOptions) {
-          ensureInitialOptions(id);
+          // ✅ FIX: Poll for pregenerated turns first (up to 3 seconds) before falling back
+          const checkPregeneratedTurns = async () => {
+            const maxWaitTime = 3000; // 3 seconds max
+            const checkInterval = 300; // Check every 300ms
+            let waited = 0;
+            
+            while (waited < maxWaitTime) {
+              const pregen = await fetchPregeneratedTurn(id, user.id);
+              if (pregen && pregen.options?.length > 0 && String(pregen.recipient_id) === String(user.id)) {
+                console.log(`✅ Found pregenerated turns after ${waited}ms - showing immediately`);
+                const cleaned = cleanOptionsForDisplay(pregen.options, contact?.full_name || null);
+                setOptionsWithSource(cleaned, 'pregenerated_turns');
+                setShowSuggestedOptions(true);
+                resolveWaitingForOptions(user.id);
+                return; // ⛔ EXIT - don't call fetchInitialOptions
+              }
+              await new Promise(resolve => setTimeout(resolve, checkInterval));
+              waited += checkInterval;
+            }
+            
+            // ✅ Fallback: If pregenerated turns not ready after 3 seconds, use fetchInitialOptions
+            console.log("ℹ️ Pregenerated turns not ready after 3s, falling back to fetchInitialOptions");
+            fetchInitialOptions(id, user.id, 0, { force: true });
+            ensureInitialOptions(id);
+          };
+          
+          // ✅ Start checking immediately (non-blocking)
+          checkPregeneratedTurns();
+        } else {
+          // ✅ If options already showing, just ensure they're up to date
+          fetchInitialOptions(id, user.id, 0, { force: true });
         }
         unsubscribeMessages = subscribeToMessages(id, user.id);
         unsubscribeClosure = subscribeToClosureState(id);
@@ -1009,7 +1049,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     // This prevents turn number mismatch when message is just sent but not yet in messagesRef
     const { data: allMessages, error: messagesError } = await supabase
       .from("messages")
-      .select("sender_id")
+      .select("sender_id, chat_id") // ✅ Also select chat_id to verify
       .eq("chat_id", chatId)
       .order("created_at", { ascending: true });
     
@@ -1019,14 +1059,77 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     if (messagesError) {
       console.warn("⚠️ Error fetching messages for turn calculation, using messagesRef fallback:", messagesError);
       // Fallback to messagesRef if database query fails
-      const userMessages = messagesRef.current.filter(m => m.sender_id === userId);
+      // ✅ CRITICAL: Filter by chat_id to prevent stale data from other chats
+      const userMessages = messagesRef.current.filter(m => 
+        m.sender_id === userId && m.chat_id === chatId
+      );
       messagesSentByUser = userMessages.length;
       userMessagesCount = userMessages.length; // ✅ Store for logging
     } else {
-      // ✅ Use database count (more accurate, includes just-sent message)
-      const userMessages = (allMessages || []).filter(m => String(m.sender_id) === String(userId));
+      // ✅ CRITICAL: Double-check chat_id to prevent cross-chat contamination
+      // This fixes the issue where database returns messages from wrong chat
+      const validMessages = (allMessages || []).filter(m => 
+        String(m.chat_id) === String(chatId) && String(m.sender_id) === String(userId)
+      );
+      const userMessages = validMessages;
       messagesSentByUser = userMessages.length;
       userMessagesCount = userMessages.length; // ✅ Store for logging
+      
+      // ✅ CRITICAL: Log if database returned messages from wrong chat
+      if (allMessages && allMessages.length > 0) {
+        const invalidMessages = allMessages.filter(m => String(m.chat_id) !== String(chatId));
+        if (invalidMessages.length > 0) {
+          console.error("❌ CRITICAL: Database returned messages from different chat!", {
+            expectedChatId: chatId,
+            invalidMessages: invalidMessages.length,
+            validMessages: validMessages.length,
+            allMessagesCount: allMessages.length
+          });
+        }
+      }
+      
+      // ✅ CRITICAL FIX: If database returns 0 messages, this is a new chat
+      // This handles the case when coming from Stage 3 "Send to contact" (new chat)
+      if (messagesSentByUser === 0) {
+        console.log("✅ New chat detected (0 messages in DB) - will use turn 0 for User A");
+        // Verify messagesRef doesn't have messages for this chat
+        const messagesForThisChat = messagesRef.current.filter(m => m.chat_id === chatId);
+        if (messagesForThisChat.length === 0) {
+          console.log("✅ Confirmed: No messages in messagesRef for this chat - new chat");
+        } else {
+          console.warn("⚠️ Mismatch: DB has 0 messages but messagesRef has messages for this chat");
+        }
+      }
+    }
+    
+    // ✅ CRITICAL FIX: If this is a new chat (0 messages), ensure we use turn 0 for User A
+    // This handles the case when coming from Stage 3 "Send to contact"
+    if (messagesSentByUser === 0 && isUserA) {
+      // New chat, User A's first turn → should be turn 0
+      console.log("✅ New chat detected - User A's first turn should be turn_number 0");
+      
+      // Try to find turn 0 directly
+      const { data: turn0Data, error: turn0Error } = await supabase
+        .from("pregenerated_turns")
+        .select("*")
+        .eq("chat_id", chatId)
+        .eq("recipient_id", userId)
+        .eq("turn_number", 0)
+        .is("used_at", null)
+        .limit(1);
+      
+      if (!turn0Error && turn0Data && turn0Data.length > 0) {
+        console.log("✅ Found turn 0 for new chat - returning immediately");
+        // ✅ Validate recipient_id
+        if (String(turn0Data[0].recipient_id) === String(userId)) {
+          currentPregeneratedTurnRef.current = {
+            turn_number: 0,
+            recipient_id: userId,
+            options: turn0Data[0].options || []
+          };
+          return turn0Data[0];
+        }
+      }
     }
     
     // Calculate expected turn_number based on pre-generation sequence:
@@ -1046,11 +1149,14 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       isUserA,
       isUserB,
       totalMessages: messagesRef.current.length,
+      dbMessagesCount: allMessages?.length || 0, // ✅ Log actual DB count
       userMessagesCount: userMessagesCount, // ✅ FIX: Use stored value instead of userMessages.length
       messagesSentByUser,
       expectedTurn,
+      messagesRefMessages: messagesRef.current.filter(m => m.chat_id === chatId).length, // ✅ Only count messages for this chat
       allMessages: messagesRef.current.map(m => ({
         sender_id: m.sender_id,
+        chat_id: m.chat_id,
         content: m.content?.substring(0, 50) || ''
       }))
     });
@@ -1528,30 +1634,6 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
   const ensureInitialOptions = async (chatId: string) => {
     if (!user || !chatId) return;
     
-    // 🔥 CRITICAL: Check pregenerated turns FIRST - before any other logic
-    console.log("🔍 Checking pregenerated turns:", { chatId, userId: user.id });
-    const pregen = await fetchPregeneratedTurn(chatId, user.id);
-    if (pregen && pregen.options?.length > 0) {
-      // ✅ CRITICAL: Verify it's actually this user's turn before showing options
-      if (String(pregen.recipient_id) !== String(user.id)) {
-        console.error("❌ CRITICAL: Pregenerated turn recipient_id mismatch in ensureInitialOptions!", {
-          expectedUserId: user.id,
-          actualRecipientId: pregen.recipient_id,
-          turn_number: pregen.turn_number
-        });
-        // Don't show options to wrong user
-        return;
-      }
-      
-      console.log("⚡ ensureInitialOptions: Using pregenerated options");
-      const cleaned = cleanOptionsForDisplay(pregen.options, contact?.full_name || null);
-      setOptionsWithSource(cleaned, 'pregenerated_turns');
-      setShowSuggestedOptions(true);
-      resolveWaitingForOptions(user.id);
-      setLastOptionRefreshTime(Date.now());
-      return; // ⛔ EXIT immediately - prevent message_options lookup
-    }
-    
     // ✅ FIX: Don't run if we're already fetching options to prevent race conditions
     if (isFetchingOptionsRef.current) {
       console.log("ℹ️ Already fetching options, skipping ensureInitialOptions");
@@ -1562,6 +1644,41 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       console.log("ℹ️ Options already displayed, skipping ensureInitialOptions");
       return;
     }
+    
+    // 🔥 CRITICAL: Check pregenerated turns FIRST - with polling to wait for generation
+    console.log("🔍 Checking pregenerated turns (with polling):", { chatId, userId: user.id });
+    
+    // ✅ FIX: Poll for pregenerated turns (up to 3 seconds) before falling back
+    const maxWaitTime = 3000; // 3 seconds max
+    const checkInterval = 300; // Check every 300ms
+    let waited = 0;
+    let pregen = null;
+    
+    while (waited < maxWaitTime && (!pregen || !pregen.options?.length)) {
+      pregen = await fetchPregeneratedTurn(chatId, user.id);
+      if (pregen && pregen.options?.length > 0 && String(pregen.recipient_id) === String(user.id)) {
+        console.log(`✅ Found pregenerated turns after ${waited}ms - showing immediately`);
+        const cleaned = cleanOptionsForDisplay(pregen.options, contact?.full_name || null);
+        setOptionsWithSource(cleaned, 'pregenerated_turns');
+        setShowSuggestedOptions(true);
+        resolveWaitingForOptions(user.id);
+        setLastOptionRefreshTime(Date.now());
+        return; // ⛔ EXIT immediately - prevent message_options lookup
+      }
+      await new Promise(resolve => setTimeout(resolve, checkInterval));
+      waited += checkInterval;
+    }
+    
+    // ✅ If pregenerated turns not found after polling, check if they're being generated
+    const isGenerating = isGeneratingPregeneratedTurnsRef.current[chatId] === true;
+    if (isGenerating) {
+      console.log("⏳ Pregenerated turns are being generated - waiting for realtime subscription instead of showing message_options");
+      // Don't show message_options - wait for pregenerated turns via realtime subscription
+      enterWaitingForOptions(user.id);
+      return;
+    }
+    
+    // ⬇ FALLBACK: Only show message_options if pregenerated turns don't exist AND aren't being generated
     console.log("🔍 ENSURING INITIAL OPTIONS EXIST", { chatId, userId: user.id });
     
     // ⬇ FALLBACK: existing message_options logic
@@ -1723,14 +1840,15 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           return;
         }
         
-        // ✅ CRITICAL: If pregenerated turns exist AND options are already showing from pregenerated turns, IGNORE message_options completely
-        // This prevents flickering when generate-contextual-options completes and updates message_options table
+        // ✅ CRITICAL: If pregenerated turns exist, ALWAYS use them (even if message_options are showing)
+        // This ensures pregenerated turns override message_options when they arrive
         if (currentOptionsSourceRef.current === 'pregenerated_turns' && showSuggestedOptions) {
           console.log("⚡ Pregenerated options already displayed - IGNORING message_options update to prevent flicker");
           return; // ⛔ EXIT immediately - don't process message_options at all
         }
         
-        console.log("⚡ Realtime: Using pregenerated options instead of message_options");
+        // ✅ CRITICAL: Override message_options with pregenerated turns (even if message_options are currently showing)
+        console.log("⚡ Realtime: Using pregenerated options instead of message_options (overriding if needed)");
         const cleaned = cleanOptionsForDisplay(pregen.options, contact?.full_name || null);
         await showOptionsWithDelay(cleaned, 'pregenerated_turns', pregen.turn_number);
         resolveWaitingForOptions(currentUserId);
@@ -1738,7 +1856,27 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         return; // ⛔ EXIT immediately - prevent message_options from overriding
       }
       
-      // ⬇ FALLBACK: apply message_options normally
+      // ✅ FIX: Check if pregenerated turns are being generated - if so, wait instead of showing message_options
+      const isGenerating = isGeneratingPregeneratedTurnsRef.current[chatId] === true;
+      if (isGenerating) {
+        console.log("⏳ Pregenerated turns are being generated - waiting instead of showing message_options");
+        // Don't show message_options - wait for pregenerated turns via realtime subscription
+        return;
+      }
+      
+      // ⬇ FALLBACK: apply message_options normally (only if pregenerated turns don't exist AND aren't being generated)
+      // ✅ CRITICAL: Final check - query pregenerated turns one more time before showing message_options
+      // This catches cases where the first check missed them due to timing or query issues
+      const finalPregenCheck = await fetchPregeneratedTurn(chatId, currentUserId);
+      if (finalPregenCheck && finalPregenCheck.options?.length > 0 && String(finalPregenCheck.recipient_id) === String(currentUserId)) {
+        console.log("⚡ Final check in handleOptionsUpdate: Found pregenerated turns - using them instead of message_options");
+        const cleaned = cleanOptionsForDisplay(finalPregenCheck.options, contact?.full_name || null);
+        await showOptionsWithDelay(cleaned, 'pregenerated_turns', finalPregenCheck.turn_number);
+        resolveWaitingForOptions(currentUserId);
+        setLastOptionRefreshTime(Date.now());
+        return; // ⛔ EXIT - don't show message_options
+      }
+      
       const ctx = row.context_data || {};
       const optionsArray = Array.isArray(row.options) ? row.options : [];
       
@@ -2850,9 +2988,16 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         // ✅ CRITICAL: Mark that we're generating pregenerated turns for this chat
         isGeneratingPregeneratedTurnsRef.current[currentChatId] = true;
         
-        // Trigger generation
+        // ✅ FIX: Pass hintFromB explicitly to avoid race conditions
+        // Fetch hint from context_data to pass directly in request body
+        const hintFromB = chatData?.context_data?.hint_from_b || null;
+        
+        // Trigger generation with hint explicitly passed
         const pregenPromise = supabase.functions.invoke("generate-pregenerated-turns", {
-          body: { chatId: currentChatId }
+          body: { 
+            chatId: currentChatId,
+            hintFromB: hintFromB // ✅ CRITICAL: Pass hint explicitly to avoid race conditions
+          }
         });
         
         // ✅ CRITICAL: Wait up to 7 seconds for pregenerated turns before allowing fallback

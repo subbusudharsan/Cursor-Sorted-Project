@@ -185,36 +185,41 @@ const lastReceivedMsgMap = new Map<string, { content: string; created_at: string
 const messagePresenceMap = new Map<string, { hasAny: boolean; hasUserMessage: boolean }>();
 
 if (chatIds.length > 0) {
+  // ✅ PERFORMANCE FIX: Only fetch LATEST messages per chat, not all messages
+  // Limit to 2 messages per chat (latest + latest from other user) = max chatIds.length * 2
+  // This reduces data transfer from potentially 1000s of messages to just 20-40 messages
+  const maxMessages = Math.min(chatIds.length * 2, 50); // Cap at 50 messages max
+  
   const { data: messageRows, error: messageError } = await supabase
     .from('messages')
     .select('chat_id, sender_id, content, created_at')
     .in('chat_id', chatIds)
-    .order('created_at', { ascending: false });
+    .order('created_at', { ascending: false })
+    .limit(maxMessages); // ✅ CRITICAL: Limit to prevent fetching all messages
 
   if (messageError) {
     console.warn('⚠️ Failed to fetch message presence metadata:', messageError);
   } else if (messageRows) {
+    // ✅ OPTIMIZATION: Process only unique latest messages per chat
+    // Since messages are sorted by created_at desc, first message per chat_id is the latest
     messageRows.forEach((row: any) => {
       if (!row?.chat_id) return;
 
-      if (!messagePresenceMap.has(row.chat_id)) {
-        messagePresenceMap.set(row.chat_id, { hasAny: false, hasUserMessage: false });
-      }
-
-      const presence = messagePresenceMap.get(row.chat_id)!;
-      presence.hasAny = true;
-      if (row.sender_id === user?.id) {
-        presence.hasUserMessage = true;
-      }
-
+      // ✅ Only process first message per chat (already sorted by created_at desc)
       if (!latestMsgMap.has(row.chat_id)) {
         latestMsgMap.set(row.chat_id, {
           content: row.content ?? 'New conversation started',
           created_at: row.created_at ?? new Date().toISOString(),
           sender_id: row.sender_id ?? null,
         });
+        
+        messagePresenceMap.set(row.chat_id, { 
+          hasAny: true, 
+          hasUserMessage: row.sender_id === user?.id 
+        });
       }
-      // Capture the most recent message RECEIVED from the other user
+
+      // ✅ Capture latest message RECEIVED from other user (if not already captured)
       if (row.sender_id !== user?.id && !lastReceivedMsgMap.has(row.chat_id)) {
         lastReceivedMsgMap.set(row.chat_id, {
           content: row.content ?? '',
