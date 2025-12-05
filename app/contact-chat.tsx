@@ -108,6 +108,7 @@ function ContactChatScreen() {
   const [suggestedOptions, setSuggestedOptions] = useState<string[]>([]);
   const currentPregeneratedTurnRef = useRef<{ turn_number: number; recipient_id: string } | null>(null); // ✅ Store current pregen turn info
   const currentOptionsSourceRef = useRef<'pregenerated_turns' | 'generate-contextual-options' | null>(null); // ✅ Track which source user actually saw/selected from
+  const isGeneratingPregeneratedTurnsRef = useRef<Record<string, boolean>>({}); // ✅ Track if pregenerated turns are being generated per chat
   
   // ✅ Helper to clear pregen turn info when options are cleared
   const clearPregeneratedTurnInfo = () => {
@@ -120,6 +121,26 @@ function ContactChatScreen() {
     setSuggestedOptions(options);
     currentOptionsSourceRef.current = source;
     console.log(`📝 Options set with source: ${source}`);
+  };
+  
+  // ✅ Helper to show options with delay for turn 3 only (gives next batch more time to generate)
+  const showOptionsWithDelay = async (
+    options: string[], 
+    source: 'pregenerated_turns' | 'generate-contextual-options',
+    turnNumber?: number
+  ) => {
+    // ✅ FIX: Add delay only for turn 3 (User B's 2nd turn)
+    // This is when the first batch (0,1,2) is used and next batch (3,4,5) is generating
+    // The delay gives the next batch 1.5s more time to complete, reducing fallback
+    if (turnNumber === 3) {
+      const delay = 1500; // 1.5 seconds
+      console.log(`⏳ Delaying options display for turn 3 by ${delay}ms to allow next batch generation`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+    
+    // Show options (no delay for other turns)
+    setOptionsWithSource(options, source);
+    setShowSuggestedOptions(true);
   };
   const [aiSourceChatId, setAiSourceChatId] = useState<string | null>(null); // ✅ Store AI source chat ID for back navigation
   const [waitingForOptions, setWaitingForOptions] = useState(false);
@@ -344,10 +365,21 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             setHintToContact(data.context_data.hint_to_contact);
             setShowHintBanner(true);
           }
-          // 🌟 Only show tip box if User B hasn't provided hint yet AND hasn't seen/dismissed it before
-          if (user?.id === data.contact_id && !data.context_data.hint_from_b && !hasSeenHintBoxRef.current) {
-            setShowTipBox(true);
-            hasSeenHintBoxRef.current = true; // Mark as seen
+          // ✅ FIX 4: Only show tip box if User B hasn't provided hint yet AND hasn't seen/dismissed it before
+          if (user?.id === data.contact_id) {
+            // ✅ CRITICAL: Check multiple conditions to ensure hint box never shows if hint exists
+            const hasHint = Boolean(data.context_data?.hint_from_b);
+            const hasSeenHint = hasSeenHintBoxRef.current;
+            
+            if (hasHint || hasSeenHint) {
+              // ✅ CRITICAL: If hint exists OR has been seen, NEVER show hint box
+              hasSeenHintBoxRef.current = true;
+              setShowTipBox(false);
+            } else {
+              // Only show if no hint exists and hasn't been seen
+              setShowTipBox(true);
+              hasSeenHintBoxRef.current = true; // Mark as seen immediately when shown
+            }
           }
           // 🎯 Update AI confidence and phase
           setAiConfidence(data.ai_confidence_level || "high");
@@ -464,17 +496,34 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                 
                 console.log('⚡ Realtime: Pregenerated options available - showing immediately');
                 const cleaned = cleanOptionsForDisplay(pregen.options, contact?.full_name || null);
-                setOptionsWithSource(cleaned, 'pregenerated_turns');
-                setShowSuggestedOptions(true);
+                await showOptionsWithDelay(cleaned, 'pregenerated_turns', pregen.turn_number);
                 resolveWaitingForOptions(user.id);
                 setLastOptionRefreshTime(Date.now());
               }
             }
           )
-          .subscribe((status) => {
+          .subscribe(async (status) => {
             console.log('📡 Pregenerated turns subscription status:', status);
             if (status === 'SUBSCRIBED') {
               console.log('✅ Pregenerated turns subscription is ACTIVE');
+              
+              // ✅ FIX 6: Immediately check for existing pregenerated turns
+              // This handles cases where turns exist before subscription starts
+              try {
+                const existingPregen = await fetchPregeneratedTurn(id, user.id);
+                if (existingPregen && existingPregen.options?.length > 0) {
+                  if (String(existingPregen.recipient_id) === String(user.id)) {
+                    console.log('⚡ Found existing pregenerated turns - showing immediately');
+                    const cleaned = cleanOptionsForDisplay(existingPregen.options, contact?.full_name || null);
+                    await showOptionsWithDelay(cleaned, 'pregenerated_turns', existingPregen.turn_number);
+                    resolveWaitingForOptions(user.id);
+                    setLastOptionRefreshTime(Date.now());
+                  }
+                }
+              } catch (err) {
+                console.warn('⚠️ Error checking for existing pregenerated turns:', err);
+                // Non-critical - continue normally
+              }
             } else if (status === 'CHANNEL_ERROR' || status === 'CLOSED') {
               console.warn('⚠️ Pregenerated turns subscription error - will use polling fallback');
               // ✅ FIX: The existing fetchPregeneratedTurn calls will handle polling
@@ -943,7 +992,8 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       .single();
     
     if (!chatData) {
-      console.error("❌ Chat not found for pregenerated turn lookup");
+      console.warn("⚠️ Chat not found for pregenerated turn lookup - chat may have been deleted");
+      // ✅ FIX 3: Don't show error to user - just return null silently
       return null;
     }
     
@@ -1005,47 +1055,87 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       }))
     });
     
-    const { data, error } = await supabase
+    // ✅ FIX 5: Try exact turn first, then try adjacent turns if not found (handles timing issues)
+    let turnNumbersToTry = [expectedTurn];
+    
+    // If exact turn not found, try adjacent turns to handle timing/calculation issues
+    turnNumbersToTry = [expectedTurn, expectedTurn - 1, expectedTurn + 1, expectedTurn - 2, expectedTurn + 2];
+    
+    for (const turnNum of turnNumbersToTry) {
+      if (turnNum < 0) continue; // Skip negative turn numbers
+      
+      const { data, error } = await supabase
+        .from("pregenerated_turns")
+        .select("*")
+        .eq("chat_id", chatId)
+        .eq("recipient_id", userId)
+        .eq("turn_number", turnNum)
+        .is("used_at", null)
+        .limit(1);
+      
+      if (error) {
+        console.warn(`⚠️ Error fetching pregenerated turn ${turnNum}:`, error);
+        continue; // Try next turn number
+      }
+      
+      if (data && data.length > 0) {
+        // ✅ FIX 7: Validate recipient_id with better logging
+        if (String(data[0].recipient_id) !== String(userId)) {
+          console.warn("⚠️ Pregenerated turn recipient_id mismatch (non-critical):", {
+            expectedUserId: userId,
+            actualRecipientId: data[0].recipient_id,
+            turn_number: turnNum,
+            isUserA,
+            isUserB,
+            expectedAsString: String(userId),
+            actualAsString: String(data[0].recipient_id)
+          });
+          continue; // Try next turn number
+        }
+        
+        // ✅ Found valid turn!
+        const foundTurn = turnNum !== expectedTurn 
+          ? `turn_number ${turnNum} (expected was ${expectedTurn})`
+          : `turn_number ${expectedTurn}`;
+        console.log(`✅ Found pregenerated turn for ${isUserA ? 'User A' : 'User B'} at ${foundTurn}`);
+        
+        // ✅ Store turn info for later use when marking as used
+        currentPregeneratedTurnRef.current = {
+          turn_number: turnNum, // ✅ Store actual found turn number, not expected
+          recipient_id: userId,
+          options: data[0].options || [] // ✅ CRITICAL: Store options for validation
+        };
+        
+        return data[0];
+      }
+    }
+    
+    // ✅ FIX 5: If still not found, try finding ANY unused turn for this user (last resort)
+    console.log(`⚠️ Exact turn ${expectedTurn} not found, trying to find any unused turn...`);
+    const { data: anyUnused, error: anyUnusedError } = await supabase
       .from("pregenerated_turns")
       .select("*")
       .eq("chat_id", chatId)
       .eq("recipient_id", userId)
-      .eq("turn_number", expectedTurn) // ✅ Match exact turn number
       .is("used_at", null)
+      .order("turn_number", { ascending: true })
       .limit(1);
-
-    if (error) {
-      console.error("❌ Error fetching pregenerated turns:", error);
-      return null;
-    }
-
-    if (!data || data.length === 0) {
-      console.log(`ℹ️ No pregenerated turn found for ${isUserA ? 'User A' : 'User B'} at turn_number ${expectedTurn}`);
-      return null;
-    }
-
-    // ✅ CRITICAL FIX: Validate recipient_id to prevent wrong user's options
-    if (String(data[0].recipient_id) !== String(userId)) {
-      console.error("❌ CRITICAL: Pregenerated turn recipient_id mismatch!", {
-        expectedUserId: userId,
-        actualRecipientId: data[0].recipient_id,
-        turn_number: expectedTurn,
-        isUserA,
-        isUserB
-      });
-      return null; // Don't return wrong user's options
-    }
-
-    console.log(`✅ Found pregenerated turn for ${isUserA ? 'User A' : 'User B'} at turn_number ${expectedTurn} (recipient_id validated)`);
     
-    // ✅ Store turn info for later use when marking as used
-    // Clear any previous turn info first to avoid confusion
-    currentPregeneratedTurnRef.current = {
-      turn_number: expectedTurn,
-      recipient_id: userId
-    };
+    if (!anyUnusedError && anyUnused && anyUnused.length > 0) {
+      // ✅ Validate recipient_id one more time
+      if (String(anyUnused[0].recipient_id) === String(userId)) {
+        console.log(`✅ Found unused turn ${anyUnused[0].turn_number} as fallback (expected was ${expectedTurn})`);
+        currentPregeneratedTurnRef.current = {
+          turn_number: anyUnused[0].turn_number,
+          recipient_id: userId,
+          options: anyUnused[0].options || []
+        };
+        return anyUnused[0];
+      }
+    }
     
-    return data[0];
+    console.log(`ℹ️ No pregenerated turn found for ${isUserA ? 'User A' : 'User B'} at turn_number ${expectedTurn} (tried adjacent turns and fallback)`);
+    return null;
   };
   
   // ---- options bootstrap ----
@@ -1633,10 +1723,16 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           return;
         }
         
+        // ✅ CRITICAL: If pregenerated turns exist AND options are already showing from pregenerated turns, IGNORE message_options completely
+        // This prevents flickering when generate-contextual-options completes and updates message_options table
+        if (currentOptionsSourceRef.current === 'pregenerated_turns' && showSuggestedOptions) {
+          console.log("⚡ Pregenerated options already displayed - IGNORING message_options update to prevent flicker");
+          return; // ⛔ EXIT immediately - don't process message_options at all
+        }
+        
         console.log("⚡ Realtime: Using pregenerated options instead of message_options");
         const cleaned = cleanOptionsForDisplay(pregen.options, contact?.full_name || null);
-        setOptionsWithSource(cleaned, 'pregenerated_turns');
-        setShowSuggestedOptions(true);
+        await showOptionsWithDelay(cleaned, 'pregenerated_turns', pregen.turn_number);
         resolveWaitingForOptions(currentUserId);
         setLastOptionRefreshTime(Date.now());
         return; // ⛔ EXIT immediately - prevent message_options from overriding
@@ -2052,8 +2148,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               
               console.log("⚡ onMessageReceived: Using pregenerated options");
               const cleaned = cleanOptionsForDisplay(pregen.options, contact?.full_name || null);
-              setOptionsWithSource(cleaned, 'pregenerated_turns');
-              setShowSuggestedOptions(true);
+              await showOptionsWithDelay(cleaned, 'pregenerated_turns', pregen.turn_number);
               resolveWaitingForOptions(recipientIdForOptions);
               return; // ⛔ EXIT immediately - prevent generate-contextual-options
             }
@@ -2730,31 +2825,74 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       const updatedContextData = chatData?.context_data
         ? { ...chatData.context_data, initial_pending: false, session_promoted: true }
         : { initial_pending: false, session_promoted: true };
-      await supabase
+      // ✅ FIX 1: Ensure last_message_at is ALWAYS updated for chat count
+      const { error: updateChatError } = await supabase
         .from("chats")
         .update({
           last_message: content,
-          last_message_at: new Date().toISOString(),
+          last_message_at: new Date().toISOString(), // ✅ CRITICAL: Always update for chat count
           context_data: updatedContextData,
         })
         .eq("id", currentChatId);
       
+      if (updateChatError) {
+        console.error("❌ Failed to update chat last_message_at:", updateChatError);
+        // ✅ Don't throw - just log, but ensure message is still sent
+      } else {
+        console.log("✅ Updated chat last_message_at for chat count");
+      }
+      
       // ✅ CRITICAL: Trigger pregenerated turns generation IMMEDIATELY after message is sent
       // This ensures turns are ready before the recipient checks
-      if (recipientId) {
+      if (recipientId && currentChatId) {
         console.log("🚀 Triggering pregenerated turns generation immediately after message send for recipient:", recipientId);
-        // Trigger in background (non-blocking)
-        supabase.functions.invoke("generate-pregenerated-turns", {
+        
+        // ✅ CRITICAL: Mark that we're generating pregenerated turns for this chat
+        isGeneratingPregeneratedTurnsRef.current[currentChatId] = true;
+        
+        // Trigger generation
+        const pregenPromise = supabase.functions.invoke("generate-pregenerated-turns", {
           body: { chatId: currentChatId }
-        }).then(({ data: pregenData, error: pregenError }) => {
+        });
+        
+        // ✅ CRITICAL: Wait up to 7 seconds for pregenerated turns before allowing fallback
+        // This ensures pregenerated turns are used as primary source
+        const maxWaitTime = 7000; // ✅ Changed from 5000 to 7000 (7 seconds)
+        const checkInterval = 300; // Check every 300ms
+        let waited = 0;
+        let pregenFound = false;
+        
+        while (waited < maxWaitTime && !pregenFound) {
+          await new Promise(resolve => setTimeout(resolve, checkInterval));
+          waited += checkInterval;
+          
+          const pregen = await fetchPregeneratedTurn(currentChatId, recipientId);
+          if (pregen && pregen.options?.length > 0 && String(pregen.recipient_id) === String(recipientId)) {
+            console.log(`✅ Pregenerated turns ready after ${waited}ms - will use them via realtime subscription`);
+            pregenFound = true;
+            isGeneratingPregeneratedTurnsRef.current[currentChatId] = false;
+            // Options will be shown via realtime subscription - don't proceed to generate-contextual-options
+            enterWaitingForOptions(recipientId);
+            return; // ⛔ EXIT - don't call generate-contextual-options
+          }
+        }
+        
+        // Mark generation as complete (even if not found, to prevent infinite waiting)
+        pregenPromise.then(({ data: pregenData, error: pregenError }) => {
+          isGeneratingPregeneratedTurnsRef.current[currentChatId] = false;
           if (pregenError) {
             console.error("❌ Failed to trigger pregenerated turns:", pregenError);
           } else {
-            console.log("✅ Pregenerated turns generation triggered:", pregenData);
+            console.log("✅ Pregenerated turns generation completed:", pregenData);
           }
         }).catch(err => {
+          isGeneratingPregeneratedTurnsRef.current[currentChatId] = false;
           console.error("❌ Error triggering pregenerated turns:", err);
         });
+        
+        if (!pregenFound) {
+          console.log("⏳ Pregenerated turns not ready after 7s - will use fallback if needed");
+        }
         
         // Enter waiting state - realtime subscription will show options when ready
         enterWaitingForOptions(recipientId);
@@ -2832,10 +2970,10 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         
         // ✅ FIX: Poll for pregenerated turns if they don't exist (generation in progress)
         if (!pregenCheck || !pregenCheck.options?.length) {
-          console.log("ℹ️ No pregenerated turn found, polling for generation (max 2.5 seconds)...");
+          console.log("ℹ️ No pregenerated turn found, polling for generation (max 7 seconds)...");
           
           // ✅ FIX: Poll with increasing intervals (faster initial checks, longer later)
-          const maxWaitTime = 2500; // 2.5 seconds max
+          const maxWaitTime = 7000; // ✅ Changed from 2500 to 7000 (7 seconds)
           const checkInterval = 300; // Check every 300ms
           let waited = 0;
           
@@ -2851,6 +2989,16 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           }
           
           if (!pregenCheck || !pregenCheck.options?.length) {
+            // ✅ CRITICAL: Check if generation is in progress before falling back
+            const isGenerating = isGeneratingPregeneratedTurnsRef.current[currentChatId];
+            
+            if (isGenerating) {
+              console.log("⏳ Pregenerated turns generation in progress - waiting for realtime subscription instead of falling back");
+              // Don't fall back - wait for realtime subscription to deliver the options
+              enterWaitingForOptions(recipientId);
+              return; // ⛔ EXIT - don't call orchestrate-conversation
+            }
+            
             console.log("ℹ️ No pregenerated turn found after polling, will fall back to orchestration - sendMessage");
             // Realtime subscription will still handle new options when they're ready
           }
@@ -2878,6 +3026,32 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             setLastOptionRefreshTime(Date.now());
             return; // ⛔ EXIT - prevent orchestration and generate-contextual-options
           }
+        }
+      }
+      
+      // ✅ CRITICAL: Final check - if pregenerated turns exist OR are being generated, don't call generate-contextual-options
+      // This prevents generate-contextual-options from running and creating message_options that cause flickering
+      if (recipientId && currentChatId) {
+        // Check if pregenerated turns are currently being generated
+        if (isGeneratingPregeneratedTurnsRef.current[currentChatId]) {
+          console.log("⏳ Pregenerated turns generation in progress - waiting before allowing fallback...");
+          // Wait a bit more and check again
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          const pregenCheck = await fetchPregeneratedTurn(currentChatId, recipientId);
+          if (pregenCheck && pregenCheck.options?.length > 0 && String(pregenCheck.recipient_id) === String(recipientId)) {
+            console.log("✅ Pregenerated turns found after waiting - SKIPPING generate-contextual-options");
+            setLoading(false);
+            return; // ⛔ EXIT - don't call generate-contextual-options
+          }
+        }
+        
+        // Check if pregenerated turns already exist
+        const finalPregenCheck = await fetchPregeneratedTurn(currentChatId, recipientId);
+        if (finalPregenCheck && finalPregenCheck.options?.length > 0 && String(finalPregenCheck.recipient_id) === String(recipientId)) {
+          console.log("🚫 Final check: Pregenerated turns exist - SKIPPING orchestration and generate-contextual-options completely");
+          console.log("⚡ Pregenerated options will be displayed via realtime subscription - no need to generate new ones");
+          setLoading(false);
+          return; // ⛔ EXIT - don't call generate-contextual-options at all
         }
       }
       
@@ -3004,9 +3178,12 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     setTimeout(() => {
       setShowSuggestedOptions(false);
       
-      // ✅ FIX: Check if option is emoji-only (ANY emoji, not just closure smileys) - send without blending
+      // ✅ CRITICAL: Send option EXACTLY as generated - no frontend blending needed
+      // The AI already generates options with acknowledgments built-in (two-part structure)
+      // Users see and send the same message - maintaining trust and consistency
       const trimmedOption = option.trim();
       
+      // ✅ Only special case: Emoji-only messages (no text)
       // Check if the message is ONLY emoji(s) - no text characters
       // This regex matches Unicode emoji characters (including variations, modifiers, and zero-width joiners)
       const isEmojiOnly = /^[\p{Emoji_Presentation}\p{Emoji}\u200d\ufe0f\s]+$/u.test(trimmedOption) && 
@@ -3014,171 +3191,27 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                           !/[a-zA-Z0-9]/.test(trimmedOption); // Ensure no letters/numbers
       
       if (isEmojiOnly) {
-        console.log('😊 Emoji-only message detected - sending without acknowledgment:', trimmedOption);
+        console.log('😊 Emoji-only message detected - sending as-is:', trimmedOption);
         sendMessage(trimmedOption);
         return;
       }
       
-      // ✅ Lightweight blending layer: Get latest message from other person
-      const otherPersonMessages = messages.filter(
-        (msg) => msg.sender_id !== user?.id
-      );
-      const latestOtherMessage = otherPersonMessages[otherPersonMessages.length - 1];
-      
-      // ✅ Helper function to blend acknowledgment with option naturally
-      // Format: "Acknowledgment. Main suggestion."
-      const blendAcknowledgment = (acknowledgment: string, originalOption: string): string => {
-        const ackTrimmed = acknowledgment.trim();
-        const optionTrimmed = originalOption.trim();
-        
-        // Ensure acknowledgment ends with proper punctuation
-        let ack = ackTrimmed;
-        if (!/[.!]$/.test(ack)) {
-          ack = ack + '.';
-        }
-        
-        // Capitalize option if needed
-        let opt = optionTrimmed;
-        if (/^[a-z]/.test(opt)) {
-          opt = opt.charAt(0).toUpperCase() + opt.slice(1);
-        }
-        
-        // Blend: "Acknowledgment. Main suggestion."
-        return `${ack} ${opt}`;
-      };
-      
-      // ✅ Determine natural acknowledgment based on emotional tone of latest message
-      let finalMessage = option;
-      if (latestOtherMessage && latestOtherMessage.content) {
-        const prevMessage = latestOtherMessage.content.trim();
-        const prevMessageLower = prevMessage.toLowerCase();
-        
-        // Check if option already has natural acknowledgment
-        const optionLower = option.toLowerCase();
-        const hasAcknowledgment = (
-          optionLower.startsWith('yeah') ||
-          optionLower.startsWith('that makes sense') ||
-          optionLower.startsWith('oh okay') ||
-          optionLower.startsWith('got it') ||
-          optionLower.startsWith('i see') ||
-          optionLower.startsWith('thanks for') ||
-          optionLower.startsWith('okay') ||
-          optionLower.startsWith('alright') ||
-          optionLower.startsWith('i get') ||
-          optionLower.startsWith('i understand') ||
-          optionLower.startsWith('makes sense') ||
-          optionLower.startsWith('that helps') ||
-          /^(ok|okay|sure|yeah|yes),/i.test(option.trim())
-        );
-        
-        // ✅ NEW: Detect if option is a casual/social response (greeting, check-in, pleasantry)
-        // These don't need acknowledgments prepended - they're already complete responses
-        const isCasualResponse = (
-          optionLower.startsWith('hi') ||
-          optionLower.startsWith('hey') ||
-          optionLower.startsWith('hello') ||
-          optionLower.startsWith('thanks') ||
-          optionLower.startsWith('thank you') ||
-          optionLower.startsWith('appreciate') ||
-          /hope.*doing|how are you|how.*going|have a (nice|good|great) (day|weekend)/i.test(optionLower) ||
-          /you're welcome|i'm doing|doing great|doing well|sending.*vibes|positive.*vibes/i.test(optionLower) ||
-          /glad to hear|good to hear|great to hear|nice to hear/i.test(optionLower) ||
-          /i'm doing (good|great|well|fine)/i.test(optionLower) ||
-          /^[\p{Emoji}]+/u.test(option.trim()) // Emoji-only or emoji-starting messages
-        );
-        
-        // Only add acknowledgment if it's missing AND it's not a casual response
-        if (!hasAcknowledgment && !isCasualResponse) {
-          let acknowledgment = '';
-          
-          // ✅ Detect emotional tone of the message
-          const isSad = /(sad|hurt|upset|disappointed|frustrated|down|depressed|lonely|broken|heartbroken|tears|crying|painful|pain)/i.test(prevMessage);
-          const isAngry = /(angry|mad|furious|annoyed|irritated|pissed|rage|hate|resent|fuming)/i.test(prevMessage);
-          const isConfused = /(confused|don't understand|don't get|unclear|not sure|what do you mean|huh|puzzled|confusing)/i.test(prevMessage);
-          const isGrateful = /(thank|thanks|appreciate|grateful|means a lot)/i.test(prevMessage);
-          const isApologetic = /(sorry|apologize|my bad|forgive|regret)/i.test(prevMessage);
-          const isQuestion = prevMessage.includes('?');
-          const isHowAreYou = /(how are you|how are|how're)/i.test(prevMessage);
-          
-          // ✅ Select natural acknowledgment based on tone (NO robotic phrases)
-          if (isHowAreYou) {
-            acknowledgment = "I'm okay, but";
-          } else if (isGrateful) {
-            acknowledgment = "You're welcome";
-          } else if (isApologetic) {
-            // Response to apology - soft and accepting
-            acknowledgment = "Okay, I understand";
-          } else if (isSad) {
-            // Response to sadness - soft and reassuring
-            const sadAcks = [
-              "I get what you mean",
-              "That makes sense",
-              "Thanks for sharing that",
-              "I see what you mean"
-            ];
-            acknowledgment = sadAcks[Math.floor(Math.random() * sadAcks.length)];
-          } else if (isAngry) {
-            // Response to anger - grounded and calm
-            const angryAcks = [
-              "Okay, I see what you mean",
-              "Got it",
-              "I understand",
-              "Alright, that helps"
-            ];
-            acknowledgment = angryAcks[Math.floor(Math.random() * angryAcks.length)];
-          } else if (isConfused) {
-            // Response to confusion - clarifying
-            const confusedAcks = [
-              "Oh okay, I get it now",
-              "I see what you mean",
-              "Got it",
-              "Okay, I understand"
-            ];
-            acknowledgment = confusedAcks[Math.floor(Math.random() * confusedAcks.length)];
-          } else if (isQuestion) {
-            // Response to question
-            if (prevMessageLower.match(/^(what|why|when|where|how|who|can|could|would|will|do|did|does)/)) {
-              acknowledgment = "Thanks for asking";
-            } else {
-              acknowledgment = "Oh okay, I get it";
-            }
-          } else {
-            // Default for normal messages - neutral and warm
-            const normalAcks = [
-              "Yeah, I get what you mean",
-              "That makes sense",
-              "Oh okay, I understand",
-              "Got it",
-              "I see what you mean",
-              "Makes sense",
-              "Okay, I see",
-              "I understand",
-              "That helps"
-            ];
-            acknowledgment = normalAcks[Math.floor(Math.random() * normalAcks.length)];
-          }
-          
-          // ✅ Blend acknowledgment with option using natural structure: "Acknowledgment. Main suggestion."
-          finalMessage = blendAcknowledgment(acknowledgment, option);
-          
-          console.log('🔄 Blended option with natural acknowledgment:', {
-            originalOption: option,
-            previousMessage: prevMessage.substring(0, 50),
-            emotionalTone: isSad ? 'sad' : isAngry ? 'angry' : isConfused ? 'confused' : isGrateful ? 'grateful' : isApologetic ? 'apologetic' : isQuestion ? 'question' : 'normal',
-            acknowledgment,
-            finalMessage: finalMessage.substring(0, 80)
-          });
-        }
-      }
-      
-      sendMessage(finalMessage);
+      // ✅ Send the option exactly as the user selected it
+      // The AI generation already includes acknowledgments in the options via two-part structure
+      console.log('📤 Sending option exactly as selected (no frontend blending):', trimmedOption.substring(0, 80));
+      sendMessage(trimmedOption);
 
       // ✅ NEW: Mark the selected option as used in the correct table based on source
+      // ✅ CRITICAL: Store selectedOption in outer scope so it's accessible in async function
+      const selectedOption = trimmedOption; // ✅ Use the original option (no blending)
       (async () => {
         if (!currentChatId || !user) return;
 
         const actualSource = currentOptionsSourceRef.current;
         console.log(`📝 Marking option as used - source: ${actualSource}`);
+
+        // ✅ FIX: Declare optionMatches outside if block for use in fallback logic
+        let optionMatches = false;
 
         // ✅ FIX 2 & 3: Update the correct table based on actual source used
         if (actualSource === 'pregenerated_turns') {
@@ -3206,7 +3239,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               const { error: markError } = await supabase
                 .from("pregenerated_turns")
                 .update({
-                  selected_message: finalMessage,
+                  selected_message: selectedOption,
                   used_at: new Date().toISOString(),
                   source: 'pregenerated_turns' // ✅ Set source ONLY when user selects (not on insert)
                 })
@@ -3247,9 +3280,9 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                 const { error: markError } = await supabase
                   .from("pregenerated_turns")
                   .update({
-                    selected_message: finalMessage,
-                    used_at: new Date().toISOString(),
-                    source: 'pregenerated_turns' // ✅ Set source ONLY when user selects (not on insert)
+                  selected_message: selectedOption,
+                  used_at: new Date().toISOString(),
+                  source: 'pregenerated_turns' // ✅ Set source ONLY when user selects (not on insert)
                   })
                   .eq("chat_id", currentChatId)
                   .eq("recipient_id", user.id)
@@ -3296,37 +3329,82 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             return;
           }
 
-          // Mark this pregenerated turn as used with source tracking
-          const { error: markError } = await supabase
-            .from("pregenerated_turns")
-            .update({
-              selected_message: finalMessage,
-              used_at: new Date().toISOString(),
-              source: 'pregenerated_turns' // ✅ Set source ONLY when user selects (not on insert)
-            })
-            .eq("chat_id", currentChatId)
-            .eq("recipient_id", user.id)
-            .eq("turn_number", turnNumberToMark)
-            .is("used_at", null);
-
-          if (markError) {
-            console.error("❌ Failed to mark pregenerated turn as used:", markError);
-            // ✅ FIX: Try fallback if direct marking fails
-            console.log("⚠️ Attempting fallback marking...");
-            const { data: fallbackTurn } = await supabase
+          // ✅ CRITICAL: Verify selected option matches one of the stored options before marking
+          // This prevents marking pregenerated turns when options came from generate-contextual-options
+          let storedOptions = storedTurnInfo.options || [];
+          
+          // ✅ FIX: If options are empty in ref, fetch them from database as fallback
+          if (storedOptions.length === 0 && turnNumberToMark !== undefined) {
+            console.log("⚠️ Options not in ref - fetching from database for validation");
+            const { data: turnData } = await supabase
               .from("pregenerated_turns")
-              .select("turn_number")
+              .select("options")
               .eq("chat_id", currentChatId)
               .eq("recipient_id", user.id)
               .eq("turn_number", turnNumberToMark)
               .is("used_at", null)
               .single();
             
-            if (fallbackTurn) {
+            if (turnData?.options && Array.isArray(turnData.options)) {
+              storedOptions = turnData.options;
+              // Update ref with fetched options
+              currentPregeneratedTurnRef.current = {
+                ...currentPregeneratedTurnRef.current,
+                options: storedOptions
+              };
+              console.log(`✅ Fetched ${storedOptions.length} options from database for validation`);
+            } else {
+              console.warn("⚠️ Could not fetch options from database - will proceed with validation anyway");
+            }
+          }
+          
+          optionMatches = storedOptions.length > 0 && storedOptions.some(opt => {
+            const normalizedStored = opt.trim().toLowerCase();
+            const normalizedSelected = selectedOption.trim().toLowerCase();
+            // Check if selected option is contained in stored option (or vice versa)
+            return normalizedStored.includes(normalizedSelected) || 
+                   normalizedSelected.includes(normalizedStored) ||
+                   normalizedStored === normalizedSelected;
+          });
+
+          if (!optionMatches) {
+            // ✅ FIX 6: Change to warning - don't show as error to users
+            console.warn("⚠️ Selected option doesn't match stored pregenerated options (non-critical)", {
+              selectedOption: selectedOption.substring(0, 100),
+              storedOptionsCount: storedOptions.length, // ✅ Don't log full options array
+              source: actualSource,
+              turnNumber: turnNumberToMark
+            });
+            // ✅ FIX: If option doesn't match, it's likely from generate-contextual-options
+            // Fall through to message_options marking logic instead
+            console.log("⚠️ Option mismatch - will mark message_options instead");
+            // Continue to message_options marking logic below - DON'T return here
+          } else {
+            // ✅ FIX 2: Mark this pregenerated turn as used with source tracking and retry logic
+            let markError: any = null;
+            let markSuccess = false;
+            
+            // First try: with used_at check
+            const { error: firstTryError } = await supabase
+              .from("pregenerated_turns")
+              .update({
+                selected_message: selectedOption,
+                used_at: new Date().toISOString(),
+                source: 'pregenerated_turns'
+              })
+              .eq("chat_id", currentChatId)
+              .eq("recipient_id", user.id)
+              .eq("turn_number", turnNumberToMark)
+              .is("used_at", null);
+            
+            if (firstTryError) {
+              console.warn("⚠️ First attempt to mark pregenerated turn failed, retrying without used_at check:", firstTryError);
+              
+              // ✅ Retry: without used_at check (in case it was marked between checks)
               const { error: retryError } = await supabase
                 .from("pregenerated_turns")
                 .update({
-                  selected_message: finalMessage,
+                  selected_message: selectedOption,
                   used_at: new Date().toISOString(),
                   source: 'pregenerated_turns'
                 })
@@ -3334,34 +3412,49 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                 .eq("recipient_id", user.id)
                 .eq("turn_number", turnNumberToMark);
               
-              if (!retryError) {
-                console.log("✅ Fallback marking succeeded");
+              if (retryError) {
+                markError = retryError;
+                console.error("❌ Retry also failed:", retryError);
               } else {
-                console.error("❌ Fallback marking also failed:", retryError);
+                markSuccess = true;
+                console.log(`✅ Marked pregenerated turn ${turnNumberToMark} as used (retry succeeded)`);
               }
+            } else {
+              markSuccess = true;
+              console.log(`✅ Marked pregenerated turn ${turnNumberToMark} as used`);
             }
-          } else {
-            console.log(`✅ Successfully marked pregen turn ${turnNumberToMark} as used`);
-          }
-
-          // Delete all future unused pregenerated turns
-          const { error: deleteError } = await supabase
-            .from("pregenerated_turns")
-            .delete()
-            .eq("chat_id", currentChatId)
-            .eq("recipient_id", user.id)
-            .gt("turn_number", turnNumberToMark)
-            .is("used_at", null);
-
-          if (deleteError) {
-            console.error("❌ Failed to delete future pregenerated turns:", deleteError);
-          } else {
-            console.log(`✔ Marked pregen turn ${turnNumberToMark} as used and cleared future turns for User ${user.id === storedTurnInfo.recipient_id ? 'A' : 'B'}`);
+            
+            if (markSuccess) {
+              // Delete future turns for this user
+              const { error: deleteError } = await supabase
+                .from("pregenerated_turns")
+                .delete()
+                .eq("chat_id", currentChatId)
+                .eq("recipient_id", user.id)
+                .gt("turn_number", turnNumberToMark)
+                .is("used_at", null);
+              
+              if (deleteError) {
+                console.error("❌ Failed to delete future pregenerated turns:", deleteError);
+              }
+              
+              // Clear stored turn info after marking
+              currentPregeneratedTurnRef.current = null;
+              return; // ✅ Exit early if successfully marked
+            } else {
+              // ✅ FIX: If marking fails, fall through to message_options instead
+              console.log("⚠️ Marking failed - will try message_options instead");
+            }
+            // ✅ If marking failed, continue to message_options below
           }
           
-          // Clear stored turn info after marking
-          currentPregeneratedTurnRef.current = null;
-        } else if (actualSource === 'generate-contextual-options') {
+          // ✅ FIX: If option doesn't match pregenerated turns, fall through to message_options
+          // This handles the case where options came from generate-contextual-options but source was incorrectly set
+          // Don't return here - let it fall through to the message_options block below
+        }
+        
+        // ✅ FIX: Handle generate-contextual-options source (either direct or fallback from pregenerated_turns mismatch)
+        if (actualSource === 'generate-contextual-options' || (actualSource === 'pregenerated_turns' && !optionMatches)) {
           // ✅ FIX 2: Update message_options table with selected_message
           console.log("🔍 Marking message_options as used (generate-contextual-options)");
           
@@ -3398,7 +3491,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             const { error: updateError } = await supabase
               .from("message_options")
               .update({
-                selected_message: finalMessage,
+                selected_message: selectedOption,
                 source: 'generate-contextual-options' // ✅ Set source ONLY when user selects (not on insert)
               })
               .eq("id", messageOptionsData.id);
@@ -3417,7 +3510,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         currentOptionsSourceRef.current = null;
 
         // ✅ FIX 1: Check if smiley was selected from pregenerated turn and handle closure
-        const isSmileyOnly = /^[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]+$/u.test(finalMessage.trim());
+        const isSmileyOnly = /^[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]+$/u.test(selectedOption.trim());
 
         if (isSmileyOnly) {
           console.log("😊 Smiley detected from pregenerated turn - checking closure...");
@@ -3492,31 +3585,44 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         }
 
         // ✅ FIX: Check if we need more pre-generated turns and trigger re-generation EARLIER
-        // Trigger when 2 or fewer unused turns remain to ensure next batch is ready before current batch is exhausted
+        // Trigger when 3 or fewer unused turns remain to ensure next batch is ready before current batch is exhausted
         const { data: remainingTurns } = await supabase
           .from("pregenerated_turns")
           .select("id")
           .eq("chat_id", currentChatId)
           .is("used_at", null)
-          .limit(3); // Check for up to 3 turns to see if we're down to 2 or less
+          .limit(4); // Check for up to 4 turns to see if we're down to 3 or less
 
         const remainingCount = remainingTurns?.length || 0;
         
-        // ✅ FIX: Trigger re-generation when 2 or fewer unused turns remain
-        // This ensures the next batch is generated BEFORE the current batch is exhausted
-        // AI generation takes 2-5 seconds, so we need to start early
-        if (remainingCount <= 2) {
-          console.log(`⚡ Only ${remainingCount} pre-generated turn(s) remaining, triggering re-generation early...`);
+        // ✅ FIX: Trigger re-generation when 1 or fewer unused turns remain (just-in-time)
+        // This ensures the next batch is generated just before the current batch is exhausted
+        // AI generation takes 2-5 seconds, so we start when only 1 turn remains
+        // ✅ CRITICAL: This threshold only affects WHEN next batch is generated
+        // It does NOT affect turn number calculation (which stays in sync with backend)
+        // Backend uses same formula: User A = messagesSent * 2, User B = messagesSent * 2 + 1
+        if (remainingCount <= 1) {
+          console.log(`⚡ Only ${remainingCount} pre-generated turn(s) remaining, triggering re-generation just-in-time...`);
+          // ✅ CRITICAL: Mark that we're generating pregenerated turns for this chat
+          if (currentChatId) {
+            isGeneratingPregeneratedTurnsRef.current[currentChatId] = true;
+          }
           // Trigger re-generation in background (non-blocking)
           supabase.functions.invoke("generate-pregenerated-turns", {
             body: { chatId: currentChatId }
           }).then(({ data, error }) => {
+            if (currentChatId) {
+              isGeneratingPregeneratedTurnsRef.current[currentChatId] = false;
+            }
             if (error) {
               console.error("❌ Failed to trigger re-generation:", error);
             } else {
               console.log("✅ Re-generation triggered successfully:", data);
             }
           }).catch(err => {
+            if (currentChatId) {
+              isGeneratingPregeneratedTurnsRef.current[currentChatId] = false;
+            }
             console.error("❌ Error triggering re-generation:", err);
           });
         } else {
@@ -4438,18 +4544,26 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                       
                       // ✅ NEW: Trigger pregenerated turns regeneration with hint included (non-blocking)
                       // This ensures future turns for User B include their hint context
-                      if (user && user.id === existing?.contact_id) {
-                        // Fire-and-forget - don't wait for it, don't block immediate options
+                      if (user && user.id === existing?.contact_id && currentChatId) {
+                        // ✅ CRITICAL: Pass hint directly in request body to avoid race condition
+                        // This ensures generate-pregenerated-turns receives the hint immediately
+                        // without waiting for database commit/replication
                         console.log("🔄 Triggering pregenerated turns regeneration with User B's hint...");
+                        isGeneratingPregeneratedTurnsRef.current[currentChatId] = true;
                         supabase.functions.invoke("generate-pregenerated-turns", {
-                          body: { chatId: currentChatId }
+                          body: { 
+                            chatId: currentChatId,
+                            hintFromB: tipText.trim() // ⭐ Pass hint directly to avoid race condition
+                          }
                         }).then(({ data, error }) => {
+                          isGeneratingPregeneratedTurnsRef.current[currentChatId] = false;
                           if (error) {
                             console.error("❌ Failed to regenerate pregenerated turns with hint:", error);
                           } else {
                             console.log("✅ Pregenerated turns regenerated with User B's hint context");
                           }
                         }).catch(err => {
+                          isGeneratingPregeneratedTurnsRef.current[currentChatId] = false;
                           console.error("❌ Error triggering pregenerated turns regeneration:", err);
                         });
                       }
@@ -4457,6 +4571,8 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                       console.log("✅ Hint saved:", tipText.substring(0, 50));
                       setShowTipBox(false);
                       setHintSubmitted(true);
+                      // ✅ CRITICAL: Mark hint box as seen so it never appears again
+                      hasSeenHintBoxRef.current = true;
                       
                       // ✅ CRITICAL: Don't regenerate options if chat is closed
                       if (isChatClosed) {

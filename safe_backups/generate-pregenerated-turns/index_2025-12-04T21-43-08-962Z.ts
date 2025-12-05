@@ -36,7 +36,7 @@ Deno.serve(async (req) => {
     console.log('🔧 generate-pregenerated-turns called');
 
     const requestBody = await req.json();
-    const { chatId, hintFromB: hintFromBParam } = requestBody;
+    const { chatId } = requestBody;
 
     if (!chatId) {
       return new Response(JSON.stringify({
@@ -152,8 +152,7 @@ Deno.serve(async (req) => {
     const summarySharedNeutral = contextData.summary_shared_neutral || contextData.summary || '';
     const thoughtsA = contextData.thoughts_a || contextData.thoughts || '';
     const thoughtsB = contextData.thoughts_b || '';
-    // ✅ CRITICAL: Use hint from request body if provided (avoids race condition), otherwise fall back to context_data
-    const hintFromB = hintFromBParam || contextData.hint_from_b || '';
+    const hintFromB = contextData.hint_from_b || '';
 
     console.log('📋 Context loaded:', {
       chatId,
@@ -163,8 +162,7 @@ Deno.serve(async (req) => {
       hasSummary: !!summarySharedNeutral,
       hasThoughtsA: !!thoughtsA,
       hasThoughtsB: !!thoughtsB,
-      hasHint: !!hintFromB,
-      hintSource: hintFromBParam ? 'request_body' : 'context_data'
+      hasHint: !!hintFromB
     });
 
     // ✅ FIX: Determine next recipient and calculate startingTurnNumber correctly
@@ -231,10 +229,6 @@ Deno.serve(async (req) => {
     const existingTurnNumbers = existingTurns?.map((t: { turn_number: number }) => t.turn_number) || [];
     const hasAllExpectedTurns = expectedTurnNumbers.every(tn => existingTurnNumbers.includes(tn));
     
-    // ✅ CRITICAL: Check for gaps in the sequence (missing turn numbers like 1, 3, etc.)
-    const missingTurns = expectedTurnNumbers.filter(tn => !existingTurnNumbers.includes(tn));
-    const hasGaps = missingTurns.length > 0;
-    
     if (hasAllExpectedTurns && existingTurns && existingTurns.length >= 3) {
       console.log(`✅ Already have all 3 pregenerated turns for turn_numbers ${expectedTurnNumbers.join(', ')}, skipping generation`);
       return new Response(JSON.stringify({
@@ -253,31 +247,16 @@ Deno.serve(async (req) => {
       });
     }
     
-    // ✅ FIX: If we have gaps (missing turn numbers), delete ALL turns and regenerate to fill gaps
-    if (hasGaps && existingTurns && existingTurns.length > 0) {
-      console.log(`⚠️ Found gaps in pregenerated turns (missing: ${missingTurns.join(', ')}), deleting ALL and regenerating to fill gaps...`);
-      // ✅ CRITICAL: Delete ALL turns (used and unused) to prevent unique constraint violations and fill gaps
+    // ✅ FIX: If we have some but not all expected turns, delete ALL turns (used and unused) from startingTurnNumber onwards
+    if (existingTurns && existingTurns.length > 0 && !hasAllExpectedTurns) {
+      console.log(`⚠️ Found ${existingTurns.length} partial pregenerated turns, deleting ALL (used and unused) before regenerating...`);
+      // ✅ CRITICAL: Delete ALL turns (used and unused) to prevent unique constraint violations
       const { error: deletePartialError } = await supabase
         .from('pregenerated_turns')
         .delete()
         .eq('chat_id', chatId)
         .gte('turn_number', startingTurnNumber)
         .lte('turn_number', startingTurnNumber + 2); // Only delete the 3 turns we're about to regenerate
-      
-      if (deletePartialError) {
-        console.warn('⚠️ Failed to delete partial turns (non-critical):', deletePartialError);
-      } else {
-        console.log(`✅ Deleted partial pregenerated turns (including used ones) to fill gaps. Missing turns: ${missingTurns.join(', ')}`);
-      }
-    } else if (existingTurns && existingTurns.length > 0 && !hasAllExpectedTurns) {
-      // ✅ FIX: If we have some but not all expected turns (partial overlap), delete ALL and regenerate
-      console.log(`⚠️ Found ${existingTurns.length} partial pregenerated turns, deleting ALL (used and unused) before regenerating...`);
-      const { error: deletePartialError } = await supabase
-        .from('pregenerated_turns')
-        .delete()
-        .eq('chat_id', chatId)
-        .gte('turn_number', startingTurnNumber)
-        .lte('turn_number', startingTurnNumber + 2);
       
       if (deletePartialError) {
         console.warn('⚠️ Failed to delete partial turns (non-critical):', deletePartialError);
@@ -332,52 +311,7 @@ thoughts_a: ${thoughtsA || '(none provided)'}
 
 thoughts_b: ${thoughtsB || '(none provided)'}
 
-${hintFromB ? `
-🔐 USER B'S PRIVATE PERSPECTIVE (PERSISTENT CORE CONTEXT FOR ALL TURNS):
-"${hintFromB}"
-
-⚠️ CRITICAL: This hint is PRIVATE to User B and MUST NEVER be shown to User A.
-
-⚡ ABSOLUTELY CRITICAL - MANDATORY HINT INTEGRATION:
-This hint is User B's TRUE PERSPECTIVE and MUST DEEPLY INFLUENCE EVERY SINGLE OPTION generated for User B throughout THE ENTIRE CONVERSATION.
-
-This is NOT optional context - this is REQUIRED FOUNDATIONAL CONTEXT that shapes User B's authentic voice.
-
-The hint reveals:
-- What User B is GENUINELY feeling about the situation (emotional truth)
-- Critical context and background User A doesn't fully understand
-- User B's valid perspective, needs, and legitimate concerns
-- The specific people, events, and dynamics involved
-- User B's reasons for their feelings and reactions
-- Opportunities to help both sides understand each other fairly
-
-🎯 CRITICAL: COMPARE HINT WITH NEUTRAL TOPIC SUMMARY:
-Topic context (neutral, factual): "${summarySharedNeutral || '(none provided)'}"
-User B's Hint (User B's perspective): "${hintFromB}"
-
-GENERATE OPTIONS FOR USER B THAT:
-1. ✅ ALWAYS reflect the emotional tone and subject matter from the hint in EVERY turn
-2. ✅ Help User B express THEIR authentic perspective based on this persistent context
-3. ✅ Show that User B has legitimate feelings, valid reasons, and their own truth
-4. ✅ Allow User B to communicate genuinely without directly exposing the private hint text
-5. ✅ Balance fairness - this conversation has TWO perspectives, not just User A's issue
-6. ✅ Maintain absolute consistency with hint's emotional context across ALL turns
-7. ✅ Use hint to inform tone: if hint shows hurt, options reflect that; if defensive, options reflect that
-8. ✅ Reference subjects/people mentioned in hint naturally throughout conversation
-9. ✅ STRONGLY CONVEY User B's reasons - explain WHY User B felt/acted the way they did
-10. ✅ Help User B articulate their perspective clearly so User A can understand their side
-
-PERSISTENCE RULE:
-The hint doesn't "expire" after first response. User B's feelings and perspective from the hint remain RELEVANT and ACTIVE throughout the ENTIRE conversation. Keep incorporating this context into EVERY set of options generated for User B.
-
-When generating turns for User B (in the ${firstTurnRole === "A" ? "B → A → B" : "B → A → B"} sequence):
-- If the sequence starts with User B (firstTurnRole === "B"), the FIRST turn must deeply reflect the hint
-- If the sequence has User B in the middle or end, those turns must also reflect the hint
-- ALL User B turns must be consistent with the hint's emotional tone and perspective
-- User B's options must respond to previous messages AND incorporate hint context naturally
-` : `
-hint_from_b: (none provided)
-`}
+hint_from_b: ${hintFromB || '(none provided)'}
 
 conversation_history: ${JSON.stringify(conversationHistory, null, 2)}
 

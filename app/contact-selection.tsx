@@ -14,6 +14,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/Colors';
 import { ArrowLeft, MessageCircle, User, Plus, Bot } from 'lucide-react-native';
+import { MY_TALKS_LIMIT, getCompletedMyTalksCount, buildMyTalksLimitMessage } from "@/lib/myTalksLimit";
 
 interface ContactChat {
   id: string;
@@ -115,6 +116,27 @@ function ContactSelectionScreen() {
         // Continue the existing unresolved chat
         router.push(`/contact-chat?chatId=${unresolvedChat.id}&contactId=${contactId}&isOngoing=true`);
         return;
+      }
+
+      // ✅ CRITICAL: Check conversation limit BEFORE creating new chat
+      // This prevents creating a 4th chat when limit is 3
+      // Notification should ONLY show when creating NEW chat, NOT during active chat
+      if (contactId && user?.id) {
+        try {
+          const completedMyTalks = await getCompletedMyTalksCount(user.id, contactId);
+          if (completedMyTalks >= MY_TALKS_LIMIT) {
+            const contactName = contact?.full_name || contact?.email || 'this contact';
+            Alert.alert(
+              'Limit Reached',
+              buildMyTalksLimitMessage(contactName),
+              [{ text: 'OK', style: 'default' }]
+            );
+            return; // ⛔ Don't create new chat - user has reached the limit
+          }
+        } catch (error) {
+          console.error('❌ Error checking conversation limit:', error);
+          // Continue if check fails (don't block user from creating chat)
+        }
       }
 
       // Check if we're coming from an AI chat (look for readyToTalk parameter or stored context)

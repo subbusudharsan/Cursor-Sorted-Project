@@ -152,8 +152,7 @@ Deno.serve(async (req) => {
     const summarySharedNeutral = contextData.summary_shared_neutral || contextData.summary || '';
     const thoughtsA = contextData.thoughts_a || contextData.thoughts || '';
     const thoughtsB = contextData.thoughts_b || '';
-    // ✅ CRITICAL: Use hint from request body if provided (avoids race condition), otherwise fall back to context_data
-    const hintFromB = hintFromBParam || contextData.hint_from_b || '';
+    const hintFromB = contextData.hint_from_b || '';
 
     console.log('📋 Context loaded:', {
       chatId,
@@ -163,8 +162,7 @@ Deno.serve(async (req) => {
       hasSummary: !!summarySharedNeutral,
       hasThoughtsA: !!thoughtsA,
       hasThoughtsB: !!thoughtsB,
-      hasHint: !!hintFromB,
-      hintSource: hintFromBParam ? 'request_body' : 'context_data'
+      hasHint: !!hintFromB
     });
 
     // ✅ FIX: Determine next recipient and calculate startingTurnNumber correctly
@@ -231,10 +229,6 @@ Deno.serve(async (req) => {
     const existingTurnNumbers = existingTurns?.map((t: { turn_number: number }) => t.turn_number) || [];
     const hasAllExpectedTurns = expectedTurnNumbers.every(tn => existingTurnNumbers.includes(tn));
     
-    // ✅ CRITICAL: Check for gaps in the sequence (missing turn numbers like 1, 3, etc.)
-    const missingTurns = expectedTurnNumbers.filter(tn => !existingTurnNumbers.includes(tn));
-    const hasGaps = missingTurns.length > 0;
-    
     if (hasAllExpectedTurns && existingTurns && existingTurns.length >= 3) {
       console.log(`✅ Already have all 3 pregenerated turns for turn_numbers ${expectedTurnNumbers.join(', ')}, skipping generation`);
       return new Response(JSON.stringify({
@@ -253,31 +247,16 @@ Deno.serve(async (req) => {
       });
     }
     
-    // ✅ FIX: If we have gaps (missing turn numbers), delete ALL turns and regenerate to fill gaps
-    if (hasGaps && existingTurns && existingTurns.length > 0) {
-      console.log(`⚠️ Found gaps in pregenerated turns (missing: ${missingTurns.join(', ')}), deleting ALL and regenerating to fill gaps...`);
-      // ✅ CRITICAL: Delete ALL turns (used and unused) to prevent unique constraint violations and fill gaps
+    // ✅ FIX: If we have some but not all expected turns, delete ALL turns (used and unused) from startingTurnNumber onwards
+    if (existingTurns && existingTurns.length > 0 && !hasAllExpectedTurns) {
+      console.log(`⚠️ Found ${existingTurns.length} partial pregenerated turns, deleting ALL (used and unused) before regenerating...`);
+      // ✅ CRITICAL: Delete ALL turns (used and unused) to prevent unique constraint violations
       const { error: deletePartialError } = await supabase
         .from('pregenerated_turns')
         .delete()
         .eq('chat_id', chatId)
         .gte('turn_number', startingTurnNumber)
         .lte('turn_number', startingTurnNumber + 2); // Only delete the 3 turns we're about to regenerate
-      
-      if (deletePartialError) {
-        console.warn('⚠️ Failed to delete partial turns (non-critical):', deletePartialError);
-      } else {
-        console.log(`✅ Deleted partial pregenerated turns (including used ones) to fill gaps. Missing turns: ${missingTurns.join(', ')}`);
-      }
-    } else if (existingTurns && existingTurns.length > 0 && !hasAllExpectedTurns) {
-      // ✅ FIX: If we have some but not all expected turns (partial overlap), delete ALL and regenerate
-      console.log(`⚠️ Found ${existingTurns.length} partial pregenerated turns, deleting ALL (used and unused) before regenerating...`);
-      const { error: deletePartialError } = await supabase
-        .from('pregenerated_turns')
-        .delete()
-        .eq('chat_id', chatId)
-        .gte('turn_number', startingTurnNumber)
-        .lte('turn_number', startingTurnNumber + 2);
       
       if (deletePartialError) {
         console.warn('⚠️ Failed to delete partial turns (non-critical):', deletePartialError);
