@@ -461,14 +461,28 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         // ✅ CRITICAL: Wait for pregenerated turns before showing options (for new chats from Stage 3)
         // This ensures User A sees pregenerated turns immediately, not generate-contextual-options
         if (!showSuggestedOptions) {
-          // ✅ FIX: Poll for pregenerated turns first (up to 3 seconds) before falling back
+          // ✅ FIX: Check immediately first (no delay), then poll if needed
           const checkPregeneratedTurns = async () => {
-            const maxWaitTime = 3000; // 3 seconds max
+            // ✅ Check immediately first (no delay on first check)
+            let pregen = await fetchPregeneratedTurn(id, user.id);
+            if (pregen && pregen.options?.length > 0 && String(pregen.recipient_id) === String(user.id)) {
+              console.log(`✅ Found pregenerated turns immediately - showing right away`);
+              const cleaned = cleanOptionsForDisplay(pregen.options, contact?.full_name || null);
+              setOptionsWithSource(cleaned, 'pregenerated_turns');
+              setShowSuggestedOptions(true);
+              resolveWaitingForOptions(user.id);
+              return; // ⛔ EXIT - don't call fetchInitialOptions
+            }
+            
+            // ✅ If not found immediately, poll for up to 5 seconds (increased for reliability)
+            const maxWaitTime = 5000; // ✅ Increased from 3000 to 5000 (5 seconds)
             const checkInterval = 300; // Check every 300ms
             let waited = 0;
             
             while (waited < maxWaitTime) {
-              const pregen = await fetchPregeneratedTurn(id, user.id);
+              await new Promise(resolve => setTimeout(resolve, checkInterval));
+              waited += checkInterval;
+              pregen = await fetchPregeneratedTurn(id, user.id);
               if (pregen && pregen.options?.length > 0 && String(pregen.recipient_id) === String(user.id)) {
                 console.log(`✅ Found pregenerated turns after ${waited}ms - showing immediately`);
                 const cleaned = cleanOptionsForDisplay(pregen.options, contact?.full_name || null);
@@ -477,12 +491,10 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                 resolveWaitingForOptions(user.id);
                 return; // ⛔ EXIT - don't call fetchInitialOptions
               }
-              await new Promise(resolve => setTimeout(resolve, checkInterval));
-              waited += checkInterval;
             }
             
-            // ✅ Fallback: If pregenerated turns not ready after 3 seconds, use fetchInitialOptions
-            console.log("ℹ️ Pregenerated turns not ready after 3s, falling back to fetchInitialOptions");
+            // ✅ Fallback: Only if pregenerated turns truly don't exist after 5 seconds
+            console.log("ℹ️ Pregenerated turns not ready after 5s, falling back to fetchInitialOptions (hardest situation)");
             fetchInitialOptions(id, user.id, 0, { force: true });
             ensureInitialOptions(id);
           };
@@ -534,9 +546,24 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                   return;
                 }
                 
+                // ✅ FIX: Check if same turn_number is already displayed - don't refresh if it is
+                if (currentPregeneratedTurnRef.current && 
+                    currentPregeneratedTurnRef.current.turn_number === pregen.turn_number &&
+                    currentOptionsSourceRef.current === 'pregenerated_turns' &&
+                    showSuggestedOptions) {
+                  console.log(`⏸️ Skipping refresh: Same turn_number ${pregen.turn_number} already displayed`);
+                  return; // ⛔ EXIT - don't refresh same turn
+                }
+                
                 console.log('⚡ Realtime: Pregenerated options available - showing immediately');
                 const cleaned = cleanOptionsForDisplay(pregen.options, contact?.full_name || null);
                 await showOptionsWithDelay(cleaned, 'pregenerated_turns', pregen.turn_number);
+               
+                // ✅ Store turn info when displaying
+                currentPregeneratedTurnRef.current = {
+                  turn_number: pregen.turn_number,
+                  recipient_id: user.id
+                };
                 resolveWaitingForOptions(user.id);
                 setLastOptionRefreshTime(Date.now());
               }
@@ -1648,13 +1675,26 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     // 🔥 CRITICAL: Check pregenerated turns FIRST - with polling to wait for generation
     console.log("🔍 Checking pregenerated turns (with polling):", { chatId, userId: user.id });
     
-    // ✅ FIX: Poll for pregenerated turns (up to 3 seconds) before falling back
-    const maxWaitTime = 3000; // 3 seconds max
+    // ✅ FIX: Check immediately first (no delay on first check)
+    let pregen = await fetchPregeneratedTurn(chatId, user.id);
+    if (pregen && pregen.options?.length > 0 && String(pregen.recipient_id) === String(user.id)) {
+      console.log(`✅ Found pregenerated turns immediately in ensureInitialOptions - showing right away`);
+      const cleaned = cleanOptionsForDisplay(pregen.options, contact?.full_name || null);
+      setOptionsWithSource(cleaned, 'pregenerated_turns');
+      setShowSuggestedOptions(true);
+      resolveWaitingForOptions(user.id);
+      setLastOptionRefreshTime(Date.now());
+      return; // ⛔ EXIT immediately - prevent message_options lookup
+    }
+    
+    // ✅ If not found immediately, poll for up to 5 seconds (increased for reliability)
+    const maxWaitTime = 5000; // ✅ Increased from 3000 to 5000 (5 seconds)
     const checkInterval = 300; // Check every 300ms
     let waited = 0;
-    let pregen = null;
     
     while (waited < maxWaitTime && (!pregen || !pregen.options?.length)) {
+      await new Promise(resolve => setTimeout(resolve, checkInterval));
+      waited += checkInterval;
       pregen = await fetchPregeneratedTurn(chatId, user.id);
       if (pregen && pregen.options?.length > 0 && String(pregen.recipient_id) === String(user.id)) {
         console.log(`✅ Found pregenerated turns after ${waited}ms - showing immediately`);
@@ -1665,8 +1705,6 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         setLastOptionRefreshTime(Date.now());
         return; // ⛔ EXIT immediately - prevent message_options lookup
       }
-      await new Promise(resolve => setTimeout(resolve, checkInterval));
-      waited += checkInterval;
     }
     
     // ✅ If pregenerated turns not found after polling, check if they're being generated
@@ -2231,8 +2269,17 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               senderId,
               chatUserA: chatCtx?.user_id,
               chatUserB: chatCtx?.contact_id,
-              recipientIdForOptions
+              recipientIdForOptions,
+              currentUserId
             });
+            
+            // ✅ CRITICAL FIX: Only proceed if current user is the recipient
+            // This prevents both users from receiving options simultaneously (especially after turn 5)
+            if (String(recipientIdForOptions) !== String(currentUserId)) {
+              console.log("ℹ️ Options are for different user - current user is not the recipient, exiting early");
+              resolveWaitingForOptions(currentUserId);
+              return; // ⛔ EXIT immediately - don't fetch or show options for wrong user
+            }
             
             // 🔥 CRITICAL: Check pregenerated turns FIRST - before generating new options
             console.log("🔍 Checking pregenerated turns:", { chatId, userId: recipientIdForOptions });
@@ -2240,11 +2287,11 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             
             // ✅ FIX: If options exist, use immediately. Only retry if they don't exist (generation in progress)
             if (!pregen || !pregen.options?.length) {
-              console.log("ℹ️ No pregenerated turn found, polling for generation (max 2.5 seconds)...");
+              console.log("ℹ️ No pregenerated turn found, polling for generation (max 5 seconds)...");
               
               // ✅ FIX: Poll with increasing intervals (faster initial checks, longer later)
-              // Generation takes 2-5 seconds, so we poll for up to 2.5 seconds
-              const maxWaitTime = 2500; // 2.5 seconds max
+              // Generation takes 2-5 seconds, so we poll for up to 5 seconds (increased for reliability)
+              const maxWaitTime = 5000; // ✅ Increased from 2500 to 5000 (5 seconds)
               const checkInterval = 300; // Check every 300ms
               let waited = 0;
               
@@ -2260,7 +2307,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               }
               
               if (!pregen || !pregen.options?.length) {
-                console.log("ℹ️ No pregenerated turn found after polling, will fall back to generate-contextual-options");
+                console.log("ℹ️ No pregenerated turn found after polling, will fall back to generate-contextual-options (hardest situation)");
                 // Realtime subscription will still handle new options when they're ready
               }
             }
@@ -2299,10 +2346,10 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             
             // ✅ FIX: Poll for pregenerated turns if they don't exist (generation in progress)
             if (!pregenCheck || !pregenCheck.options?.length) {
-              console.log("ℹ️ Double-check: No pregenerated turn found, polling for generation (max 2.5 seconds)...");
+              console.log("ℹ️ Double-check: No pregenerated turn found, polling for generation (max 5 seconds)...");
               
               // ✅ FIX: Poll with increasing intervals (faster initial checks, longer later)
-              const maxWaitTime = 2500; // 2.5 seconds max
+              const maxWaitTime = 5000; // ✅ Increased from 2500 to 5000 (5 seconds)
               const checkInterval = 300; // Check every 300ms
               let waited = 0;
               
@@ -2318,7 +2365,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               }
               
               if (!pregenCheck || !pregenCheck.options?.length) {
-                console.log("ℹ️ Double-check: No pregenerated turn found after polling, will fall back to orchestration");
+                console.log("ℹ️ Double-check: No pregenerated turn found after polling, will fall back to orchestration (hardest situation)");
                 // Realtime subscription will still handle new options when they're ready
               }
             }
@@ -2338,15 +2385,28 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                 console.log("🚫 Orchestration skipped — pregenerated exists");
                 console.log("⚡ Using pregenerated options instead of generating new ones");
                 const cleaned = cleanOptionsForDisplay(pregenCheck.options, contact?.full_name || null);
-                setOptionsWithSource(cleaned, 'pregenerated_turns');
+                await showOptionsWithDelay(cleaned, 'pregenerated_turns', pregenCheck.turn_number);
                 setShowSuggestedOptions(true);
                 resolveWaitingForOptions(recipientIdForOptions);
                 return; // ⛔ EXIT - prevent orchestration and generate-contextual-options
               }
             }
             
+            // ✅ CRITICAL: Final check - if pregenerated turns exist, skip orchestration entirely
+            // This ensures we never call orchestration/generate-contextual-options if pregenerated turns are available
+            const finalPregenCheck = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
+            if (finalPregenCheck && finalPregenCheck.options?.length > 0 && String(finalPregenCheck.recipient_id) === String(recipientIdForOptions)) {
+              console.log("🚫 Orchestration skipped — final check found pregenerated turns");
+              console.log("⚡ Using pregenerated options instead of orchestration");
+              const cleaned = cleanOptionsForDisplay(finalPregenCheck.options, contact?.full_name || null);
+              await showOptionsWithDelay(cleaned, 'pregenerated_turns', finalPregenCheck.turn_number);
+              setShowSuggestedOptions(true);
+              resolveWaitingForOptions(recipientIdForOptions);
+              return; // ⛔ EXIT - prevent orchestration and generate-contextual-options
+            }
+            
             console.log("\n" + "=".repeat(60));
-            console.log("📤 CONTACT REPLIED - GENERATING OPTIONS FOR CURRENT USER");
+            console.log("📤 CONTACT REPLIED - GENERATING OPTIONS FOR CURRENT USER (FALLBACK ONLY)");
             console.log("=".repeat(60));
             console.log("📬 Contact's message (currentMessage):", newMsg.content.substring(0, 80));
             
@@ -2983,6 +3043,21 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       // ✅ CRITICAL: Trigger pregenerated turns generation IMMEDIATELY after message is sent
       // This ensures turns are ready before the recipient checks
       if (recipientId && currentChatId) {
+        // ✅ FIX: Check if it's User B's turn and if they haven't submitted a hint
+        // Only regenerate if:
+        // 1. It's User A's turn (recipient is user_id) - no hint needed
+        // 2. OR User B has already submitted a hint
+        const isRecipientUserB = String(recipientId) === String(chatData.contact_id);
+        const hasUserBHint = Boolean(chatData?.context_data?.hint_from_b);
+        
+        if (isRecipientUserB && !hasUserBHint) {
+          console.log("⏸️ Skipping pregenerated turns regeneration: User B's turn but no hint submitted yet");
+          // Don't regenerate - User B needs to submit hint first
+          // Existing pregenerated turns will be used (if any)
+          enterWaitingForOptions(recipientId);
+          return; // ⛔ EXIT - don't regenerate without hint
+        }
+        
         console.log("🚀 Triggering pregenerated turns generation immediately after message send for recipient:", recipientId);
         
         // ✅ CRITICAL: Mark that we're generating pregenerated turns for this chat
@@ -3747,14 +3822,46 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         // It does NOT affect turn number calculation (which stays in sync with backend)
         // Backend uses same formula: User A = messagesSent * 2, User B = messagesSent * 2 + 1
         if (remainingCount <= 1) {
+          // ✅ FIX: Fetch chat data to check hint status and determine next recipient
+          const { data: chatDataForHint } = await supabase
+            .from("chats")
+            .select("user_id, contact_id, context_data")
+            .eq("id", currentChatId)
+            .single();
+          
+          if (chatDataForHint) {
+            // ✅ FIX: Determine next recipient based on last message
+            const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
+            const lastSenderId = lastMessage ? String(lastMessage.sender_id) : null;
+            const nextRecipientId = lastSenderId === String(chatDataForHint.user_id) 
+              ? chatDataForHint.contact_id  // User A sent last → next is User B
+              : chatDataForHint.user_id;     // User B sent last → next is User A
+            
+            // ✅ FIX: Check if it's User B's turn and if they haven't submitted a hint
+            const isNextRecipientUserB = String(nextRecipientId) === String(chatDataForHint.contact_id);
+            const hasUserBHint = Boolean(chatDataForHint?.context_data?.hint_from_b);
+            
+            if (isNextRecipientUserB && !hasUserBHint) {
+              console.log(`⏸️ Skipping pregenerated turns regeneration: Next turn is User B's but no hint submitted yet (${remainingCount} turn(s) remaining)`);
+              // Don't regenerate - User B needs to submit hint first
+              // Existing pregenerated turns will be used (if any)
+              return; // ⛔ EXIT - don't regenerate without hint
+            }
+          }
+          
           console.log(`⚡ Only ${remainingCount} pre-generated turn(s) remaining, triggering re-generation just-in-time...`);
           // ✅ CRITICAL: Mark that we're generating pregenerated turns for this chat
           if (currentChatId) {
             isGeneratingPregeneratedTurnsRef.current[currentChatId] = true;
           }
+          // ✅ FIX: Pass hint explicitly (or null if not available)
+          const hintFromB = chatDataForHint?.context_data?.hint_from_b || null;
           // Trigger re-generation in background (non-blocking)
           supabase.functions.invoke("generate-pregenerated-turns", {
-            body: { chatId: currentChatId }
+            body: { 
+              chatId: currentChatId,
+              hintFromB: hintFromB // Pass hint explicitly (null if not available)
+            }
           }).then(({ data, error }) => {
             if (currentChatId) {
               isGeneratingPregeneratedTurnsRef.current[currentChatId] = false;

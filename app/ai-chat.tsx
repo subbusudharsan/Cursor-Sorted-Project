@@ -841,13 +841,18 @@ Context (brief):
         });
       }
 
-      const completedMyTalks = await getCompletedMyTalksCount(user.id, contactIdValue);
-      if (completedMyTalks >= MY_TALKS_LIMIT) {
-        const friendlyName = contactProfile?.full_name || contactProfile?.email || 'this contact';
-        Alert.alert('Limit Reached', buildMyTalksLimitMessage(friendlyName));
-        setInitializing(false);
-        router.push('/ai-assistant');
-        return;
+      // ✅ FIX: Only check limit when creating a NEW chat, not when re-initializing existing chat
+      // This prevents unwanted "Take a pause" notification during active chats
+      // Skip limit check if we're already in an active chat session (currentChatId or chatIdValue exists)
+      if (!currentChatId && !chatIdValue) {
+        const completedMyTalks = await getCompletedMyTalksCount(user.id, contactIdValue);
+        if (completedMyTalks >= MY_TALKS_LIMIT) {
+          const friendlyName = contactProfile?.full_name || contactProfile?.email || 'this contact';
+          Alert.alert('Limit Reached', buildMyTalksLimitMessage(friendlyName));
+          setInitializing(false);
+          router.push('/ai-assistant');
+          return;
+        }
       }
 
       // ✅ Get first name or nickname for default title
@@ -2124,18 +2129,26 @@ const inferEntityCategory = (name: string): string => {
         if (ctx.questionCount !== undefined) setQuestionCount(ctx.questionCount);
         if (ctx.currentQuestion) setCurrentQuestion(ctx.currentQuestion);
         if (ctx.currentQuestionType) setCurrentQuestionType(ctx.currentQuestionType);
-        if (ctx.flowStage) {
-          // Map legacy 'description' to 'welcome' for UI compatibility
-          const mappedStage = ctx.flowStage === 'description' ? 'welcome' : ctx.flowStage;
-          setFlowStage(mappedStage as FlowStage);
-        } else if (chatData.is_resolved) {
-          setFlowStage('summary');
-        } else if (summaryAPerspective) {
-          setFlowStage('summary');
-        } else if (ctx.qa_pairs && ctx.qa_pairs.length > 0) {
-          setFlowStage('qa');
-        } else if (ctx.initial_description) {
-          setFlowStage('qa');
+        // ✅ CRITICAL: Don't reset flowStage if summary is currently being generated
+        // This prevents jumping back to Stage 1 during summary generation
+        if (!isGeneratingSummary) {
+          if (ctx.flowStage) {
+            // Map legacy 'description' to 'welcome' for UI compatibility
+            const mappedStage = ctx.flowStage === 'description' ? 'welcome' : ctx.flowStage;
+            setFlowStage(mappedStage as FlowStage);
+          } else if (chatData.is_resolved) {
+            setFlowStage('summary');
+          } else if (summaryAPerspective) {
+            setFlowStage('summary');
+          } else if (ctx.qa_pairs && ctx.qa_pairs.length > 0) {
+            setFlowStage('qa');
+          } else if (ctx.initial_description) {
+            setFlowStage('qa');
+          }
+        } else {
+          // ✅ During summary generation, keep flowStage at 'qa' (Stage 2)
+          // Don't let loadExistingChat reset it to 'welcome' or 'summary'
+          console.log('🔒 Summary generation in progress - preserving flowStage at "qa"');
         }
 
         if (ctx.taggedEntities) setTaggedEntities(ctx.taggedEntities);
@@ -3754,6 +3767,9 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
   const generateSummary = async (pairs: QAPair[]) => {
     setLoading(true);
     setIsGeneratingSummary(true);
+    // ✅ CRITICAL: Lock flowStage to 'qa' during generation to prevent jumping to Stage 1
+    // This ensures we stay on Stage 2 (qa) while generating summary
+    setFlowStage("qa");
     try {
       if (!currentChatId) {
         throw new Error('No chat ID available');
@@ -3965,6 +3981,110 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
 
       setIsSummaryUnclear(false);  // ✅ Clear unclear flag after successful generation
       setFlowStage("summary");
+
+      // ✅ NEW: Create contact chat and pregenerate options immediately when summary is ready
+      // This ensures options are ready when user clicks "Send to contact" (no delay)
+      if (contactId && currentChatId && summaryAPerspective && user?.id) {
+        // Create/reuse contact chat in background (non-blocking)
+        (async () => {
+          try {
+            // Check if contact chat already exists
+            const { data: existingChat, error: existingChatError } = await supabase
+              .from("chats")
+              .select("id, context_data")
+              .eq("user_id", user.id)
+              .eq("contact_id", contactId)
+              .eq("chat_type", "contact_chat")
+              .eq("ai_source_chat_id", currentChatId)
+              .eq("is_resolved", false)
+              .order("created_at", { ascending: false })
+              .maybeSingle();
+
+            if (existingChatError) {
+              console.warn("⚠️ Failed checking for existing contact chat (early creation):", existingChatError);
+            }
+
+            let contactChatId: string | undefined;
+
+            if (existingChat?.id && existingChat.context_data?.initial_pending) {
+              // Reuse existing pending chat
+              contactChatId = existingChat.id;
+              console.log("✅ Reusing existing contact chat for early pregeneration:", contactChatId);
+              
+              // Update context data with latest summaries
+              const updatedContext = {
+                ...(existingChat.context_data ?? {}),
+                summary_a_perspective: summaryAPerspective,
+                summary_shared_neutral: finalSummarySharedNeutral,
+                thoughts_a: thoughtsA,
+                qa_pairs: pairs,
+                initial_description: initialDescription,
+                taggedEntities,
+                chat_title: normalizedTitle,
+                initial_pending: true,
+                sent_to_contact: false,
+              };
+
+              await supabase
+                .from("chats")
+                .update({ context_data: updatedContext })
+                .eq("id", contactChatId);
+            } else {
+              // Create new contact chat
+              const { data: newChat, error: createError } = await supabase
+                .from("chats")
+                .insert({
+                  user_id: user.id,
+                  contact_id: contactId,
+                  chat_type: "contact_chat",
+                  ai_source_chat_id: currentChatId,
+                  participants: [user.id, contactId],
+                  is_resolved: false,
+                  context_data: {
+                    initial_pending: true,
+                    sent_to_contact: false,
+                    summary_a_perspective: summaryAPerspective,
+                    summary_shared_neutral: finalSummarySharedNeutral,
+                    thoughts_a: thoughtsA,
+                    qa_pairs: pairs,
+                    initial_description: initialDescription,
+                    taggedEntities,
+                    chat_title: normalizedTitle,
+                  },
+                })
+                .select("id")
+                .single();
+
+              if (createError || !newChat?.id) {
+                console.warn("⚠️ Failed to create contact chat for early pregeneration:", createError);
+                return; // Don't block - user can still click "Send to contact" later
+              }
+
+              contactChatId = newChat.id;
+              console.log("✅ Created contact chat for early pregeneration:", contactChatId);
+            }
+
+            // ✅ Trigger pregeneration immediately (non-blocking)
+            if (contactChatId) {
+              console.log("⚡ Triggering early pregeneration for contact chat:", contactChatId);
+              supabase.functions.invoke("generate-pregenerated-turns", {
+                body: { chatId: contactChatId }
+              }).then(({ data, error }) => {
+                if (error) {
+                  console.warn("⚠️ Early pregeneration failed (non-critical):", error);
+                } else {
+                  console.log("✅ Early pregeneration completed:", data);
+                }
+              }).catch(err => {
+                console.warn("⚠️ Early pregeneration error (non-critical):", err);
+              });
+            }
+          } catch (err) {
+            console.warn("⚠️ Error in early chat creation/pregeneration (non-critical):", err);
+            // Don't block - user can still click "Send to contact" later
+          }
+        })();
+      }
     } catch (err) {
       console.error("Failed to generate summary:", err);
       Alert.alert("Error", "Failed to generate summary. Please try again.");
@@ -4725,9 +4845,12 @@ Respond ONLY with valid JSON:
           console.warn("⚠️ Failed checking for existing contact chat:", existingChatError);
         }
 
+        // ✅ REUSE existing chat if it exists (from early creation or previous attempt)
         if (existingChat?.id && existingChat.context_data?.initial_pending) {
           contactChatId = existingChat.id;
           reusedContactChat = true;
+          console.log("✅ Reusing existing contact chat (may have pregenerated turns from early creation):", contactChatId);
+          
           // ✅ Get both summaries from contextDataRef (set by generateSummary)
           const summaryAPerspective = contextDataRef.current?.summary_a_perspective || summary;
           // ✅ CRITICAL: Never use 'summary' state as fallback for summarySharedNeutral
@@ -4939,70 +5062,80 @@ Respond ONLY with valid JSON:
         .update({ conversation_phase: "discussion" })
         .eq("id", contactChatId);
 
-      await supabase.functions.invoke("generate-contextual-options", {
-        body: {
-          chatId: contactChatId,
-          recipientId: user.id,
-          currentUserId: user.id,
-          summary,
-          thoughts,
-          originalIssueSummary: summary,
-          currentMessage: `Starting conversation about: ${summary}`,
-          hintToContact,
-          conversationHistory: [],
-          isInitial: true,
-          contactCategory,
-          conversationPhase: 'warmup',
-          resolutionDetected: false,
-          
-        },
-      });
+      // ✅ CRITICAL: Check for pregenerated turns FIRST (from early creation)
+      // If they exist, skip generate-contextual-options entirely - use pregenerated turns only
+      const { data: existingPregens } = await supabase
+        .from("pregenerated_turns")
+        .select("id, turn_number, recipient_id")
+        .eq("chat_id", contactChatId)
+        .eq("recipient_id", user.id) // ✅ Check for User A's turns specifically (turn 0)
+        .is("used_at", null)
+        .limit(1);
 
-      let optionsReady = false;
-      let pollAttempts = 0;
-      const maxPollAttempts = 30;
+      if (existingPregens && existingPregens.length > 0) {
+        console.log("✅ Pregenerated turns already exist (from early creation) - skipping generate-contextual-options and pregeneration");
+        console.log("✅ User A will see options immediately from pregenerated_turns table");
+        // ✅ Skip generate-contextual-options entirely - pregenerated turns will be used
+      } else {
+        // ✅ Only call generate-contextual-options if pregenerated turns don't exist (fallback only)
+        console.log("ℹ️ No pregenerated turns found - generating contextual options as fallback");
+        await supabase.functions.invoke("generate-contextual-options", {
+          body: {
+            chatId: contactChatId,
+            recipientId: user.id,
+            currentUserId: user.id,
+            summary,
+            thoughts,
+            originalIssueSummary: summary,
+            currentMessage: `Starting conversation about: ${summary}`,
+            hintToContact,
+            conversationHistory: [],
+            isInitial: true,
+            contactCategory,
+            conversationPhase: 'warmup',
+            resolutionDetected: false,
+          },
+        });
 
-      while (!optionsReady && pollAttempts < maxPollAttempts) {
-        const { data: optionsCheck } = await supabase
-          .from("message_options")
-          .select("id, options")
-          .eq("chat_id", contactChatId!)
-          .eq("recipient_id", user.id)
-          .order("created_at", { ascending: false })
-          .limit(1);
+        let optionsReady = false;
+        let pollAttempts = 0;
+        const maxPollAttempts = 30;
 
-        if (optionsCheck && optionsCheck.length > 0 && optionsCheck[0].options.length >= 3) {
-          optionsReady = true;
-        } else {
-          pollAttempts++;
-          await new Promise(resolve => setTimeout(resolve, 800));
-        }
-      }
+        while (!optionsReady && pollAttempts < maxPollAttempts) {
+          const { data: optionsCheck } = await supabase
+            .from("message_options")
+            .select("id, options")
+            .eq("chat_id", contactChatId!)
+            .eq("recipient_id", user.id)
+            .order("created_at", { ascending: false })
+            .limit(1);
 
-      // 🔥 CRITICAL: Trigger pre-generation BEFORE navigation
-      // This ensures pre-generated turns exist when User A arrives at contact-chat
-      console.log("⚡ Triggering pre-generation before navigation...");
-      try {
-        const { data: pregenData, error: pregenError } = await supabase.functions.invoke(
-          "generate-pregenerated-turns",
-          {
-            body: { chatId: contactChatId }
+          if (optionsCheck && optionsCheck.length > 0 && optionsCheck[0].options.length >= 3) {
+            optionsReady = true;
+          } else {
+            pollAttempts++;
+            await new Promise(resolve => setTimeout(resolve, 800));
           }
-        );
-        if (pregenError) {
-          // ✅ FIX: Change to console.warn to prevent showing error to user
-          console.warn("⚠️ Pre-generation failed before navigation (non-critical):", pregenError);
-          // ✅ REMOVED: console.error details - don't show error details to user
-          // Continue navigation even if pre-generation fails (non-blocking)
-        } else {
-          console.log("✅ Pre-generation triggered successfully before navigation");
-          console.log("✅ Pre-generation response:", JSON.stringify(pregenData, null, 2));
         }
-      } catch (err) {
-        // ✅ FIX: Change to console.warn to prevent showing error to user
-        console.warn("⚠️ Error triggering pre-generation before navigation (non-critical):", err instanceof Error ? err.message : String(err));
-        // ✅ REMOVED: console.error details - don't show error details to user
-        // Continue navigation even if pre-generation fails (non-blocking)
+
+        // ✅ Only trigger pregeneration if it wasn't done early
+        console.log("⚡ Triggering pre-generation before navigation (fallback scenario)...");
+        try {
+          const { data: pregenData, error: pregenError } = await supabase.functions.invoke(
+            "generate-pregenerated-turns",
+            {
+              body: { chatId: contactChatId }
+            }
+          );
+          if (pregenError) {
+            console.warn("⚠️ Pre-generation failed before navigation (non-critical):", pregenError);
+          } else {
+            console.log("✅ Pre-generation triggered successfully before navigation");
+            console.log("✅ Pre-generation response:", JSON.stringify(pregenData, null, 2));
+          }
+        } catch (err) {
+          console.warn("⚠️ Error triggering pre-generation before navigation (non-critical):", err instanceof Error ? err.message : String(err));
+        }
       }
 
       router.push(
