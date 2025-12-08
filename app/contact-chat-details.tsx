@@ -161,7 +161,7 @@ function ContactChatDetailsScreen() {
   const [ongoingByContact, setOngoingByContact] = useState<ContactChat[]>([]);
   const [historyByCurrentUser, setHistoryByCurrentUser] = useState<ContactChat[]>([]);
   const [historyByContact, setHistoryByContact] = useState<ContactChat[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false); // ✅ PERFORMANCE: Show UI immediately, load data in background
   const [error, setError] = useState<string | null>(null);
   const [showConfirmationDialog, setShowConfirmationDialog] = useState(false);
   const [confirmationConfig, setConfirmationConfig] = useState<{
@@ -236,7 +236,7 @@ function ContactChatDetailsScreen() {
   const fetchContactAndChats = async () => {
     console.log('🔄 FETCH: Starting fetchContactAndChats for contactId:', contactId);
     try {
-      setLoading(true);
+      // ✅ PERFORMANCE: Don't block UI - load data in background
       setError(null);
 
       const { data: contactData, error: contactError } = await supabase
@@ -1079,16 +1079,7 @@ function ContactChatDetailsScreen() {
     );
   };
 
-  if (loading) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.loadingContainer}>
-          <LoadingSpinner size="large" />
-          <Text style={styles.loadingText}>Loading conversations...</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
+  // ✅ PERFORMANCE: Removed blocking loading screen - UI shows immediately while data loads in background
 
   if (error) {
     return (

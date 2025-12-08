@@ -235,7 +235,7 @@ const validContactChats = (contactChatsData || []).filter((chat: any) => {
   const isDirectContact = chat.user_id === user?.id
     || chat.contact_id === user?.id
     || (Array.isArray(chat.participants) && chat.participants.includes(user?.id));
-  const hasValidConversation = presence.hasAny || chat.last_message_at || chat.last_message;
+  const hasValidConversation = presence.hasAny || (chat.last_message && chat.last_message.trim() !== '');
   const isResolved = chat.is_resolved || chat.context_data?.is_resolved;
 
   return isDirectContact && (hasValidConversation || isResolved);
@@ -277,7 +277,7 @@ validContactChats.forEach((chat: any) => {
     contact_id: contactId,
     contact_name: contactProfile?.full_name || contactProfile?.email || 'Unknown',
     contact_email: contactProfile?.email || '',
-    last_message: chat.last_message || 'New conversation started',
+    last_message: chat.last_message || null,
     last_message_at: chat.last_message_at,
     last_sender_id: latestMsg?.sender_id ?? null,
     session_count: 1,
@@ -302,7 +302,7 @@ validContactChats.forEach((chat: any) => {
         new Date(chat.last_message_at) >
           new Date(existingContact.last_message_at))
     ) {
-      existingContact.last_message = chat.last_message || 'New conversation started';
+      existingContact.last_message = chat.last_message || null;
       existingContact.last_message_at = chat.last_message_at;
       existingContact.last_sender_id = latestMsg?.sender_id ?? existingContact.last_sender_id ?? null;
     }

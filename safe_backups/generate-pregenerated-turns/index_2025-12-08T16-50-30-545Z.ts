@@ -219,36 +219,18 @@ const messagesData = (rawMessages || []).sort(
       sequence: firstTurnRole === "A" ? "A→B→A" : "B→A→B"
     });
 
-    // ✅ CRITICAL FIX: If hint is provided, check if current turn is active (exists but not selected)
-    // If current turn is active, skip it and regenerate from NEXT turn to keep frontend/backend in sync
-    // GENERAL RULE: If turn X exists AND selected_message = null, that turn is ACTIVE and must NEVER be regenerated
+    // ✅ CRITICAL FIX: If hint is provided, always regenerate exactly 3 consecutive turns [X, X+1, X+2]
+    // NEVER skip turn X - always generate complete batch from startingTurnNumber
     const hasHint = !!hintFromBParam || !!hintFromB;
     if (hasHint) {
-      // ✅ CRITICAL: Check if the current turn (startingTurnNumber) exists and is NOT selected yet
-      // This means a user is actively viewing these options - we must NOT regenerate them
-      const { data: currentTurnCheck } = await supabase
-        .from('pregenerated_turns')
-        .select('turn_number, selected_message')
-        .eq('chat_id', chatId)
-        .eq('turn_number', startingTurnNumber)
-        .single();
+      // ✅ FIX: Always generate [X, X+1, X+2] regardless of whether X is A-turn or B-turn
+      // This ensures no gaps in the sequence, even when User A has already selected a message
+      const batchStart = startingTurnNumber;
+      const batchEnd = startingTurnNumber + 2;
       
-      const isCurrentTurnActive = currentTurnCheck && currentTurnCheck.selected_message === null;
-      
-      let batchStart = startingTurnNumber;
-      if (isCurrentTurnActive) {
-        // ✅ Current turn is active (user viewing but not selected) - skip it to keep frontend/backend in sync
-        batchStart = startingTurnNumber + 1;
-        console.log(`🔄 Hint provided - current turn ${startingTurnNumber} is active (not selected), skipping to preserve frontend display. Regenerating from turn ${batchStart} onwards`);
-      } else {
-        console.log(`🔄 Hint provided - current turn ${startingTurnNumber} not active or already selected, regenerating from turn ${batchStart}`);
-      }
-      
-      const batchEnd = batchStart + 2;
-      console.log(`🔄 Regenerating batch [${batchStart}, ${batchStart + 1}, ${batchEnd}] (always 3 consecutive turns)`);
+      console.log(`🔄 Hint provided - regenerating batch [${batchStart}, ${batchStart + 1}, ${batchEnd}] (always 3 consecutive turns, no skipping)`);
       
       // ✅ FIX: Delete only unused turns in this batch (preserve turns with selected_message)
-      // NEVER delete or regenerate the active turn
       const { error: deleteBatchError } = await supabase
         .from('pregenerated_turns')
         .delete()

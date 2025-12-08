@@ -219,36 +219,28 @@ const messagesData = (rawMessages || []).sort(
       sequence: firstTurnRole === "A" ? "A→B→A" : "B→A→B"
     });
 
-    // ✅ CRITICAL FIX: If hint is provided, check if current turn is active (exists but not selected)
-    // If current turn is active, skip it and regenerate from NEXT turn to keep frontend/backend in sync
-    // GENERAL RULE: If turn X exists AND selected_message = null, that turn is ACTIVE and must NEVER be regenerated
+    // ✅ CRITICAL FIX: If hint is provided, always regenerate exactly 3 turns
+    // Rule: Hint on B-turn → regenerate [X, X+1, X+2]
+    //       Hint on A-turn → regenerate [X+1, X+2, X+3] (skip X to avoid disturbing User A)
     const hasHint = !!hintFromBParam || !!hintFromB;
     if (hasHint) {
-      // ✅ CRITICAL: Check if the current turn (startingTurnNumber) exists and is NOT selected yet
-      // This means a user is actively viewing these options - we must NOT regenerate them
-      const { data: currentTurnCheck } = await supabase
-        .from('pregenerated_turns')
-        .select('turn_number, selected_message')
-        .eq('chat_id', chatId)
-        .eq('turn_number', startingTurnNumber)
-        .single();
+      const isBTurn = startingTurnNumber % 2 === 1; // Odd = B-turn, Even = A-turn
+      let batchStart: number;
+      let batchEnd: number;
       
-      const isCurrentTurnActive = currentTurnCheck && currentTurnCheck.selected_message === null;
-      
-      let batchStart = startingTurnNumber;
-      if (isCurrentTurnActive) {
-        // ✅ Current turn is active (user viewing but not selected) - skip it to keep frontend/backend in sync
-        batchStart = startingTurnNumber + 1;
-        console.log(`🔄 Hint provided - current turn ${startingTurnNumber} is active (not selected), skipping to preserve frontend display. Regenerating from turn ${batchStart} onwards`);
+      if (isBTurn) {
+        // Hint on B-turn → regenerate [X, X+1, X+2] (3 turns)
+        batchStart = startingTurnNumber;
+        batchEnd = startingTurnNumber + 2;
+        console.log(`🔄 Hint provided on B-turn (${startingTurnNumber}) - regenerating batch [${batchStart}, ${batchStart + 1}, ${batchEnd}]`);
       } else {
-        console.log(`🔄 Hint provided - current turn ${startingTurnNumber} not active or already selected, regenerating from turn ${batchStart}`);
+        // Hint on A-turn → regenerate [X+1, X+2, X+3] (3 turns, skip X to avoid disturbing User A)
+        batchStart = startingTurnNumber + 1;
+        batchEnd = startingTurnNumber + 3;
+        console.log(`🔄 Hint provided on A-turn (${startingTurnNumber}) - regenerating batch [${batchStart}, ${batchStart + 1}, ${batchEnd}] (skipping turn ${startingTurnNumber} to avoid disturbing User A)`);
       }
       
-      const batchEnd = batchStart + 2;
-      console.log(`🔄 Regenerating batch [${batchStart}, ${batchStart + 1}, ${batchEnd}] (always 3 consecutive turns)`);
-      
-      // ✅ FIX: Delete only unused turns in this batch (preserve turns with selected_message)
-      // NEVER delete or regenerate the active turn
+      // ✅ FIX 3: Delete only unused turns in this batch (preserve turns with selected_message)
       const { error: deleteBatchError } = await supabase
         .from('pregenerated_turns')
         .delete()
@@ -739,23 +731,17 @@ Use this history to understand the conversation flow and ensure your generated t
       });
     }
 
-    // ✅ FIX 4: Allow fewer than 3 inserts if some turns already exist (prevents gaps)
-    if (inserts.length === 0) {
-      console.log('ℹ️ All turns already exist - no insertion needed');
+    if (inserts.length !== 3) {
       return new Response(JSON.stringify({
-        success: true,
-        stored: 0,
-        message: 'All turns already exist - preserved existing turns',
-        startingTurnNumber,
-        existingTurnNumbers
+        error: 'Failed to prepare all 3 turns for insertion',
+        details: `Only ${inserts.length} valid turns found`
       }), {
-        status: 200,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        status: 500,
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/json'
+        }
       });
-    }
-    
-    if (inserts.length < 3) {
-      console.log(`ℹ️ Only ${inserts.length} turns need to be inserted (${3 - inserts.length} already exist)`);
     }
 
     console.log("🟩 Inserts:", JSON.stringify(inserts, null, 2));
@@ -773,8 +759,8 @@ Use this history to understand the conversation flow and ensure your generated t
     // This ensures full audit trail while keeping active table clean
     // No need to delete old used turns here - they'll be archived on closure
 
-    // ✅ FIX 4: Insert only missing turns (ensures sequential storage without gaps)
-    console.log(`💾 Inserting ${inserts.length} pre-generated turn(s) (ensuring sequential storage)...`);
+    // Insert all turns
+    console.log("💾 Inserting 3 pre-generated turns...");
     const { data: insertedData, error: insertError } = await supabase
       .from("pregenerated_turns")
       .insert(inserts)
@@ -827,11 +813,11 @@ Use this history to understand the conversation flow and ensure your generated t
       });
     }
 
-    if (!insertedData || insertedData.length === 0) {
-      console.error("❌ Insert succeeded but no rows returned:", insertedData?.length || 0);
+    if (!insertedData || insertedData.length !== 3) {
+      console.error("❌ Insert succeeded but wrong number of rows:", insertedData?.length || 0);
       return new Response(JSON.stringify({
-        error: 'Failed to store pre-generated turns',
-        details: `Expected at least 1 row, got ${insertedData?.length || 0}`
+        error: 'Failed to store all pre-generated turns',
+        details: `Expected 3 rows, got ${insertedData?.length || 0}`
       }), {
         status: 500,
         headers: {
@@ -841,34 +827,15 @@ Use this history to understand the conversation flow and ensure your generated t
       });
     }
 
-    // ✅ FIX 4: Verify all expected turns exist (check for gaps)
-    const insertedTurnNumbers = insertedData.map((t: any) => t.turn_number);
-    const allExpectedTurns = [startingTurnNumber, startingTurnNumber + 1, startingTurnNumber + 2];
-    const finalCheck = await supabase
-      .from('pregenerated_turns')
-      .select('turn_number')
-      .eq('chat_id', chatId)
-      .in('turn_number', allExpectedTurns);
-    
-    const finalTurnNumbers = finalCheck.data?.map((t: any) => t.turn_number) || [];
-    const hasAllTurns = allExpectedTurns.every(tn => finalTurnNumbers.includes(tn));
-    
-    if (!hasAllTurns) {
-      const missing = allExpectedTurns.filter(tn => !finalTurnNumbers.includes(tn));
-      console.warn(`⚠️ Gap detected in turn sequence - missing turn numbers: ${missing.join(', ')}`);
-    } else {
-      console.log(`✅ All turns stored sequentially: ${finalTurnNumbers.sort((a, b) => a - b).join(', ')}`);
-    }
-
-    console.log(`✅ Successfully stored ${insertedData.length} pre-generated turn(s) starting from turn_number ${startingTurnNumber}`);
+    console.log('✅ Successfully generated and stored 3 pre-generated turns');
     console.log('✅ Inserted turn IDs:', insertedData.map((t: any) => ({ id: t.id, turn_number: t.turn_number, recipient_id: t.recipient_id })));
+    console.log(`✅ Successfully generated and stored 3 pre-generated turns starting from turn_number ${startingTurnNumber}`);
 
     return new Response(JSON.stringify({
       success: true,
-      stored: insertedData.length,
+      stored: 3,
       startingTurnNumber: startingTurnNumber,
-      turnNumbers: finalTurnNumbers.sort((a, b) => a - b), // Return all turns in sequence
-      insertedTurnNumbers: insertedTurnNumbers
+      turnNumbers: insertedData.map((t: any) => t.turn_number)
     }), {
       status: 200,
       headers: {

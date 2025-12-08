@@ -7,9 +7,11 @@ interface AuthContextType {
   session: Session | null;
   user: User | null;
   loading: boolean;
+  isRestoringSession: boolean; // Track if we're currently restoring session
   signUp: (email: string, password: string, fullName: string) => Promise<any>;
   signIn: (email: string, password: string) => Promise<any>;
   signOut: () => Promise<void>;
+  isPasswordRecoverySession: (session: Session | null) => boolean;
 }
 
 import { notificationService } from './NotificationService';
@@ -21,14 +23,52 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isRecoverySession, setIsRecoverySession] = useState(false);
+  const [isRestoringSession, setIsRestoringSession] = useState(true); // Start as true during initial restore
+
+  // ✅ Helper to detect if we're on a password reset flow route
+  // Prevents flickering by blocking ALL auth state updates during password reset
+  const isPasswordResetRoute = () => {
+    if (Platform.OS !== 'web') return false;
+    if (typeof window === 'undefined') return false;
+    const p = window.location.pathname || '';
+    return p.includes('reset-password') || p.includes('enter-otp');
+  };
 
   useEffect(() => {
     let cancelled = false;
     let interactionHandle: ReturnType<typeof InteractionManager.runAfterInteractions> | null = null;
 
-    const runRestoreSession = async () => {
+    // Track if this is the initial session restore (app startup)
+    let isInitialRestore = true;
+
+    const runRestoreSession = async (isInitial: boolean = false) => {
       if (cancelled) return;
-      console.log("🔄 restoreSession() start");
+      
+      // ✅ BLOCK: If on password reset route, only set loading=false, do NOT update session/user
+      if (isPasswordResetRoute()) {
+        console.log("🔒 restoreSession() blocked during password reset - only setting loading=false");
+        if (!cancelled) {
+          setLoading(false);
+          if (isInitial) {
+            setTimeout(() => {
+              if (!cancelled) {
+                setIsRestoringSession(false);
+              }
+            }, 100);
+          }
+        }
+        return; // Exit early - do NOT call getSession() or update any state
+      }
+      
+      console.log("🔄 restoreSession() start", isInitial ? "(initial)" : "(refresh)");
+      
+      // Only mark as restoring session during INITIAL restore to prevent navigation
+      // Subsequent refreshes (on focus/visibility) should NOT set this flag
+      if (isInitial && !cancelled) {
+        setIsRestoringSession(true);
+      }
+      
       try {
         const { data, error } = await supabase.auth.getSession();
         console.log("🔍 getSession returned:", data, error);
@@ -45,8 +85,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         if (data?.session) {
           if (!cancelled) {
-            setSession(data.session);
-            setUser(data.session.user);
+            // Check if this is a recovery session (check user metadata for recovery indicators)
+            const sess = data.session;
+            const recoverySentAt = sess.user?.user_metadata?.recovery_sent_at;
+            const hasRecoveryFlag = sess.user?.app_metadata?.is_password_recovery;
+            const isRecovery = recoverySentAt || hasRecoveryFlag;
+            
+            setSession(sess);
+            setUser(sess.user);
+            setIsRecoverySession(isRecovery);
+            
+            if (isRecovery) {
+              console.log("🔑 Restored session is a password recovery session");
+            }
           }
         } else {
           console.log("❎ No session data in this tab");
@@ -60,26 +111,53 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } finally {
         if (!cancelled) {
           setLoading(false);
+          // Only clear isRestoringSession after initial restore
+          if (isInitial) {
+            // Mark session restore as complete after a brief delay to prevent navigation during state updates
+            setTimeout(() => {
+              if (!cancelled) {
+                setIsRestoringSession(false);
+              }
+            }, 100);
+          }
           console.log("✅ restoreSession ended, loading=false");
         }
       }
     };
 
-    const scheduleRestoreSession = () => {
+    const scheduleRestoreSession = (isInitial: boolean = false) => {
       if (Platform.OS === "web") {
-        runRestoreSession();
+        runRestoreSession(isInitial);
         return;
       }
       interactionHandle?.cancel?.();
       interactionHandle = InteractionManager.runAfterInteractions(() => {
-        runRestoreSession();
+        runRestoreSession(isInitial);
       });
     };
 
-    const webFocusHandler = () => scheduleRestoreSession();
+    // ✅ Focus/visibility handlers: Only refresh session silently, don't set isRestoringSession
+    // This prevents navigation blocks when app comes back to foreground
+    const webFocusHandler = () => {
+      // Silently refresh session without setting isRestoringSession
+      // This allows TabLayout to work normally when app comes to foreground
+      if (isInitialRestore) {
+        // First time only - this is the initial restore
+        scheduleRestoreSession(true);
+        isInitialRestore = false;
+      } else {
+        // Subsequent refreshes - don't set isRestoringSession
+        scheduleRestoreSession(false);
+      }
+    };
     const visibilityHandler = () => {
       if (typeof document !== "undefined" && document.visibilityState === "visible") {
-        scheduleRestoreSession();
+        if (isInitialRestore) {
+          scheduleRestoreSession(true);
+          isInitialRestore = false;
+        } else {
+          scheduleRestoreSession(false);
+        }
       }
     };
 
@@ -92,14 +170,55 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       window.addEventListener("visibilitychange", visibilityHandler);
     }
 
-    scheduleRestoreSession();
+    scheduleRestoreSession(true); // Initial restore on app startup
 
     const { data: listener } = supabase.auth.onAuthStateChange((event, sess) => {
+      // ✅ STRONG GUARD: Block ALL auth state updates during password reset flow
+      // This MUST run at the VERY TOP before ANY state updates or console.log
+      if (isPasswordResetRoute()) {
+        console.log("🔒 Ignoring auth state change during password reset:", event);
+        
+        // Allow ONLY the initial PASSWORD_RECOVERY event
+        if (event === 'PASSWORD_RECOVERY' && sess && !cancelled) {
+          setSession(sess);
+          setUser(sess.user);
+          setIsRecoverySession(true);
+        }
+        
+        // STOP all other updates - do NOT call:
+        // - setSession()
+        // - setUser()
+        // - setLoading(false)
+        // - setIsRecoverySession()
+        // - profile creation
+        // - notification initialization
+        return;
+      }
+      
       console.log("🔔 onAuthStateChange:", event, sess);
+      
+      // Normal flow: Update session and user for all events
       if (!cancelled) {
         setSession(sess);
         setUser(sess?.user ?? null);
         setLoading(false);
+      }
+
+      // ✅ Handle PASSWORD_RECOVERY event - do NOT treat as normal login
+      if (event === "PASSWORD_RECOVERY" && sess) {
+        console.log("🔑 PASSWORD_RECOVERY event detected - treating as temporary recovery session");
+        if (!cancelled) {
+          setSession(sess);
+          setUser(sess?.user ?? null);
+          setIsRecoverySession(true);
+        }
+        // Don't run normal SIGNED_IN logic for recovery sessions
+        return;
+      }
+
+      // ✅ Reset recovery flag for normal sign-ins
+      if (event === "SIGNED_IN" && sess) {
+        setIsRecoverySession(false);
       }
 
       // ✅ Handle token refresh to maintain session
@@ -117,6 +236,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (!cancelled) {
           setSession(null);
           setUser(null);
+          setIsRecoverySession(false);
         }
       }
 
@@ -181,6 +301,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!session) return;
 
     const refreshInterval = setInterval(async () => {
+      // ✅ BLOCK: Do NOT refresh session when on password reset route
+      if (isPasswordResetRoute()) {
+        console.log("🔒 Periodic session refresh blocked during password reset");
+        return;
+      }
+      
       try {
         const { data, error } = await supabase.auth.getSession();
         if (error) {
@@ -403,8 +529,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (error) throw error;
   };
 
+  // ✅ Helper function to check if a session is a password recovery session
+  const isPasswordRecoverySession = (sess: Session | null): boolean => {
+    if (!sess) return false;
+    
+    // Check if we've marked this as a recovery session
+    if (isRecoverySession) return true;
+    
+    // Check user metadata for recovery indicators
+    // Supabase recovery sessions may have recovery_sent_at in user metadata
+    const recoverySentAt = sess.user?.user_metadata?.recovery_sent_at;
+    const hasRecoveryFlag = sess.user?.app_metadata?.is_password_recovery;
+    
+    // Check if session was created via recovery OTP
+    // This can be detected by checking if user just authenticated via recovery
+    if (recoverySentAt || hasRecoveryFlag) {
+      return true;
+    }
+    
+    return false;
+  };
+
   return (
-    <AuthContext.Provider value={{ session, user, loading, signUp, signIn, signOut }}>
+    <AuthContext.Provider value={{ session, user, loading, isRestoringSession, signUp, signIn, signOut, isPasswordRecoverySession }}>
       {loading ? (
         Platform.OS === 'web' ? (
           <div style={{ textAlign: 'center', marginTop: 50 }}>Loading…</div>

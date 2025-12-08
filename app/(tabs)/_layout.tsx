@@ -1,4 +1,4 @@
-import { Tabs, useRouter } from 'expo-router';
+import { Tabs, useRouter, useSegments } from 'expo-router';
 import { MessageCircle, Users, Heart, Settings } from 'lucide-react-native';
 import { useChatBadge } from '@/contexts/ChatBadgeContext';
 import { View, Text, StyleSheet } from 'react-native';
@@ -7,19 +7,37 @@ import { useEffect } from 'react';
 
 function TabLayout() {
   const { unreadContactCount } = useChatBadge();
-  const { user, loading } = useAuth();
+  const { user, loading, isRestoringSession } = useAuth();
   const router = useRouter();
+  const segments = useSegments();
 
-  // ✅ FIX: Navigation guard - redirect to landing if not authenticated
-  // This prevents users from accessing tabs after signing out
+  // ✅ FIX: Navigation guard - redirect to signin ONLY when truly unauthenticated
+  // Do NOT redirect during session restore or when user is on non-tabs routes
   useEffect(() => {
-    if (!loading && !user) {
-      // User is not authenticated, redirect to landing page immediately
-      console.log('🚫 User not authenticated, redirecting to landing page');
-      // Use replace to prevent back navigation
-      router.replace('/');
+    const publicRoutes = [
+      '/reset-password',
+      '/enter-otp',
+      '/(auth)/signin',
+      '/(auth)/signup',
+      '/accept-invitation'
+    ];
+
+    // Construct current pathname from segments
+    const currentPathname = '/' + segments.join('/');
+
+    // Only redirect if:
+    // 1. Not loading
+    // 2. Not restoring session (prevents redirect during temporary session=null)
+    // 3. User is not authenticated
+    // 4. Current route is NOT a public route
+    // 5. We're actually inside the tabs group (segments start with 'tabs')
+    const isInTabsGroup = segments.length > 0 && segments[0] === '(tabs)';
+    
+    if (!loading && !isRestoringSession && !user && !publicRoutes.includes(currentPathname) && isInTabsGroup) {
+      console.log('🚫 User not authenticated in tabs, redirecting to signin');
+      router.replace('/(auth)/signin');
     }
-  }, [user, loading, router]);
+  }, [user, loading, isRestoringSession, router, segments]);
 
   return (
     <Tabs

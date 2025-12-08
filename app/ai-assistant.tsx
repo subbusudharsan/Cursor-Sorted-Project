@@ -36,7 +36,7 @@ function AIAssistantScreen() {
   const { user } = useAuth();
   const { contactId } = useLocalSearchParams<{ contactId?: string }>();
   const [conversations, setConversations] = useState<AIConversation[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false); // ✅ PERFORMANCE: Show UI immediately, load data in background
   const [contactName, setContactName] = useState('');
 
 // 🧠 Multi-select state like old version
@@ -52,11 +52,7 @@ const fetchConversations = useCallback(async () => {
     }
 
     try {
-      // ✅ Only show loading spinner on initial load, not on refresh
-      // This makes navigation feel instant when returning from AI chat
-      if (conversations.length === 0) {
-        setLoading(true);
-      }
+      // ✅ PERFORMANCE: Load data in background without blocking UI
       console.log('📥 Fetching AI conversations for user:', user?.id);
 
       const { data: chatsData, error } = await supabase
@@ -395,11 +391,15 @@ const fetchConversations = useCallback(async () => {
         console.warn('⚠️ Error looking up related contact chat:', lookupError);
       }
 
-      if (contactChatId) {
+      // ✅ Check if user has actually sent a message (sent_to_contact === true)
+      // If not, return to Stage 3 instead of navigating to contact chat
+      const hasSentMessage = conversation.context_data?.sent_to_contact === true;
+
+      if (contactChatId && hasSentMessage) {
         console.log('✅ Opening contact chat', contactChatId);
         router.push(`/contact-chat?chatId=${contactChatId}&contactId=${contactIdToUse}&isOngoing=true`);
       } else {
-        console.log('ℹ️ Related contact chat not found, returning to AI preparation view');
+        console.log('ℹ️ Returning to AI preparation view (Stage 3) - no message sent yet');
         router.push({
           pathname: '/ai-chat',
           params: {
@@ -470,16 +470,7 @@ const fetchConversations = useCallback(async () => {
     return truncated;
   };
 
-  if (loading) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color={Colors.primary[500]} />
-          <Text style={styles.loadingText}>Loading AI Assistant...</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
+  // ✅ PERFORMANCE: Removed blocking loading screen - UI shows immediately while data loads in background
 
   const progressPercent = (conversations.length / MAX_CONVERSATIONS) * 100;
   const isLimitReached = conversations.length >= MAX_CONVERSATIONS;

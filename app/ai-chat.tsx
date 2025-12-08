@@ -144,6 +144,9 @@ function AIChatScreen() {
   // ✅ Cost optimization: Track original values when entering edit mode
   const [originalQAPairsForEdit, setOriginalQAPairsForEdit] = useState<QAPair[]>([]);
   const [originalAdditionalInfoForEdit, setOriginalAdditionalInfoForEdit] = useState("");
+  // ✅ NEW: Track original values when navigating from Stage 3 to Stage 1/2
+  const [originalInitialDescriptionForStage1, setOriginalInitialDescriptionForStage1] = useState<string>("");
+  const [originalQAPairsForStage2, setOriginalQAPairsForStage2] = useState<QAPair[]>([]);
   const editScrollViewRef = useRef<ScrollView>(null);
   const contextDataRef = useRef<Record<string, any>>({});
 
@@ -689,7 +692,42 @@ Context (brief):
         setLoading(false);
         setInitializing(false);
         
-        if (chatIdValue) {
+        // ✅ PERFORMANCE OPTIMIZATION: Check if data is already in state
+        // If we have summary and other data, skip DB fetch and show Stage 3 immediately
+        const hasExistingData = summary.trim() !== '' || 
+                                contextDataRef.current?.summary_a_perspective?.trim() !== '' ||
+                                (qaPairs.length > 0 && initialDescription.trim() !== '');
+        
+        if (hasExistingData && currentChatId === chatIdValue) {
+          // ✅ Data already in state - show Stage 3 immediately (no DB fetch needed)
+          console.log('✅ Using existing state data - skipping DB fetch for faster load');
+          setFlowStage('summary');
+          setLoading(false);
+          setInitializing(false);
+          
+          // ✅ Lightweight check for sent status in background (non-blocking)
+          if (chatIdValue) {
+            (async () => {
+              try {
+                const { data: chatData } = await supabase
+                  .from('chats')
+                  .select('context_data')
+                  .eq('id', chatIdValue)
+                  .single();
+                
+                const actuallySent = chatData?.context_data?.sent_to_contact === true;
+                if (!actuallySent) {
+                  setLoading(false);
+                  setInitializing(false);
+                }
+              } catch (error) {
+                // Silent fail - not critical for UI
+                console.log('ℹ️ Could not check sent status:', error);
+              }
+            })();
+          }
+        } else if (chatIdValue) {
+          // ✅ Data not in state - fetch from DB
           (async () => {
             try {
               await loadExistingChat();
@@ -2280,6 +2318,48 @@ const inferEntityCategory = (name: string): string => {
       return;
     }
 
+    // ✅ COST OPTIMIZATION: Check if initialDescription changed when navigating from Stage 3
+    const initialDescriptionChanged = originalInitialDescriptionForStage1.trim() !== initialDescription.trim();
+    
+    if (!initialDescriptionChanged && originalInitialDescriptionForStage1.trim() !== "" && preGeneratedQuestions.length > 0) {
+      // ✅ No changes detected - restore existing questions and skip API call
+      console.log('✅ No changes detected in Stage 1 - restoring existing questions (cost optimization)');
+      setFlowStage("qa");
+      setCurrentQuestionIndex(0);
+      setCurrentQuestion(preGeneratedQuestions[0]);
+      setQuestionCount(1);
+      setCurrentAnswerSaved(false);
+      setCurrentAnswerSavedText('');
+      
+      // Clear the tracking since we're using existing questions
+      setOriginalInitialDescriptionForStage1("");
+      
+      const shouldResetSession =
+        !contextDataRef.current?.session_started_at || qaPairs.length === 0;
+      const sessionStartedAt = shouldResetSession
+        ? new Date().toISOString()
+        : contextDataRef.current?.session_started_at;
+
+      const contextPatch: Record<string, any> = {
+        chat_title: normalizedTitle,
+        initial_description: initialDescription,
+        taggedEntities,
+        flowStage: 'qa',
+      };
+
+      if (shouldResetSession && sessionStartedAt) {
+        contextPatch.session_started_at = sessionStartedAt;
+      }
+
+      await updateChatRecord(
+        {
+          session_name: normalizedTitle,
+        },
+        contextPatch
+      );
+      return; // ✅ Skip API call - cost optimization
+    }
+
     setLoading(true);
     try {
       const wordCount = initialDescription.trim().split(/\s+/).length;
@@ -2293,6 +2373,9 @@ const inferEntityCategory = (name: string): string => {
       } else {
         await generateFirstQuestion();
       }
+      
+      // Clear tracking after generating new questions
+      setOriginalInitialDescriptionForStage1("");
     } finally {
       setLoading(false);
     }
@@ -3775,6 +3858,41 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
         throw new Error('No chat ID available');
       }
 
+      // ✅ COST OPTIMIZATION: Check if qaPairs changed when navigating from Stage 3
+      const qaPairsChanged = !areQAPairsEqual(pairs, originalQAPairsForStage2);
+      
+      if (!qaPairsChanged && originalQAPairsForStage2.length > 0 && summary.trim() !== "") {
+        // ✅ No changes detected - restore existing summary and skip API call
+        console.log('✅ No changes detected in Stage 2 - restoring existing summary (cost optimization)');
+        
+        // Restore existing summary from contextDataRef or state
+        const existingSummary = contextDataRef.current?.summary_a_perspective || summary || '';
+        const existingThoughts = contextDataRef.current?.thoughts_a || thoughts || '';
+        const existingNeutralSummary = contextDataRef.current?.summary_shared_neutral || '';
+        
+        setSummary(existingSummary);
+        setThoughts(existingThoughts);
+        
+        // Update contextDataRef to ensure consistency
+        contextDataRef.current = {
+          ...contextDataRef.current,
+          summary: existingSummary,
+          summary_a: existingSummary,
+          summary_a_perspective: existingSummary,
+          summary_shared_neutral: existingNeutralSummary,
+          thoughts_a: existingThoughts,
+        };
+        
+        // Clear the tracking since we're using existing summary
+        setOriginalQAPairsForStage2([]);
+        
+        setIsSummaryUnclear(false);
+        setFlowStage("summary");
+        setLoading(false);
+        setIsGeneratingSummary(false);
+        return; // ✅ Skip API call - cost optimization
+      }
+
       // ✅ Fetch all entities from entity_registry
       const { data: entitiesFromRegistry, error: entitiesError } = await supabase
         .from('entity_registry')
@@ -3981,6 +4099,9 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
 
       setIsSummaryUnclear(false);  // ✅ Clear unclear flag after successful generation
       setFlowStage("summary");
+      
+      // Clear tracking after generating new summary
+      setOriginalQAPairsForStage2([]);
 
       // ✅ NEW: Create contact chat and pregenerate options immediately when summary is ready
       // This ensures options are ready when user clicks "Send to contact" (no delay)
@@ -4025,10 +4146,17 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
                 sent_to_contact: false,
               };
 
-              await supabase
+              const { error: updateError } = await supabase
                 .from("chats")
                 .update({ context_data: updatedContext })
                 .eq("id", contactChatId);
+              
+              if (updateError) {
+                console.error("❌ Failed to update context_data for early pregeneration:", updateError);
+                return; // Don't proceed if update failed
+              }
+              
+              console.log("✅ Updated context_data for early pregeneration");
             } else {
               // Create new contact chat
               const { data: newChat, error: createError } = await supabase
@@ -4064,20 +4192,45 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
               console.log("✅ Created contact chat for early pregeneration:", contactChatId);
             }
 
-            // ✅ Trigger pregeneration immediately (non-blocking)
+            // ✅ CRITICAL: Trigger pregeneration immediately and wait for completion
+            // This ensures turns 0,1,2 are stored before user clicks "Send to contact"
             if (contactChatId) {
               console.log("⚡ Triggering early pregeneration for contact chat:", contactChatId);
-              supabase.functions.invoke("generate-pregenerated-turns", {
-                body: { chatId: contactChatId }
-              }).then(({ data, error }) => {
+              
+              // ✅ Wait a moment for database to commit the context_data update
+              await new Promise(resolve => setTimeout(resolve, 500));
+              
+              try {
+                const { data, error } = await supabase.functions.invoke("generate-pregenerated-turns", {
+                  body: { chatId: contactChatId }
+                });
+                
                 if (error) {
-                  console.warn("⚠️ Early pregeneration failed (non-critical):", error);
+                  // ✅ SILENT ERROR HANDLING: Pre-generation errors are logged but not shown to users
+                  console.error("❌ Early pregeneration failed:", error);
+                  // Silently fail - no user-facing error
+                  // Retry once after a delay
+                  await new Promise(resolve => setTimeout(resolve, 1000));
+                  const { data: retryData, error: retryError } = await supabase.functions.invoke("generate-pregenerated-turns", {
+                    body: { chatId: contactChatId }
+                  });
+                  if (retryError) {
+                    console.error("❌ Early pregeneration retry also failed:", retryError);
+                  } else {
+                    console.log("✅ Early pregeneration completed on retry:", retryData);
+                  }
                 } else {
-                  console.log("✅ Early pregeneration completed:", data);
+                  console.log("✅ Early pregeneration completed successfully:", data);
+                  // Verify turns were stored
+                  if (data?.stored === 3 || data?.success === true) {
+                    console.log("✅ Confirmed: 3 pregenerated turns (0,1,2) are now stored in database");
+                  }
                 }
-              }).catch(err => {
-                console.warn("⚠️ Early pregeneration error (non-critical):", err);
-              });
+              } catch (err) {
+                // ✅ SILENT ERROR HANDLING: Pre-generation errors are logged but not shown to users
+                console.error("❌ Early pregeneration error:", err);
+                // Silently fail - no user-facing error
+              }
             }
           } catch (err) {
             console.warn("⚠️ Error in early chat creation/pregeneration (non-critical):", err);
@@ -5323,13 +5476,23 @@ Respond ONLY with valid JSON:
 
       <View style={styles.stageFooter}>
         <View style={styles.buttonColumn}>
-          <TouchableOpacity
-            style={[styles.fullWidthButton, styles.secondaryButton]}
-            onPress={handleSaveAndExit}
-            disabled={loading}
-          >
-            <Text style={styles.secondaryButtonText}>Save & Exit</Text>
-          </TouchableOpacity>
+          <View style={styles.buttonRow}>
+            <TouchableOpacity
+              style={[styles.secondaryButton, styles.halfButton]}
+              onPress={handleSaveAndExit}
+              disabled={loading}
+            >
+              <Text style={styles.secondaryButtonText}>Save & Exit</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.secondaryButton, styles.halfButton]}
+              onPress={() => router.push('/(tabs)/chats')}
+              disabled={loading}
+            >
+              <Text style={styles.secondaryButtonText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
 
           <TouchableOpacity
             style={[styles.fullWidthButton, styles.secondaryButton]}
@@ -5731,18 +5894,33 @@ Respond ONLY with valid JSON:
 
       <View style={styles.stageFooter}>
         <View style={styles.buttonColumn}>
-          <TouchableOpacity
-            style={[styles.fullWidthButton, styles.secondaryButton]}
-            onPress={handleSaveAndExit}
-            disabled={loading}
-          >
-            <Text style={styles.secondaryButtonText}>Save & Exit</Text>
-          </TouchableOpacity>
+          <View style={styles.buttonRow}>
+            <TouchableOpacity
+              style={[styles.secondaryButton, styles.halfButton]}
+              onPress={handleSaveAndExit}
+              disabled={loading}
+            >
+              <Text style={styles.secondaryButtonText}>Save & Exit</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.secondaryButton, styles.halfButton]}
+              onPress={() => router.push('/(tabs)/chats')}
+              disabled={loading}
+            >
+              <Text style={styles.secondaryButtonText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
 
           <View style={styles.buttonRow}>
             <TouchableOpacity
               style={[styles.secondaryButton, styles.halfButton]}
-              onPress={() => setFlowStage("welcome")}
+              onPress={() => {
+                // ✅ Track original values when navigating from Stage 3 to Stage 1
+                setOriginalInitialDescriptionForStage1(initialDescription);
+                setOriginalQAPairsForStage2(qaPairs);
+                setFlowStage("welcome");
+              }}
               disabled={loading}
             >
               <Text style={styles.secondaryButtonText}>Stage 1</Text>
@@ -6255,7 +6433,12 @@ Respond ONLY with valid JSON:
 
           <TouchableOpacity
             style={[styles.secondaryButton, styles.halfButton]}
-            onPress={() => setFlowStage("welcome")}
+            onPress={() => {
+              // ✅ Track original values when navigating from Stage 3 to Stage 1
+              setOriginalInitialDescriptionForStage1(initialDescription);
+              setOriginalQAPairsForStage2(qaPairs);
+              setFlowStage("welcome");
+            }}
             disabled={loading || initializing}
           >
             <Text style={styles.secondaryButtonText}>Stage 1</Text>

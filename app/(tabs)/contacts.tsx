@@ -285,9 +285,9 @@ function ContactsScreen() {
     try {
       const { data, error } = await supabase.functions.invoke('send-email-invite', {
         body: {
-          email: email.trim(),
-          inviter_name: user?.user_metadata?.full_name || user?.email || 'Someone',
-          inviter_email: user?.email,
+          email: email.trim()
+          //inviter_name: user?.user_metadata?.full_name || user?.email || 'Someone',
+          //inviter_email: user?.email,
         },
       });
 

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Animated, Platform } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
+import { router, useSegments } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/Colors';
 import Button from '@/components/ui/Button';
@@ -17,7 +17,8 @@ const webShadows = {
 
 export default function LandingExperience() {
   const insets = useSafeAreaInsets();
-  const { loading, user } = useAuth();
+  const { loading, user, session, isPasswordRecoverySession } = useAuth();
+  const segments = useSegments();
   const fadeAnim = React.useRef(new Animated.Value(0)).current;
   const slideAnim = React.useRef(new Animated.Value(50)).current;
   const pulseAnim = React.useRef(new Animated.Value(1)).current;
@@ -278,14 +279,35 @@ export default function LandingExperience() {
   });
 
 
-  // ✅ Redirect to tabs if user is already signed in
+  // ✅ Redirect to tabs ONLY on initial mount when loading completes
+  // Do NOT redirect on subsequent auth state changes (prevents navigation jumps)
+  const hasRedirectedRef = React.useRef(false);
   useEffect(() => {
-    if (!loading && user) {
-      // User is already signed in, redirect to tabs
-      console.log('✅ User already signed in, redirecting to tabs');
-      router.replace('/(tabs)/chats');
+    // Only redirect once when loading completes and user is authenticated
+    // Skip if already redirected or if still loading
+    if (hasRedirectedRef.current || loading) return;
+    
+    if (user && session) {
+      // Check if we're on a password reset route
+      const currentPath = '/' + segments.join('/');
+      const isPasswordResetRoute = currentPath.includes('/reset-password') || 
+                                   currentPath.includes('/enter-otp');
+      
+      // Check if this is a password recovery session - if so, do NOT redirect
+      if (isPasswordRecoverySession(session) || isPasswordResetRoute) {
+        console.log('🔑 Password recovery session or reset route detected - skipping redirect to tabs');
+        return;
+      }
+      
+      // Only redirect if we're on the landing page (index route)
+      // Don't redirect if user is already on another screen
+      if (currentPath === '/' || currentPath === '/index') {
+        console.log('✅ User already signed in on landing page, redirecting to tabs');
+        hasRedirectedRef.current = true;
+        router.replace('/(tabs)/chats');
+      }
     }
-  }, [loading, user]);
+  }, [loading]); // Only depend on loading - don't react to user/session changes
 
   if (loading) {
     return (

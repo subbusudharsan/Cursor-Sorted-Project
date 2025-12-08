@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -30,6 +30,9 @@ export default function EnterOTPScreen() {
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [otpTimeRemaining, setOtpTimeRemaining] = useState<number | null>(null); // Time in seconds
+  const [otpExpired, setOtpExpired] = useState(false);
+  const [otpVerified, setOtpVerified] = useState(false); // Track if OTP was verified successfully
 
   const [notification, setNotification] = useState({
     visible: false,
@@ -41,8 +44,13 @@ export default function EnterOTPScreen() {
   // ✨ Smooth fade-in + slide animation
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(20)).current;
+  const hasAnimated = useRef(false);
 
   useEffect(() => {
+    // ✅ FIX: Guard animation to run only once
+    if (hasAnimated.current) return;
+    hasAnimated.current = true;
+    
     Animated.parallel([
       Animated.timing(fadeAnim, {
         toValue: 1,
@@ -65,9 +73,10 @@ export default function EnterOTPScreen() {
     }
   }, []);
 
-  const showNotification = (type: any, title: string, message?: string) => {
+  // ✅ FIX: Memoize showNotification
+  const showNotification = useCallback((type: any, title: string, message?: string) => {
     setNotification({ visible: true, type, title, message: message || '' });
-  };
+  }, []);
 
   // Validation logic
   const passwordValidation = useMemo(() => getPasswordErrors(newPassword), [newPassword]);
@@ -98,16 +107,63 @@ export default function EnterOTPScreen() {
     email.trim() &&
     otp.length === 6 &&
     passwordValid &&
-    passwordsMatch;
+    passwordsMatch &&
+    !otpExpired;
 
-  // OTP formatting (digits only)
-  const formatOtp = (value: string) => value.replace(/\D/g, '').slice(0, 6);
+  // ✅ FIX: Memoize OTP formatting function
+  const formatOtp = useCallback((value: string) => value.replace(/\D/g, '').slice(0, 6), []);
+
+  // ✅ FIX: Use refs for showNotification and router to prevent timer useEffect re-runs
+  const showNotificationRef = useRef(showNotification);
+  const routerRef = useRef(router);
+  
+  useEffect(() => {
+    showNotificationRef.current = showNotification;
+  }, [showNotification]);
+  
+  useEffect(() => {
+    routerRef.current = router;
+  }, [router]);
+
+  // ✅ OTP reuse timer: Countdown from 60 seconds AFTER first successful OTP verification
+  useEffect(() => {
+    if (!otpVerified || otpTimeRemaining === null || otpExpired) return;
+
+    if (otpTimeRemaining <= 0) {
+      // Timer expired - do NOT sign out, just disable and redirect
+      setOtpExpired(true);
+      showNotificationRef.current('error', 'OTP Expired', 'OTP expired — please request a new reset link.');
+      
+      // Redirect after 2-3 seconds (not immediately, don't sign out)
+      setTimeout(() => {
+        routerRef.current.replace('/(auth)/signin');
+      }, 2500);
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setOtpTimeRemaining(prev => {
+        if (prev === null || prev <= 1) {
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [otpVerified, otpTimeRemaining, otpExpired]);
 
   //........................................................
   //   HANDLE PASSWORD RESET
   //........................................................
   const handleResetPassword = async () => {
     const trimmedEmail = email.trim();
+
+    // Check if OTP has expired (only check if OTP was previously verified)
+    if (otpVerified && (otpExpired || (otpTimeRemaining !== null && otpTimeRemaining <= 0))) {
+      showNotification('error', 'OTP Expired', 'OTP expired — please request a new reset link.');
+      return;
+    }
 
     if (!trimmedEmail) {
       showNotification('error', 'Missing Email', 'Please enter your email.');
@@ -128,17 +184,42 @@ export default function EnterOTPScreen() {
 
     setLoading(true);
     try {
-      // Step 1: verify OTP → creates temporary session
-      const { data: verifyData, error: verifyError } = await supabase.auth.verifyOtp({
-        email: trimmedEmail,
-        token: otp,
-        type: 'recovery',
-      });
-      if (verifyError) throw new Error(verifyError.message);
+      let userId: string | undefined;
+      
+      // Step 1: Verify OTP ONLY if not already verified (allows reuse)
+      if (!otpVerified) {
+        const { data: verifyData, error: verifyError } = await supabase.auth.verifyOtp({
+          email: trimmedEmail,
+          token: otp,
+          type: 'recovery',
+        });
+        
+        if (verifyError) {
+          // ✅ OTP verification error: Show error, allow retry with same OTP
+          showNotification('error', 'OTP Error', verifyError.message);
+          setLoading(false);
+          return;
+        }
 
-      // Step 2: password policy validation
-      const userId = verifyData?.user?.id;
-      if (!userId) throw new Error('Unable to verify reset session.');
+        // ✅ OTP verified successfully - start 1-minute reuse timer
+        setOtpVerified(true);
+        setOtpTimeRemaining(60);
+        setOtpExpired(false);
+        
+        userId = verifyData?.user?.id;
+      } else {
+        // ✅ OTP already verified - reuse existing session
+        const { data: { user } } = await supabase.auth.getUser();
+        userId = user?.id;
+      }
+
+      // Step 2: Validate we have a user ID
+      if (!userId) {
+        // ✅ Session error: Show error, but don't clear session
+        showNotification('error', 'Session Error', 'Unable to verify reset session. Please try again.');
+        setLoading(false);
+        return;
+      }
 
       const { data: policyData, error: policyError } = await supabase.functions.invoke(
         'password-policy',
@@ -151,33 +232,107 @@ export default function EnterOTPScreen() {
         }
       );
 
-      if (policyError) throw new Error(policyError.message);
-      if (policyData?.error) throw new Error(policyData.error);
+      if (policyError) {
+        // ✅ Policy validation error: Do NOT sign out, allow retry with same OTP
+        showNotification('error', 'Validation Error', policyError.message);
+        setLoading(false);
+        return;
+      }
+      
+      if (policyData?.error) {
+        // ✅ Policy error (e.g., same password): Do NOT sign out, allow retry
+        showNotification('error', 'Password Error', policyData.error);
+        setLoading(false);
+        return;
+      }
 
       // Step 3: update password
       const { error: updateError } = await supabase.auth.updateUser({
         password: newPassword,
       });
-      if (updateError) throw new Error(updateError.message);
+      
+      if (updateError) {
+        // ✅ Update error: Do NOT sign out, allow retry with same OTP
+        showNotification('error', 'Update Error', updateError.message || 'Failed to update password. Please try again.');
+        setLoading(false);
+        return;
+      }
 
-      // Success
+      // ✅ SUCCESS: Password updated successfully
+      // Stop the OTP timer since we're redirecting
+      setOtpTimeRemaining(null);
+      
       showNotification(
         'success',
         'Password Reset',
         'Your password has been updated. Redirecting...'
       );
 
+      // ✅ ONLY after successful password update: sign out, wait 400ms, then navigate
+      await supabase.auth.signOut();
+      
       setTimeout(() => {
-        supabase.auth.signOut().then(() => {
-          router.replace('/(auth)/signin');
-        });
-      }, 1800);
+        router.replace('/(auth)/signin');
+      }, 400);
     } catch (err: any) {
-      showNotification('error', 'Reset Failed', err.message);
-    } finally {
+      // ✅ Error handling: Do NOT sign out, do NOT redirect - allow retry with same OTP
+      showNotification('error', 'Reset Failed', err.message || 'Failed to reset password. Please try again.');
       setLoading(false);
+      // Session remains active, user can retry with same OTP
     }
   };
+
+  // ✅ FIX: Memoize all onChangeText handlers
+  const handleEmailChange = useCallback((text: string) => {
+    setEmail(text);
+  }, []);
+
+  const handleOtpChange = useCallback((text: string) => {
+    const formatted = formatOtp(text);
+    setOtp(formatted);
+  }, [formatOtp]);
+
+  const handleNewPasswordChange = useCallback((text: string) => {
+    setNewPassword(text);
+  }, []);
+
+  const handleConfirmPasswordChange = useCallback((text: string) => {
+    setConfirmPassword(text);
+  }, []);
+
+  // ✅ FIX: Memoize toggle handlers
+  const toggleNewPasswordVisibility = useCallback(() => {
+    setShowNewPassword(prev => !prev);
+  }, []);
+
+  const toggleConfirmPasswordVisibility = useCallback(() => {
+    setShowConfirmPassword(prev => !prev);
+  }, []);
+
+  // ✅ FIX: Memoize dismiss handler
+  const handleDismissNotification = useCallback(() => {
+    setNotification(prev => ({ ...prev, visible: false }));
+  }, []);
+
+  // ✅ FIX: Memoize router handlers
+  const handleBack = useCallback(() => {
+    router.back();
+  }, []);
+
+  const handleBackToSignIn = useCallback(() => {
+    router.replace('/(auth)/signin');
+  }, []);
+
+  // ✅ FIX: Memoize OTP onFocus handler
+  const handleOtpFocus = useCallback(() => {
+    // Position cursor at start when focused and empty
+    if (otpRef.current && otp.length === 0) {
+      // Use requestAnimationFrame instead of setTimeout for smoother execution
+      requestAnimationFrame(() => {
+        otpRef.current?.setNativeProps({ selection: { start: 0, end: 0 } });
+      });
+    }
+  }, [otp]);
 
   //........................................................
   // RENDER UI
@@ -186,7 +341,7 @@ export default function EnterOTPScreen() {
     <KeyboardSafeView style={styles.container}>
       <NotificationBanner
         {...notification}
-        onDismiss={() => setNotification(prev => ({ ...prev, visible: false }))}
+        onDismiss={handleDismissNotification}
       />
 
       <ScrollView
@@ -205,7 +360,7 @@ export default function EnterOTPScreen() {
         >
           <TouchableOpacity
             style={styles.backButton}
-            onPress={() => router.back()}
+            onPress={handleBack}
           >
             <ArrowLeft size={24} color={Colors.text.secondary} />
           </TouchableOpacity>
@@ -221,6 +376,13 @@ export default function EnterOTPScreen() {
           <Text style={styles.subtitle}>
             Enter the 6-digit code sent to your email and create a new password
           </Text>
+          {otpVerified && otpTimeRemaining !== null && otpTimeRemaining > 0 && !otpExpired && (
+            <View style={[styles.timerContainer, otpTimeRemaining <= 10 && styles.timerContainerWarning]}>
+              <Text style={[styles.timerText, otpTimeRemaining <= 10 && styles.timerTextWarning]}>
+                OTP expires in {otpTimeRemaining}s
+              </Text>
+            </View>
+          )}
 
           {/* EMAIL */}
           <View style={styles.inputGroup}>
@@ -231,7 +393,7 @@ export default function EnterOTPScreen() {
             <View style={[styles.inputWrapper, styles.emailInputWrapper]}>
               <TextInput
                 value={email}
-                onChangeText={setEmail}
+                onChangeText={handleEmailChange}
                 placeholder="Enter your email"
                 placeholderTextColor={Colors.text.tertiary}
                 style={styles.input}
@@ -252,19 +414,8 @@ export default function EnterOTPScreen() {
               <TextInput
                 ref={otpRef}
                 value={otp}
-                onChangeText={(t) => {
-                  const formatted = formatOtp(t);
-                  setOtp(formatted);
-                }}
-                onFocus={() => {
-                  // Position cursor at start when focused and empty
-                  if (otpRef.current && otp.length === 0) {
-                    // Use requestAnimationFrame instead of setTimeout for smoother execution
-                    requestAnimationFrame(() => {
-                      otpRef.current?.setNativeProps({ selection: { start: 0, end: 0 } });
-                    });
-                  }
-                }}
+                onChangeText={handleOtpChange}
+                onFocus={handleOtpFocus}
                 placeholder="000000"
                 placeholderTextColor={Colors.text.tertiary}
                 keyboardType="number-pad"
@@ -284,7 +435,7 @@ export default function EnterOTPScreen() {
             <View style={[styles.inputWrapper, styles.passwordContainer, styles.passwordInputWrapper]}>
               <TextInput
                 value={newPassword}
-                onChangeText={setNewPassword}
+                onChangeText={handleNewPasswordChange}
                 placeholder="Enter new password"
                 secureTextEntry={!showNewPassword}
                 placeholderTextColor={Colors.text.tertiary}
@@ -292,7 +443,7 @@ export default function EnterOTPScreen() {
                 autoCapitalize="none"
               />
               <TouchableOpacity
-                onPress={() => setShowNewPassword(!showNewPassword)}
+                onPress={toggleNewPasswordVisibility}
                 style={styles.eyeButton}
               >
                 {showNewPassword ? (
@@ -349,7 +500,7 @@ export default function EnterOTPScreen() {
             <View style={[styles.inputWrapper, styles.passwordContainer, styles.passwordInputWrapper]}>
               <TextInput
                 value={confirmPassword}
-                onChangeText={setConfirmPassword}
+                onChangeText={handleConfirmPasswordChange}
                 placeholder="Confirm password"
                 secureTextEntry={!showConfirmPassword}
                 placeholderTextColor={Colors.text.tertiary}
@@ -357,7 +508,7 @@ export default function EnterOTPScreen() {
                 autoCapitalize="none"
               />
               <TouchableOpacity
-                onPress={() => setShowConfirmPassword(!showConfirmPassword)}
+                onPress={toggleConfirmPasswordVisibility}
                 style={styles.eyeButton}
               >
                 {showConfirmPassword ? (
@@ -382,18 +533,24 @@ export default function EnterOTPScreen() {
           </View>
 
           {/* RESET BUTTON */}
-          <Button
-            title="Reset Password"
-            onPress={handleResetPassword}
-            loading={loading}
-            disabled={!canSubmit}
-            variant="primary"
-            size="large"
-            style={styles.resetButton}
-          />
+          {otpVerified && otpExpired ? (
+            <View style={styles.expiredContainer}>
+              <Text style={styles.expiredText}>OTP expired — please request a new reset link.</Text>
+            </View>
+          ) : (
+            <Button
+              title="Reset Password"
+              onPress={handleResetPassword}
+              loading={loading}
+              disabled={!canSubmit}
+              variant="primary"
+              size="large"
+              style={styles.resetButton}
+            />
+          )}
 
           {/* BACK TO SIGN IN */}
-          <TouchableOpacity onPress={() => router.replace('/(auth)/signin')}>
+          <TouchableOpacity onPress={handleBackToSignIn}>
             <Text style={styles.backToSignIn}>Back to Sign In</Text>
           </TouchableOpacity>
         </Animated.View>
@@ -612,5 +769,43 @@ const styles = StyleSheet.create({
     color: Colors.text.secondary,
     fontWeight: Typography.fontWeight.semibold,
     fontSize: Typography.fontSize.sm,
+  },
+  expiredContainer: {
+    marginTop: Spacing.sm,
+    marginBottom: Spacing.xs,
+    padding: Spacing.lg,
+    backgroundColor: Colors.error[50],
+    borderRadius: BorderRadius.lg,
+    borderWidth: 1,
+    borderColor: Colors.error[200],
+    alignItems: 'center',
+  },
+  expiredText: {
+    fontSize: Typography.fontSize.sm,
+    color: Colors.error[700],
+    fontWeight: Typography.fontWeight.semibold,
+    textAlign: 'center',
+  },
+  timerContainer: {
+    marginTop: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    paddingHorizontal: Spacing.md,
+    backgroundColor: Colors.primary[50],
+    borderRadius: BorderRadius.md,
+    borderWidth: 1,
+    borderColor: Colors.primary[200],
+  },
+  timerText: {
+    fontSize: Typography.fontSize.sm,
+    color: Colors.primary[700],
+    fontWeight: Typography.fontWeight.semibold,
+    textAlign: 'center',
+  },
+  timerContainerWarning: {
+    backgroundColor: Colors.error[50],
+    borderColor: Colors.error[300],
+  },
+  timerTextWarning: {
+    color: Colors.error[700],
   },
 });
