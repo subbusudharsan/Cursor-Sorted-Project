@@ -101,63 +101,6 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ✅ FIX 2: Check for pendingHint flag - if set, refuse to regenerate
-    // This prevents premature regeneration when User B submits hint during User A's turn
-    const contextData = chatData.context_data || {};
-    const pendingHint = contextData.pendingHint === true;
-    const hintFromB = hintFromBParam || contextData.hint_from_b || '';
-
-    console.log('🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵');
-    console.log('🚀 BACKEND: generate-pregenerated-turns called');
-    console.log('🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵');
-    console.log('🔍 Backend hint check:', {
-      chatId,
-      hasHintFromBParam: !!hintFromBParam,
-      hintFromBParamLength: hintFromBParam?.length || 0,
-      hasHintFromContext: !!contextData.hint_from_b,
-      hintFromContextLength: contextData.hint_from_b?.length || 0,
-      hintFromBLength: hintFromB.length,
-      pendingHint,
-      hintSource: hintFromBParam ? 'request_body' : (contextData.hint_from_b ? 'context_data' : 'none'),
-      willBlock: pendingHint && hintFromB
-    });
-
-    if (pendingHint && hintFromB) {
-      console.log('🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑');
-      console.log('⏸️ BACKEND: pendingHint flag is set - regeneration is deferred until active turn is selected');
-      console.log('📊 This regeneration call is being rejected to prevent premature regeneration');
-      console.log('✅ Regeneration will happen automatically after the active turn is selected');
-      console.log('🔍 Blocking details:', {
-        pendingHint,
-        hintFromB: `${hintFromB.substring(0, 50)}...`,
-        hintLength: hintFromB.length
-      });
-      console.log('🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑');
-      
-      return new Response(JSON.stringify({
-        success: false,
-        message: 'Regeneration deferred - pendingHint flag is set',
-        details: 'Regeneration will happen after the active turn is selected',
-        deferred: true
-      }), {
-        status: 200, // 200 because this is expected behavior, not an error
-        headers: {
-          ...corsHeaders,
-          'Content-Type': 'application/json'
-        }
-      });
-    }
-
-    // ✅ FIX 2: Enhanced logging for hint scenarios
-    console.log('🔍 Backend hint regeneration check:', {
-      hasHint: !!hintFromB,
-      hintLength: hintFromB.length,
-      hintPreview: hintFromB ? `${hintFromB.substring(0, 100)}...` : null,
-      pendingHint,
-      hintSource: hintFromBParam ? 'request_body' : 'context_data',
-      willRegenerate: !pendingHint
-    });
-
     // Identify User A and User B
     const userAId = chatData.user_id;
     const userBId = chatData.contact_id;
@@ -241,30 +184,62 @@ const messagesData = (rawMessages || []).sort(
       created_at: msg.created_at
     }));
 
-    // Extract context_data fields (contextData and hintFromB already extracted above for pendingHint check)
+    // Extract context_data fields
+    const contextData = chatData.context_data || {};
     const summarySharedNeutral = contextData.summary_shared_neutral || contextData.summary || '';
     const thoughtsA = contextData.thoughts_a || contextData.thoughts || '';
     const thoughtsB = contextData.thoughts_b || '';
+    
+    // ✅ ADD: Check for pendingHint flag - if set, refuse to regenerate
+    const pendingHint = contextData.pendingHint === true;
     // ✅ CRITICAL: Use hint from request body if provided (avoids race condition), otherwise fall back to context_data
-    // Note: hintFromB already extracted above for pendingHint validation
+    const hintFromB = hintFromBParam || contextData.hint_from_b || '';
+
+    // ✅ FIX 2: Validate pendingHint flag - if set, reject regeneration
+    if (pendingHint && hintFromB) {
+      console.log('⏸️ pendingHint flag is set - regeneration is deferred until active turn is selected');
+      console.log('📊 This regeneration call is being rejected to prevent premature regeneration');
+      console.log('✅ Regeneration will happen automatically after the active turn is selected');
+      
+      return new Response(JSON.stringify({
+        success: false,
+        message: 'Regeneration deferred - pendingHint flag is set',
+        details: 'Regeneration will happen after the active turn is selected',
+        deferred: true
+      }), {
+        status: 200, // 200 because this is expected behavior, not an error
+        headers: {
+          ...corsHeaders,
+          'Content-Type': 'application/json'
+        }
+      });
+    }
 
     console.log('📋 Context loaded:', {
       chatId,
       userAId,
       userBId,
-      messageCount: conversationHistory.length,
+      totalMessages: allMessagesArray.length,
+      messagesFromA,
+      messagesFromB,
+      lastMessage: lastMessageFromAll ? {
+        sender_id: lastMessageFromAll.sender_id,
+        isUserA: String(lastMessageFromAll.sender_id) === String(userAId),
+        isUserB: String(lastMessageFromAll.sender_id) === String(userBId)
+      } : null,
+      conversationHistoryLength: conversationHistory.length,
+      conversationHistory: conversationHistory.map(m => ({
+        sender: String(m.sender_id) === String(userAId) ? 'User A' : 'User B',
+        content: m.content.substring(0, 50) + '...'
+      })),
       hasSummary: !!summarySharedNeutral,
       hasThoughtsA: !!thoughtsA,
       hasThoughtsB: !!thoughtsB,
       hasHint: !!hintFromB,
-      hintLength: hintFromB.length,
-      hintPreview: hintFromB ? `${hintFromB.substring(0, 100)}...` : null,
+      hintPreview: hintFromB ? hintFromB.substring(0, 50) + '...' : null,
       hintSource: hintFromBParam ? 'request_body' : 'context_data',
-      conversationHistoryLength: conversationHistory.length,
-      conversationHistoryPreview: conversationHistory.slice(-3).map(m => ({
-        sender: m.sender === 'A' ? 'User A' : 'User B',
-        content: m.content.substring(0, 50) + "..."
-      }))
+      pendingHint,
+      willRegenerate: !pendingHint
     });
 
     // Determine who should get the FIRST turn in the batch
@@ -345,7 +320,24 @@ const messagesData = (rawMessages || []).sort(
       messagesFromA,
       messagesFromB,
       startingTurnNumber,
-      sequence: firstTurnRole === "A" ? "A→B→A" : "B→A→B"
+      sequence: firstTurnRole === "A" ? "A→B→A" : "B→A→B",
+      expectedFromMessages,
+      maxTurn: maxTurnData?.[0]?.turn_number,
+      hasHint: !!hintFromB,
+      pendingHint
+    });
+    
+    // ✅ ADD: Enhanced logging for turn calculation
+    console.log('🔍 Turn calculation for hint regeneration:', {
+      firstTurnRole,
+      messagesFromA,
+      messagesFromB,
+      expectedFromMessages,
+      maxTurn: maxTurnData?.[0]?.turn_number,
+      startingTurnNumber,
+      hasHint: !!hintFromB,
+      pendingHint,
+      nextRecipientId
     });
 
     // ✅ CRITICAL FIX: If hint is provided, check if current turn is active (exists but not selected)
@@ -920,6 +912,18 @@ Use this history to understand the conversation flow and ensure your generated t
       const isEvenTurn = turnNumber % 2 === 0;
       const recipientId = isEvenTurn ? userAId : userBId;
       const role = isEvenTurn ? "User A" : "User B";
+      
+      // ✅ ADD: Enhanced logging for recipient assignment
+      console.log(`🔍 Turn ${turnNumber} recipient assignment:`, {
+        turnNumber,
+        isEvenTurn,
+        calculatedRole: role,
+        recipientId,
+        userAId,
+        userBId,
+        recipientMatchesUserA: isEvenTurn && recipientId === userAId,
+        recipientMatchesUserB: !isEvenTurn && recipientId === userBId
+      });
       
       // ✅ VALIDATION: Log warning if AI role doesn't match calculated role (but use calculated)
       const aiRole = turn.role === "A" ? "User A" : "User B";

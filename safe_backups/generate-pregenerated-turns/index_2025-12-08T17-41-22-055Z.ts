@@ -101,63 +101,6 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ✅ FIX 2: Check for pendingHint flag - if set, refuse to regenerate
-    // This prevents premature regeneration when User B submits hint during User A's turn
-    const contextData = chatData.context_data || {};
-    const pendingHint = contextData.pendingHint === true;
-    const hintFromB = hintFromBParam || contextData.hint_from_b || '';
-
-    console.log('🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵');
-    console.log('🚀 BACKEND: generate-pregenerated-turns called');
-    console.log('🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵');
-    console.log('🔍 Backend hint check:', {
-      chatId,
-      hasHintFromBParam: !!hintFromBParam,
-      hintFromBParamLength: hintFromBParam?.length || 0,
-      hasHintFromContext: !!contextData.hint_from_b,
-      hintFromContextLength: contextData.hint_from_b?.length || 0,
-      hintFromBLength: hintFromB.length,
-      pendingHint,
-      hintSource: hintFromBParam ? 'request_body' : (contextData.hint_from_b ? 'context_data' : 'none'),
-      willBlock: pendingHint && hintFromB
-    });
-
-    if (pendingHint && hintFromB) {
-      console.log('🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑');
-      console.log('⏸️ BACKEND: pendingHint flag is set - regeneration is deferred until active turn is selected');
-      console.log('📊 This regeneration call is being rejected to prevent premature regeneration');
-      console.log('✅ Regeneration will happen automatically after the active turn is selected');
-      console.log('🔍 Blocking details:', {
-        pendingHint,
-        hintFromB: `${hintFromB.substring(0, 50)}...`,
-        hintLength: hintFromB.length
-      });
-      console.log('🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑');
-      
-      return new Response(JSON.stringify({
-        success: false,
-        message: 'Regeneration deferred - pendingHint flag is set',
-        details: 'Regeneration will happen after the active turn is selected',
-        deferred: true
-      }), {
-        status: 200, // 200 because this is expected behavior, not an error
-        headers: {
-          ...corsHeaders,
-          'Content-Type': 'application/json'
-        }
-      });
-    }
-
-    // ✅ FIX 2: Enhanced logging for hint scenarios
-    console.log('🔍 Backend hint regeneration check:', {
-      hasHint: !!hintFromB,
-      hintLength: hintFromB.length,
-      hintPreview: hintFromB ? `${hintFromB.substring(0, 100)}...` : null,
-      pendingHint,
-      hintSource: hintFromBParam ? 'request_body' : 'context_data',
-      willRegenerate: !pendingHint
-    });
-
     // Identify User A and User B
     const userAId = chatData.user_id;
     const userBId = chatData.contact_id;
@@ -173,37 +116,6 @@ Deno.serve(async (req) => {
         }
       });
     }
-
-    // ✅ MINIMAL FIX: Load ALL messages (sender_id + created_at only) for counting
-    // This ensures correct turn_number calculation even in long chats (50+ turns)
-    const { data: allMessagesForCounting, error: allMessagesError } = await supabase
-      .from("messages")
-      .select("sender_id, created_at")
-      .eq("chat_id", chatId)
-      .order("created_at", { ascending: true });
-
-    if (allMessagesError) {
-      console.error('❌ Failed to load all messages for counting:', allMessagesError);
-      return new Response(JSON.stringify({
-        error: 'Failed to load conversation history',
-        details: allMessagesError.message
-      }), {
-        status: 500,
-        headers: {
-          ...corsHeaders,
-          'Content-Type': 'application/json'
-        }
-      });
-    }
-
-    // Count messages from each user using ALL messages (critical for correct turn calculation)
-    const allMessagesArray = allMessagesForCounting || [];
-    const messagesFromA = allMessagesArray.filter((m: { sender_id: string }) => String(m.sender_id) === String(userAId)).length;
-    const messagesFromB = allMessagesArray.filter((m: { sender_id: string }) => String(m.sender_id) === String(userBId)).length;
-
-    // Get last message from ALL messages to determine next recipient
-    const lastMessageFromAll = allMessagesArray.length > 0 ? allMessagesArray[allMessagesArray.length - 1] : null;
-    const lastSenderId = lastMessageFromAll ? String(lastMessageFromAll.sender_id) : null;
 
     // Load last 4 conversation messages (reduced from 8 to minimize token usage)
     const { data: rawMessages, error: messagesError } = await supabase
@@ -241,12 +153,13 @@ const messagesData = (rawMessages || []).sort(
       created_at: msg.created_at
     }));
 
-    // Extract context_data fields (contextData and hintFromB already extracted above for pendingHint check)
+    // Extract context_data fields
+    const contextData = chatData.context_data || {};
     const summarySharedNeutral = contextData.summary_shared_neutral || contextData.summary || '';
     const thoughtsA = contextData.thoughts_a || contextData.thoughts || '';
     const thoughtsB = contextData.thoughts_b || '';
     // ✅ CRITICAL: Use hint from request body if provided (avoids race condition), otherwise fall back to context_data
-    // Note: hintFromB already extracted above for pendingHint validation
+    const hintFromB = hintFromBParam || contextData.hint_from_b || '';
 
     console.log('📋 Context loaded:', {
       chatId,
@@ -257,15 +170,17 @@ const messagesData = (rawMessages || []).sort(
       hasThoughtsA: !!thoughtsA,
       hasThoughtsB: !!thoughtsB,
       hasHint: !!hintFromB,
-      hintLength: hintFromB.length,
-      hintPreview: hintFromB ? `${hintFromB.substring(0, 100)}...` : null,
-      hintSource: hintFromBParam ? 'request_body' : 'context_data',
-      conversationHistoryLength: conversationHistory.length,
-      conversationHistoryPreview: conversationHistory.slice(-3).map(m => ({
-        sender: m.sender === 'A' ? 'User A' : 'User B',
-        content: m.content.substring(0, 50) + "..."
-      }))
+      hintSource: hintFromBParam ? 'request_body' : 'context_data'
     });
+
+    // ✅ FIX: Determine next recipient and calculate startingTurnNumber correctly
+    // Check the last message to see who should get the next turn
+    const lastMessage = conversationHistory.length > 0 ? conversationHistory[conversationHistory.length - 1] : null;
+    const lastSenderId = lastMessage ? String(lastMessage.sender_id) : null;
+
+    // Count messages from each user
+    const messagesFromA = conversationHistory.filter((m: { sender_id: string }) => String(m.sender_id) === String(userAId)).length;
+    const messagesFromB = conversationHistory.filter((m: { sender_id: string }) => String(m.sender_id) === String(userBId)).length;
 
     // Determine who should get the FIRST turn in the batch
     // If User A sent last → next is User B → generate B→A→B
@@ -283,60 +198,16 @@ const messagesData = (rawMessages || []).sort(
       firstTurnRole = "A";
     }
 
-    // ✅ FIX: Calculate startingTurnNumber using MAX+1 validation (same as frontend)
+    // Calculate startingTurnNumber using the SAME formula as frontend
+    // Frontend: User A = messagesSent * 2, User B = messagesSent * 2 + 1
     // This ensures perfect alignment between backend and frontend
-    // Rule 1: Turn numbers must never jump ahead
-    // Rule 3: For later batches, continue from last turn, but validate against message count
-    //
-    // Strategy:
-    // 1. Always calculate expected turn from message count first (most reliable)
-    // 2. Check MAX in database for the recipient who needs the next turn
-    // 3. Use MAX+1 only if it's close to message count (within 1 turn)
-    // 4. If MAX is far from expected, use message count (prevents jumps like 3→6)
-    
-    // ✅ Step 1: Calculate expected turn from message count (always reliable)
-    const expectedFromMessages = firstTurnRole === "A"
-      ? messagesFromA * 2      // User A: 0→0, 1→2, 2→4, ...
-      : messagesFromB * 2 + 1; // User B: 0→1, 1→3, 2→5, ...
-    
-    // ✅ Step 2: Check MAX in database for the recipient who needs the next turn
-    const nextRecipientId = firstTurnRole === "A" ? userAId : userBId;
-    const { data: maxTurnData, error: maxTurnError } = await supabase
-      .from('pregenerated_turns')
-      .select('turn_number')
-      .eq('chat_id', chatId)
-      .eq('recipient_id', nextRecipientId)
-      .order('turn_number', { ascending: false })
-      .limit(1);
-    
     let startingTurnNumber = 0;
-    if (!maxTurnError && maxTurnData && maxTurnData.length > 0) {
-      // ✅ Pregenerated turns exist - validate MAX against message count
-      const maxTurn = maxTurnData[0].turn_number;
-      const maxBasedTurn = maxTurn + 1;
-      const difference = maxBasedTurn - expectedFromMessages; // ✅ Use signed difference to detect if MAX is lower
-      
-      // ✅ CRITICAL: If MAX is LOWER than expected, always use message count
-      // This handles cases where turns were deleted (e.g., hint refresh deletes turn 3, MAX becomes 1, but expected is 3)
-      if (difference < 0) {
-        // ✅ MAX is lower than expected - use message count (turns were likely deleted)
-        startingTurnNumber = expectedFromMessages;
-        console.log(`⚠️ MAX turn ${maxTurn} is LOWER than expected ${expectedFromMessages} (difference: ${difference}) - using message count: ${startingTurnNumber} (turns may have been deleted)`);
-      } else if (difference <= 1) {
-        // ✅ MAX is close to expected (within 1 turn) - use MAX+1
-        // This handles normal sequential progression
-        startingTurnNumber = maxBasedTurn;
-        console.log(`✅ Calculated startingTurnNumber from MAX: ${startingTurnNumber} (max was ${maxTurn}, expected from messages: ${expectedFromMessages}, difference: ${difference})`);
-      } else {
-        // ✅ MAX is far from expected (higher) - use message count to prevent jumps
-        // This prevents jumps like 3→6 when MAX=5 but user has only sent 1 message (expected=3)
-        startingTurnNumber = expectedFromMessages;
-        console.log(`⚠️ MAX turn ${maxTurn} is far from expected ${expectedFromMessages} (difference: ${difference}) - using message count: ${startingTurnNumber} to prevent jump`);
-      }
+    if (firstTurnRole === "A") {
+      // Next turn is User A → use User A's formula: messagesSent * 2
+      startingTurnNumber = messagesFromA * 2;
     } else {
-      // ✅ No existing turns - use message count (Rule 2: first batch uses message count)
-      startingTurnNumber = expectedFromMessages;
-      console.log(`✅ No existing turns - calculated startingTurnNumber from message count: ${startingTurnNumber}`);
+      // Next turn is User B → use User B's formula: messagesSent * 2 + 1
+      startingTurnNumber = messagesFromB * 2 + 1;
     }
 
     console.log(`📊 Conversation state for pre-generation:`, {
@@ -395,24 +266,6 @@ const messagesData = (rawMessages || []).sort(
       // Update startingTurnNumber to batchStart so we regenerate this batch
       startingTurnNumber = batchStart;
       console.log(`📊 Updated startingTurnNumber to ${startingTurnNumber} (batch start) for hint refresh`);
-    }
-
-    // ✅ FIX 3: Check if startingTurnNumber is an active turn (exists and unselected)
-    // If active, skip it and regenerate only turns AFTER it
-    // This protects active displayed turns from regeneration (e.g., User A's turn when User B replies)
-    const { data: activeTurnCheck } = await supabase
-      .from('pregenerated_turns')
-      .select('turn_number, selected_message')
-      .eq('chat_id', chatId)
-      .eq('turn_number', startingTurnNumber)
-      .single();
-    
-    const isStartingTurnActive = activeTurnCheck && activeTurnCheck.selected_message === null;
-    if (isStartingTurnActive) {
-      // ✅ Active turn detected - regenerate ONLY turns AFTER it
-      const newStartingTurnNumber = startingTurnNumber + 1;
-      console.log(`🛡️ Active turn ${startingTurnNumber} detected - protecting it. Regenerating from turn ${newStartingTurnNumber} onwards`);
-      startingTurnNumber = newStartingTurnNumber;
     }
 
     // ✅ FIX 3: Idempotency check - check for ALL turns (used and unused) from starting point
@@ -876,7 +729,7 @@ Use this history to understand the conversation flow and ensure your generated t
 
     // ✅ FIX: Validate response structure - accept 1-3 turns (not just exactly 3)
     // After retries, process whatever we got to avoid user-facing errors
-    if (!turnsData || !turnsData.turns || !Array.isArray(turnsData.turns) || turnsData.turns.length === 0) {
+    if (!turnsData.turns || !Array.isArray(turnsData.turns) || turnsData.turns.length === 0) {
       console.error("❌ Invalid response structure: No turns array or empty array:", turnsData);
       return new Response(JSON.stringify({
         error: 'Invalid AI response structure',
@@ -913,19 +766,12 @@ Use this history to understand the conversation flow and ensure your generated t
         console.warn(`⚠️ Turn ${i} has ${turn.options.length} options (expected 3). Processing available options.`);
       }
 
-      // ✅ FIX 2: Calculate role and recipient_id based on turn_number parity, NOT AI role
-      // role = turn_number % 2 === 0 ? "User A" : "User B"
-      // recipient_id must match this role consistently
+      // Determine recipient_id based on role
+      const recipientId = turn.role === "A" ? userAId : userBId;
+      const role = turn.role === "A" ? "User A" : "User B";
+
+      // ✅ FIX 4: Calculate global turn_number (startingTurnNumber + i) - ensures sequential storage
       const turnNumber = startingTurnNumber + i;
-      const isEvenTurn = turnNumber % 2 === 0;
-      const recipientId = isEvenTurn ? userAId : userBId;
-      const role = isEvenTurn ? "User A" : "User B";
-      
-      // ✅ VALIDATION: Log warning if AI role doesn't match calculated role (but use calculated)
-      const aiRole = turn.role === "A" ? "User A" : "User B";
-      if (aiRole !== role) {
-        console.warn(`⚠️ Role mismatch at turn ${turnNumber}: AI said "${aiRole}" but calculated "${role}" - using calculated role`);
-      }
       
       // ✅ FIX 4: Check if this turn already exists (with or without selected_message)
       const existingTurn = existingTurns?.find((t: { turn_number: number }) => t.turn_number === turnNumber);

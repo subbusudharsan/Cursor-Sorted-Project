@@ -101,63 +101,6 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ✅ FIX 2: Check for pendingHint flag - if set, refuse to regenerate
-    // This prevents premature regeneration when User B submits hint during User A's turn
-    const contextData = chatData.context_data || {};
-    const pendingHint = contextData.pendingHint === true;
-    const hintFromB = hintFromBParam || contextData.hint_from_b || '';
-
-    console.log('🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵');
-    console.log('🚀 BACKEND: generate-pregenerated-turns called');
-    console.log('🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵');
-    console.log('🔍 Backend hint check:', {
-      chatId,
-      hasHintFromBParam: !!hintFromBParam,
-      hintFromBParamLength: hintFromBParam?.length || 0,
-      hasHintFromContext: !!contextData.hint_from_b,
-      hintFromContextLength: contextData.hint_from_b?.length || 0,
-      hintFromBLength: hintFromB.length,
-      pendingHint,
-      hintSource: hintFromBParam ? 'request_body' : (contextData.hint_from_b ? 'context_data' : 'none'),
-      willBlock: pendingHint && hintFromB
-    });
-
-    if (pendingHint && hintFromB) {
-      console.log('🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑');
-      console.log('⏸️ BACKEND: pendingHint flag is set - regeneration is deferred until active turn is selected');
-      console.log('📊 This regeneration call is being rejected to prevent premature regeneration');
-      console.log('✅ Regeneration will happen automatically after the active turn is selected');
-      console.log('🔍 Blocking details:', {
-        pendingHint,
-        hintFromB: `${hintFromB.substring(0, 50)}...`,
-        hintLength: hintFromB.length
-      });
-      console.log('🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑');
-      
-      return new Response(JSON.stringify({
-        success: false,
-        message: 'Regeneration deferred - pendingHint flag is set',
-        details: 'Regeneration will happen after the active turn is selected',
-        deferred: true
-      }), {
-        status: 200, // 200 because this is expected behavior, not an error
-        headers: {
-          ...corsHeaders,
-          'Content-Type': 'application/json'
-        }
-      });
-    }
-
-    // ✅ FIX 2: Enhanced logging for hint scenarios
-    console.log('🔍 Backend hint regeneration check:', {
-      hasHint: !!hintFromB,
-      hintLength: hintFromB.length,
-      hintPreview: hintFromB ? `${hintFromB.substring(0, 100)}...` : null,
-      pendingHint,
-      hintSource: hintFromBParam ? 'request_body' : 'context_data',
-      willRegenerate: !pendingHint
-    });
-
     // Identify User A and User B
     const userAId = chatData.user_id;
     const userBId = chatData.contact_id;
@@ -241,12 +184,13 @@ const messagesData = (rawMessages || []).sort(
       created_at: msg.created_at
     }));
 
-    // Extract context_data fields (contextData and hintFromB already extracted above for pendingHint check)
+    // Extract context_data fields
+    const contextData = chatData.context_data || {};
     const summarySharedNeutral = contextData.summary_shared_neutral || contextData.summary || '';
     const thoughtsA = contextData.thoughts_a || contextData.thoughts || '';
     const thoughtsB = contextData.thoughts_b || '';
     // ✅ CRITICAL: Use hint from request body if provided (avoids race condition), otherwise fall back to context_data
-    // Note: hintFromB already extracted above for pendingHint validation
+    const hintFromB = hintFromBParam || contextData.hint_from_b || '';
 
     console.log('📋 Context loaded:', {
       chatId,
@@ -257,14 +201,7 @@ const messagesData = (rawMessages || []).sort(
       hasThoughtsA: !!thoughtsA,
       hasThoughtsB: !!thoughtsB,
       hasHint: !!hintFromB,
-      hintLength: hintFromB.length,
-      hintPreview: hintFromB ? `${hintFromB.substring(0, 100)}...` : null,
-      hintSource: hintFromBParam ? 'request_body' : 'context_data',
-      conversationHistoryLength: conversationHistory.length,
-      conversationHistoryPreview: conversationHistory.slice(-3).map(m => ({
-        sender: m.sender === 'A' ? 'User A' : 'User B',
-        content: m.content.substring(0, 50) + "..."
-      }))
+      hintSource: hintFromBParam ? 'request_body' : 'context_data'
     });
 
     // Determine who should get the FIRST turn in the batch
@@ -314,21 +251,15 @@ const messagesData = (rawMessages || []).sort(
       // ✅ Pregenerated turns exist - validate MAX against message count
       const maxTurn = maxTurnData[0].turn_number;
       const maxBasedTurn = maxTurn + 1;
-      const difference = maxBasedTurn - expectedFromMessages; // ✅ Use signed difference to detect if MAX is lower
+      const difference = Math.abs(maxBasedTurn - expectedFromMessages);
       
-      // ✅ CRITICAL: If MAX is LOWER than expected, always use message count
-      // This handles cases where turns were deleted (e.g., hint refresh deletes turn 3, MAX becomes 1, but expected is 3)
-      if (difference < 0) {
-        // ✅ MAX is lower than expected - use message count (turns were likely deleted)
-        startingTurnNumber = expectedFromMessages;
-        console.log(`⚠️ MAX turn ${maxTurn} is LOWER than expected ${expectedFromMessages} (difference: ${difference}) - using message count: ${startingTurnNumber} (turns may have been deleted)`);
-      } else if (difference <= 1) {
+      if (difference <= 1) {
         // ✅ MAX is close to expected (within 1 turn) - use MAX+1
         // This handles normal sequential progression
         startingTurnNumber = maxBasedTurn;
         console.log(`✅ Calculated startingTurnNumber from MAX: ${startingTurnNumber} (max was ${maxTurn}, expected from messages: ${expectedFromMessages}, difference: ${difference})`);
       } else {
-        // ✅ MAX is far from expected (higher) - use message count to prevent jumps
+        // ✅ MAX is far from expected - use message count to prevent jumps
         // This prevents jumps like 3→6 when MAX=5 but user has only sent 1 message (expected=3)
         startingTurnNumber = expectedFromMessages;
         console.log(`⚠️ MAX turn ${maxTurn} is far from expected ${expectedFromMessages} (difference: ${difference}) - using message count: ${startingTurnNumber} to prevent jump`);

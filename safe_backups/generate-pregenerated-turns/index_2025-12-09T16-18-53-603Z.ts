@@ -107,32 +107,10 @@ Deno.serve(async (req) => {
     const pendingHint = contextData.pendingHint === true;
     const hintFromB = hintFromBParam || contextData.hint_from_b || '';
 
-    console.log('🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵');
-    console.log('🚀 BACKEND: generate-pregenerated-turns called');
-    console.log('🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵');
-    console.log('🔍 Backend hint check:', {
-      chatId,
-      hasHintFromBParam: !!hintFromBParam,
-      hintFromBParamLength: hintFromBParam?.length || 0,
-      hasHintFromContext: !!contextData.hint_from_b,
-      hintFromContextLength: contextData.hint_from_b?.length || 0,
-      hintFromBLength: hintFromB.length,
-      pendingHint,
-      hintSource: hintFromBParam ? 'request_body' : (contextData.hint_from_b ? 'context_data' : 'none'),
-      willBlock: pendingHint && hintFromB
-    });
-
     if (pendingHint && hintFromB) {
-      console.log('🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑');
-      console.log('⏸️ BACKEND: pendingHint flag is set - regeneration is deferred until active turn is selected');
+      console.log('⏸️ pendingHint flag is set - regeneration is deferred until active turn is selected');
       console.log('📊 This regeneration call is being rejected to prevent premature regeneration');
       console.log('✅ Regeneration will happen automatically after the active turn is selected');
-      console.log('🔍 Blocking details:', {
-        pendingHint,
-        hintFromB: `${hintFromB.substring(0, 50)}...`,
-        hintLength: hintFromB.length
-      });
-      console.log('🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑');
       
       return new Response(JSON.stringify({
         success: false,
@@ -149,10 +127,8 @@ Deno.serve(async (req) => {
     }
 
     // ✅ FIX 2: Enhanced logging for hint scenarios
-    console.log('🔍 Backend hint regeneration check:', {
+    console.log('🔍 Hint regeneration check:', {
       hasHint: !!hintFromB,
-      hintLength: hintFromB.length,
-      hintPreview: hintFromB ? `${hintFromB.substring(0, 100)}...` : null,
       pendingHint,
       hintSource: hintFromBParam ? 'request_body' : 'context_data',
       willRegenerate: !pendingHint
@@ -241,12 +217,13 @@ const messagesData = (rawMessages || []).sort(
       created_at: msg.created_at
     }));
 
-    // Extract context_data fields (contextData and hintFromB already extracted above for pendingHint check)
+    // Extract context_data fields
+    const contextData = chatData.context_data || {};
     const summarySharedNeutral = contextData.summary_shared_neutral || contextData.summary || '';
     const thoughtsA = contextData.thoughts_a || contextData.thoughts || '';
     const thoughtsB = contextData.thoughts_b || '';
     // ✅ CRITICAL: Use hint from request body if provided (avoids race condition), otherwise fall back to context_data
-    // Note: hintFromB already extracted above for pendingHint validation
+    const hintFromB = hintFromBParam || contextData.hint_from_b || '';
 
     console.log('📋 Context loaded:', {
       chatId,
@@ -257,14 +234,7 @@ const messagesData = (rawMessages || []).sort(
       hasThoughtsA: !!thoughtsA,
       hasThoughtsB: !!thoughtsB,
       hasHint: !!hintFromB,
-      hintLength: hintFromB.length,
-      hintPreview: hintFromB ? `${hintFromB.substring(0, 100)}...` : null,
-      hintSource: hintFromBParam ? 'request_body' : 'context_data',
-      conversationHistoryLength: conversationHistory.length,
-      conversationHistoryPreview: conversationHistory.slice(-3).map(m => ({
-        sender: m.sender === 'A' ? 'User A' : 'User B',
-        content: m.content.substring(0, 50) + "..."
-      }))
+      hintSource: hintFromBParam ? 'request_body' : 'context_data'
     });
 
     // Determine who should get the FIRST turn in the batch

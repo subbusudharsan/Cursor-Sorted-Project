@@ -257,14 +257,7 @@ const messagesData = (rawMessages || []).sort(
       hasThoughtsA: !!thoughtsA,
       hasThoughtsB: !!thoughtsB,
       hasHint: !!hintFromB,
-      hintLength: hintFromB.length,
-      hintPreview: hintFromB ? `${hintFromB.substring(0, 100)}...` : null,
-      hintSource: hintFromBParam ? 'request_body' : 'context_data',
-      conversationHistoryLength: conversationHistory.length,
-      conversationHistoryPreview: conversationHistory.slice(-3).map(m => ({
-        sender: m.sender === 'A' ? 'User A' : 'User B',
-        content: m.content.substring(0, 50) + "..."
-      }))
+      hintSource: hintFromBParam ? 'request_body' : 'context_data'
     });
 
     // Determine who should get the FIRST turn in the batch

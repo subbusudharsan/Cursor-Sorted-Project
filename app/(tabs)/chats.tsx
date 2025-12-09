@@ -309,15 +309,19 @@ validContactChats.forEach((chat: any) => {
     existingContact.session_count += 1;
   }
 
-  // Count ongoing per contact (maps prevent double-count drift when aggregating later)
-  // My Talks = chats where user_id === current user (user started the chat)
-  // Total = all unresolved chats with this contact (regardless of who started)
-  const presence = messagePresenceMap.get(chat.id) || { hasAny: false, hasUserMessage: false };
-  if (!chat.is_resolved && presence.hasAny) {
+  // ✅ FIX: Count ongoing per contact (maps prevent double-count drift when aggregating later)
+  // Ongoing count = only MyTalks (unresolved chats started by current user, excluding History/resolved chats)
+  // Total count = all unresolved chats (both MyTalks + Contact Talks, excluding History/resolved chats)
+  // Note: History chats are excluded by checking !chat.is_resolved
+  if (!chat.is_resolved) {
+    // Total count: Include all unresolved chats (both MyTalks and Contact Talks)
     totalOngoingByContact.set(contactId, (totalOngoingByContact.get(contactId) || 0) + 1);
-    if (isMyTalk && presence.hasUserMessage) {
+    
+    // Ongoing count: Only count MyTalks (chats started by current user)
+    if (isMyTalk) {
       myOngoingByContact.set(contactId, (myOngoingByContact.get(contactId) || 0) + 1);
     }
+    
     console.log(`📊 Chat counting: chat_id=${chat.id}, user_id=${chat.user_id}, contact_id=${chat.contact_id}, isMyTalk=${isMyTalk}, contactId=${contactId}, myOngoing=${myOngoingByContact.get(contactId)}, totalOngoing=${totalOngoingByContact.get(contactId)}`);
   }
 });
@@ -403,14 +407,17 @@ setContactChats(finalChats);
     };
   }, [user, fetchUserProfile, fetchAllChats]);
 
+  // ✅ FIX: Improved useFocusEffect to refresh faster when navigating back and forth
   useFocusEffect(
     useCallback(() => {
       if (!user?.id) {
         return;
       }
-      fetchUserProfile();
+      // ✅ Immediately refresh when screen comes into focus (no delay)
+      console.log('🔄 Screen focused - refreshing chats immediately');
       fetchAllChats();
-    }, [user?.id, fetchUserProfile, fetchAllChats])
+      fetchUserProfile();
+    }, [user?.id, fetchAllChats, fetchUserProfile])
   );
 
   const setupRealtimeSubscription = () => {
@@ -554,7 +561,6 @@ setContactChats(finalChats);
   return (
     <SafeAreaView style={styles.container}>
       <Animated.View style={[styles.content, { opacity: fadeAnim }]}>
-
         {/* Centered content container */}
         <View style={styles.centeredContainer}>
           {/* Title and Notifications */}
