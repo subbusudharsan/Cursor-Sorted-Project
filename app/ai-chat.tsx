@@ -3982,6 +3982,15 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
         throw new Error(result.error);
       }
 
+      // ✅ DEBUG: Log the FULL raw response to see what we actually received
+      console.log('🔍 FULL Edge function response (raw):', JSON.stringify(result, null, 2));
+      console.log('🔍 Response keys:', Object.keys(result));
+      console.log('🔍 result.summary_a_perspective:', result.summary_a_perspective);
+      console.log('🔍 result.summary_shared_neutral:', result.summary_shared_neutral);
+      console.log('🔍 result.context_data:', result.context_data);
+      console.log('🔍 result.context_data?.summary_a_perspective:', result.context_data?.summary_a_perspective);
+      console.log('🔍 result.context_data?.summary_shared_neutral:', result.context_data?.summary_shared_neutral);
+
       // ✅ LOG RESPONSE FOR DEBUGGING
       console.log('📥 Edge function response received:', {
         hasSummaryAPerspective: !!result.summary_a_perspective,

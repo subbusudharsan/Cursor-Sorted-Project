@@ -4749,7 +4749,10 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         if (!shouldSkipRegeneration) {
           // ✅ REQUIREMENT 4: Ensure remainingCount regeneration NEVER runs before deferred regeneration
           if (didDeferredRegeneration) {
-            console.log("⛔ Skipping remainingCount regen – deferred regen already handled this batch.");
+            console.log("✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅");
+            console.log("✅ Skipping remainingCount regeneration because deferred regeneration already handled this turn");
+            console.log("📊 This prevents double regeneration and ensures hint + User A's message are included");
+            console.log("✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅✅");
             return;
           }
           
@@ -4806,10 +4809,9 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             return; // ⛔ EXIT - don't regenerate while user is viewing options
           }
           
-          // ✅ CRITICAL: Check pendingHint BEFORE triggering regeneration
-          // This prevents premature regeneration when User B submits hint during User A's active turn
-          // ✅ CRITICAL FIX: Always fetch FRESH context_data right before using hintFromB
-          // Do NOT use stale hintFromB captured earlier in the function
+          // ✅ FIX 1: Hard guard - skip remainingCount regeneration when pendingHint is true
+          // This ensures only deferred regeneration path handles hint scenarios
+          // ✅ CRITICAL FIX: Always fetch FRESH context_data right before checking pendingHint
           const { data: chatDataForPendingCheck2 } = await supabase
             .from("chats")
             .select("context_data, user_id")
@@ -4818,33 +4820,41 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           
           const pendingHint = chatDataForPendingCheck2?.context_data?.pendingHint === true;
           
-          // ✅ CRITICAL FIX: Fetch fresh hintFromB right before using it
-          // Do NOT use stale hintFromB from earlier in the function
+          if (pendingHint) {
+            console.log("🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑");
+            console.log("⛔ SKIPPING remainingCount regeneration: pendingHint flag is set");
+            console.log("📊 Only deferred regeneration path will handle this scenario");
+            console.log("✅ This prevents early wrong batch generation without hint + User A's message");
+            console.log("🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑");
+            return; // ✅ EXIT IMMEDIATELY - don't regenerate via remainingCount path
+          }
+          
+          // ✅ FIX 2: Fetch hintFromB for non-pendingHint scenarios
           const hintFromB = chatDataForPendingCheck2?.context_data?.hint_from_b || null;
           
-          // ✅ FIX: Check if latest message is from User A (determines if latestMessageFromA exists)
+          // ✅ FIX 3: Get latestMessageFromA from pregenerated_turns.selected_message (not messages table)
+          // This is the correct source because User A's selected message is stored in pregenerated_turns
           let latestMessageFromA: string | null = null;
-          if (pendingHint && chatDataForPendingCheck2) {
-            const { data: latestMessage } = await supabase
-              .from("messages")
-              .select("sender_id, content")
+          if (chatDataForPendingCheck2) {
+            const { data: latestUserATurn } = await supabase
+              .from("pregenerated_turns")
+              .select("selected_message, recipient_id, turn_number")
               .eq("chat_id", currentChatId)
-              .order("created_at", { ascending: false })
+              .eq("recipient_id", chatDataForPendingCheck2.user_id) // User A's turns
+              .not("selected_message", "is", null) // Only turns with selected_message
+              .order("turn_number", { ascending: false })
               .limit(1)
               .single();
             
-            if (latestMessage) {
-              const isLatestMessageFromA = String(latestMessage.sender_id) === String(chatDataForPendingCheck2.user_id);
-              latestMessageFromA = isLatestMessageFromA ? latestMessage.content : null;
+            if (latestUserATurn?.selected_message) {
+              latestMessageFromA = latestUserATurn.selected_message;
+              console.log("✅ Found latestMessageFromA from pregenerated_turns:", {
+                turnNumber: latestUserATurn.turn_number,
+                messagePreview: (latestMessageFromA || "").substring(0, 50) + "..."
+              });
+            } else {
+              console.log("ℹ️ No selected_message found in pregenerated_turns for User A");
             }
-          }
-          
-          // ✅ FIX: Use backend rule: block if pendingHint && !latestMessageFromA
-          if (pendingHint && !latestMessageFromA) {
-            console.log("🛑 BLOCKING normal regeneration: pendingHint flag is set and User A has not selected");
-            console.log("📊 Regeneration blocked until User A selects their active turn");
-            console.log("✅ This prevents premature regeneration before User A's message is in conversation history");
-            return; // ✅ EXIT - don't regenerate
           }
           
           console.log(`⚡ Only ${remainingCount} pre-generated turn(s) remaining, triggering re-generation just-in-time...`);
@@ -4852,14 +4862,23 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           if (currentChatId) {
             isGeneratingPregeneratedTurnsRef.current[currentChatId] = true;
           }
-          // ✅ FIX: Pass both hintFromB and latestMessageFromA when available
+          
+          // ✅ FIX 4: Build payload conditionally - only include latestMessageFromA if it exists
+          const payload: any = { 
+            chatId: currentChatId,
+            hintFromB: hintFromB || null // Explicitly pass hint (null if not available)
+          };
+          
+          if (latestMessageFromA && latestMessageFromA.trim().length > 0) {
+            payload.latestMessageFromA = latestMessageFromA;
+            console.log("✅ Including latestMessageFromA in regeneration payload");
+          } else {
+            console.log("ℹ️ Not including latestMessageFromA (not available or empty)");
+          }
+          
           // Trigger re-generation in background (non-blocking)
           supabase.functions.invoke("generate-pregenerated-turns", {
-            body: { 
-              chatId: currentChatId,
-              hintFromB: hintFromB, // Pass hint explicitly (null if not available)
-              ...(latestMessageFromA && { latestMessageFromA }) // ✅ Pass if available
-            }
+            body: payload
           }).then(({ data, error }) => {
             if (currentChatId) {
               isGeneratingPregeneratedTurnsRef.current[currentChatId] = false;
