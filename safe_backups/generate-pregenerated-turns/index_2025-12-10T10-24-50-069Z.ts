@@ -103,7 +103,6 @@ Deno.serve(async (req) => {
 
     // ✅ FIX 2: Check for pendingHint flag - if set, refuse to regenerate
     // This prevents premature regeneration when User B submits hint during User A's turn
-    // BUT allow regeneration when latestMessageFromA is provided (User A has selected their turn)
     const contextData = chatData.context_data || {};
     const pendingHint = contextData.pendingHint === true;
     const hintFromB = hintFromBParam || contextData.hint_from_b || '';
@@ -119,21 +118,19 @@ Deno.serve(async (req) => {
       hintFromContextLength: contextData.hint_from_b?.length || 0,
       hintFromBLength: hintFromB.length,
       pendingHint,
-      hasLatestMessageFromA: !!latestMessageFromA,
-      latestMessageFromALength: latestMessageFromA?.length || 0,
       hintSource: hintFromBParam ? 'request_body' : (contextData.hint_from_b ? 'context_data' : 'none'),
-      willBlock: pendingHint && !latestMessageFromA
+      willBlock: pendingHint && hintFromB
     });
 
-    if (pendingHint && !latestMessageFromA) {
+    if (pendingHint && hintFromB) {
       console.log('🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑');
       console.log('⏸️ BACKEND: pendingHint flag is set - regeneration is deferred until active turn is selected');
       console.log('📊 This regeneration call is being rejected to prevent premature regeneration');
       console.log('✅ Regeneration will happen automatically after the active turn is selected');
       console.log('🔍 Blocking details:', {
         pendingHint,
-        hasLatestMessageFromA: !!latestMessageFromA,
-        reason: 'User A has not selected their active turn yet'
+        hintFromB: `${hintFromB.substring(0, 50)}...`,
+        hintLength: hintFromB.length
       });
       console.log('🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑');
       
