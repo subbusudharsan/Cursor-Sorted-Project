@@ -36,7 +36,7 @@ Deno.serve(async (req) => {
     console.log('🔧 generate-pregenerated-turns called');
 
     const requestBody = await req.json();
-    const { chatId, hintFromB: hintFromBParam, latestMessageFromA, activeTurnNumber, batchStartTurn } = requestBody;
+    const { chatId, hintFromB: hintFromBParam, latestMessageFromA } = requestBody;
 
     if (!chatId) {
       return new Response(JSON.stringify({
@@ -86,7 +86,7 @@ Deno.serve(async (req) => {
       .from("chats")
       .select("id, user_id, contact_id, context_data")
       .eq("id", chatId)
-      .maybeSingle(); // ✅ FIX: Use maybeSingle() instead of single() for safer error handling
+      .single();
 
     if (chatError || !chatData) {
       return new Response(JSON.stringify({
@@ -126,12 +126,6 @@ Deno.serve(async (req) => {
     });
 
     if (pendingHint && !latestMessageFromA) {
-      console.log('DEFERRED_REGEN_BLOCKED_PENDING_HINT:', {
-        chatId,
-        pendingHint: true,
-        hasLatestMessageFromA: false,
-        reason: 'User A has not selected their active turn yet'
-      });
       console.log('🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑🛑');
       console.log('⏸️ BACKEND: pendingHint flag is set - regeneration is deferred until active turn is selected');
       console.log('📊 This regeneration call is being rejected to prevent premature regeneration');
@@ -157,6 +151,15 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ✅ FIX 2: Enhanced logging for hint scenarios
+    console.log('🔍 Backend hint regeneration check:', {
+      hasHint: !!hintFromB,
+      hintLength: hintFromB.length,
+      hintPreview: hintFromB ? `${hintFromB.substring(0, 100)}...` : null,
+      pendingHint,
+      hintSource: hintFromBParam ? 'request_body' : 'context_data',
+      willRegenerate: !pendingHint
+    });
 
     // Identify User A and User B
     const userAId = chatData.user_id;
@@ -174,21 +177,19 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ✅ RULE 1: Get last message to determine next recipient (no message count needed)
-    // Load last message only to determine who should get the next turn
-    const { data: lastMessageData, error: lastMessageError } = await supabase
+    // ✅ MINIMAL FIX: Load ALL messages (sender_id + created_at only) for counting
+    // This ensures correct turn_number calculation even in long chats (50+ turns)
+    const { data: allMessagesForCounting, error: allMessagesError } = await supabase
       .from("messages")
-      .select("sender_id")
+      .select("sender_id, created_at")
       .eq("chat_id", chatId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .order("created_at", { ascending: true });
 
-    if (lastMessageError && lastMessageError.code !== 'PGRST116') { // PGRST116 = no rows returned
-      console.error('❌ Failed to load last message:', lastMessageError);
+    if (allMessagesError) {
+      console.error('❌ Failed to load all messages for counting:', allMessagesError);
       return new Response(JSON.stringify({
         error: 'Failed to load conversation history',
-        details: lastMessageError.message
+        details: allMessagesError.message
       }), {
         status: 500,
         headers: {
@@ -198,8 +199,14 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Get last sender to determine next recipient
-    let lastSenderId = lastMessageData ? String(lastMessageData.sender_id) : null;
+    // Count messages from each user using ALL messages (critical for correct turn calculation)
+    const allMessagesArray = allMessagesForCounting || [];
+    const messagesFromA = allMessagesArray.filter((m: { sender_id: string }) => String(m.sender_id) === String(userAId)).length;
+    const messagesFromB = allMessagesArray.filter((m: { sender_id: string }) => String(m.sender_id) === String(userBId)).length;
+
+    // Get last message from ALL messages to determine next recipient
+    const lastMessageFromAll = allMessagesArray.length > 0 ? allMessagesArray[allMessagesArray.length - 1] : null;
+    const lastSenderId = lastMessageFromAll ? String(lastMessageFromAll.sender_id) : null;
 
     // Load last 4 conversation messages (reduced from 8 to minimize token usage)
     const { data: rawMessages, error: messagesError } = await supabase
@@ -260,19 +267,10 @@ const messagesData = (rawMessages || []).sort(
           conversationHistoryLength: conversationHistory.length,
           wasAlreadyInHistory: false
         });
-        
-        // ✅ CRITICAL FIX: Update lastSenderId after injection
-        // This ensures firstTurnRole is calculated correctly when latestMessageFromA is provided
-        lastSenderId = String(userAId);
-        console.log('✅ Updated lastSenderId to User A after latestMessageFromA injection');
       } else {
         console.log('ℹ️ latestMessageFromA already in conversation history (no injection needed)');
       }
     }
-
-    // Filter messages by sender for logging/debugging only
-    const messagesFromA = conversationHistory.filter(m => String(m.sender_id) === String(userAId));
-    const messagesFromB = conversationHistory.filter(m => String(m.sender_id) === String(userBId));
 
     // Extract context_data fields (contextData and hintFromB already extracted above for pendingHint check)
     const summarySharedNeutral = contextData.summary_shared_neutral || contextData.summary || '';
@@ -295,7 +293,7 @@ const messagesData = (rawMessages || []).sort(
       hintSource: hintFromBParam ? 'request_body' : 'context_data',
       conversationHistoryLength: conversationHistory.length,
       conversationHistoryPreview: conversationHistory.slice(-3).map(m => ({
-        sender: String(m.sender_id) === String(userAId) ? 'User A' : 'User B',
+        sender: m.sender === 'A' ? 'User A' : 'User B',
         content: m.content.substring(0, 50) + "..."
       }))
     });
@@ -316,72 +314,60 @@ const messagesData = (rawMessages || []).sort(
       firstTurnRole = "A";
     }
 
-    // ✅ ALWAYS compute startingTurnNumber from DB truth (entire chat, not per recipient)
-    const { data: maxTurnRow, error: maxTurnErr } = await supabase
+    // ✅ FIX: Calculate startingTurnNumber using MAX+1 validation (same as frontend)
+    // This ensures perfect alignment between backend and frontend
+    // Rule 1: Turn numbers must never jump ahead
+    // Rule 3: For later batches, continue from last turn, but validate against message count
+    //
+    // Strategy:
+    // 1. Always calculate expected turn from message count first (most reliable)
+    // 2. Check MAX in database for the recipient who needs the next turn
+    // 3. Use MAX+1 only if it's close to message count (within 1 turn)
+    // 4. If MAX is far from expected, use message count (prevents jumps like 3→6)
+    
+    // ✅ Step 1: Calculate expected turn from message count (always reliable)
+    const expectedFromMessages = firstTurnRole === "A"
+      ? messagesFromA * 2      // User A: 0→0, 1→2, 2→4, ...
+      : messagesFromB * 2 + 1; // User B: 0→1, 1→3, 2→5, ...
+    
+    // ✅ Step 2: Check MAX in database for the recipient who needs the next turn
+    const nextRecipientId = firstTurnRole === "A" ? userAId : userBId;
+    const { data: maxTurnData, error: maxTurnError } = await supabase
       .from('pregenerated_turns')
       .select('turn_number')
       .eq('chat_id', chatId)
+      .eq('recipient_id', nextRecipientId)
       .order('turn_number', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
+      .limit(1);
+    
     let startingTurnNumber = 0;
-
-    // ✅ NEW: If batchStartTurn provided (hint refresh), use it
-    if (batchStartTurn !== undefined && batchStartTurn !== null) {
-      startingTurnNumber = batchStartTurn;
-      console.log(`🔄 Hint refresh: Starting from batch start ${startingTurnNumber}`);
-    } else if (maxTurnRow && typeof maxTurnRow.turn_number === 'number') {
-      startingTurnNumber = maxTurnRow.turn_number + 1;
-    }
-
-    console.log("🔥 FIXED: Computed startingTurnNumber from DB:", { startingTurnNumber });
-
-    // ✅ IDEMPOTENCY CHECK: Verify the batch doesn't already exist
-    // Check if all 3 turns (startingTurnNumber, startingTurnNumber+1, startingTurnNumber+2) already exist
-    // ✅ FIX: Check each turn with its specific recipient_id
-    const firstTurnRecipientId = firstTurnRole === "A" ? userAId : userBId;
-    const secondTurnRecipientId = firstTurnRole === "A" ? userBId : userAId;
-    const thirdTurnRecipientId = firstTurnRole === "A" ? userAId : userBId;
-    
-    // Check each turn individually with its recipient_id
-    const { data: turn1 } = await supabase
-      .from('pregenerated_turns')
-      .select('turn_number')
-      .eq('chat_id', chatId)
-      .eq('turn_number', startingTurnNumber)
-      .eq('recipient_id', firstTurnRecipientId)
-      .maybeSingle();
-    
-    const { data: turn2 } = await supabase
-      .from('pregenerated_turns')
-      .select('turn_number')
-      .eq('chat_id', chatId)
-      .eq('turn_number', startingTurnNumber + 1)
-      .eq('recipient_id', secondTurnRecipientId)
-      .maybeSingle();
-    
-    const { data: turn3 } = await supabase
-      .from('pregenerated_turns')
-      .select('turn_number')
-      .eq('chat_id', chatId)
-      .eq('turn_number', startingTurnNumber + 2)
-      .eq('recipient_id', thirdTurnRecipientId)
-      .maybeSingle();
-    
-    if (turn1 && turn2 && turn3) {
-      console.log(`⏸️ Batch ${startingTurnNumber}-${startingTurnNumber + 2} already exists with correct recipient_ids - skipping generation`);
-      return new Response(JSON.stringify({
-        success: true,
-        stored: 0,
-        startingTurnNumber,
-        turnNumbers: [startingTurnNumber, startingTurnNumber + 1, startingTurnNumber + 2],
-        insertedTurnNumbers: [],
-        message: 'Batch already exists'
-      }), {
-        status: 200,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      });
+    if (!maxTurnError && maxTurnData && maxTurnData.length > 0) {
+      // ✅ Pregenerated turns exist - validate MAX against message count
+      const maxTurn = maxTurnData[0].turn_number;
+      const maxBasedTurn = maxTurn + 1;
+      const difference = maxBasedTurn - expectedFromMessages; // ✅ Use signed difference to detect if MAX is lower
+      
+      // ✅ CRITICAL: If MAX is LOWER than expected, always use message count
+      // This handles cases where turns were deleted (e.g., hint refresh deletes turn 3, MAX becomes 1, but expected is 3)
+      if (difference < 0) {
+        // ✅ MAX is lower than expected - use message count (turns were likely deleted)
+        startingTurnNumber = expectedFromMessages;
+        console.log(`⚠️ MAX turn ${maxTurn} is LOWER than expected ${expectedFromMessages} (difference: ${difference}) - using message count: ${startingTurnNumber} (turns may have been deleted)`);
+      } else if (difference <= 1) {
+        // ✅ MAX is close to expected (within 1 turn) - use MAX+1
+        // This handles normal sequential progression
+        startingTurnNumber = maxBasedTurn;
+        console.log(`✅ Calculated startingTurnNumber from MAX: ${startingTurnNumber} (max was ${maxTurn}, expected from messages: ${expectedFromMessages}, difference: ${difference})`);
+      } else {
+        // ✅ MAX is far from expected (higher) - use message count to prevent jumps
+        // This prevents jumps like 3→6 when MAX=5 but user has only sent 1 message (expected=3)
+        startingTurnNumber = expectedFromMessages;
+        console.log(`⚠️ MAX turn ${maxTurn} is far from expected ${expectedFromMessages} (difference: ${difference}) - using message count: ${startingTurnNumber} to prevent jump`);
+      }
+    } else {
+      // ✅ No existing turns - use message count (Rule 2: first batch uses message count)
+      startingTurnNumber = expectedFromMessages;
+      console.log(`✅ No existing turns - calculated startingTurnNumber from message count: ${startingTurnNumber}`);
     }
 
     console.log(`📊 Conversation state for pre-generation:`, {
@@ -393,161 +379,126 @@ const messagesData = (rawMessages || []).sort(
       sequence: firstTurnRole === "A" ? "A→B→A" : "B→A→B"
     });
 
-    // ✅ Hint handling: Delete unused turns to regenerate with hint context
-    // ✅ GUARDRAIL 1: If activeTurnNumber is provided, ONLY regenerate that specific active turn
-    // ✅ GUARDRAIL 2: Otherwise, delete entire batch [startingTurnNumber, startingTurnNumber+1, startingTurnNumber+2]
-    // ❌ REMOVED: Turn-number adjustment logic (startingTurnNumber modification)
-    // startingTurnNumber is now ALWAYS max(turn_number) + 1 from DB - never modified
+    // ✅ CRITICAL FIX: If hint is provided, check if current turn is active (exists but not selected)
+    // If current turn is active, skip it and regenerate from NEXT turn to keep frontend/backend in sync
+    // GENERAL RULE: If turn X exists AND selected_message = null, that turn is ACTIVE and must NEVER be regenerated
     const hasHint = !!hintFromBParam || !!hintFromB;
-    let hintRefreshMode = false; // Track if we're in hint refresh mode (single turn)
-    
-    if (hasHint && activeTurnNumber !== undefined && activeTurnNumber !== null) {
-      // ✅ HINT REFRESH MODE: Only regenerate the active turn
-      hintRefreshMode = true;
-      console.log(`🔄 HINT REFRESH MODE: Regenerating ONLY active turn ${activeTurnNumber} with hint context`);
+    if (hasHint) {
+      // ✅ CRITICAL: Check if the current turn (startingTurnNumber) exists and is NOT selected yet
+      // This means a user is actively viewing these options - we must NOT regenerate them
+      const { data: currentTurnCheck } = await supabase
+        .from('pregenerated_turns')
+        .select('turn_number, selected_message')
+        .eq('chat_id', chatId)
+        .eq('turn_number', startingTurnNumber)
+        .single();
       
-      // Find the recipient_id for this turn
-      const { data: activeTurnData } = await supabase
-        .from("pregenerated_turns")
-        .select("recipient_id")
-        .eq("chat_id", chatId)
-        .eq("turn_number", activeTurnNumber)
-        .maybeSingle();
+      const isCurrentTurnActive = currentTurnCheck && currentTurnCheck.selected_message === null;
       
-      if (activeTurnData?.recipient_id) {
-        // Delete only this specific active turn
-        const { error: deleteError } = await supabase
-          .from("pregenerated_turns")
-          .delete()
-          .eq("chat_id", chatId)
-          .eq("turn_number", activeTurnNumber)
-          .eq("recipient_id", activeTurnData.recipient_id)
-          .is("selected_message", null);
+      let batchStart = startingTurnNumber;
+      if (isCurrentTurnActive) {
+        // ✅ CRITICAL FIX: Only skip if the entire batch already exists
+        // Check if batch (startingTurnNumber, startingTurnNumber+1, startingTurnNumber+2) is complete
+        const { data: batchCheck } = await supabase
+          .from('pregenerated_turns')
+          .select('turn_number')
+          .eq('chat_id', chatId)
+          .gte('turn_number', startingTurnNumber)
+          .lte('turn_number', startingTurnNumber + 2);
         
-        if (deleteError) {
-          console.warn('⚠️ Failed to delete active turn for hint refresh (non-critical):', deleteError);
+        const existingBatchTurns = batchCheck?.map((t: any) => t.turn_number) || [];
+        const expectedBatchTurns = [startingTurnNumber, startingTurnNumber + 1, startingTurnNumber + 2];
+        const hasCompleteBatch = expectedBatchTurns.every(tn => existingBatchTurns.includes(tn));
+        
+        if (hasCompleteBatch) {
+          // ✅ Complete batch exists - skip to next batch
+          batchStart = startingTurnNumber + 3;
+          console.log(`🔄 Hint provided - turn ${startingTurnNumber} is active with complete batch [${expectedBatchTurns.join(',')}], skipping to next batch. Regenerating from turn ${batchStart} onwards`);
         } else {
-          console.log(`✅ Deleted active turn ${activeTurnNumber} for hint refresh`);
+          // ✅ Turn exists but batch is incomplete - regenerate from startingTurnNumber
+          console.log(`🔄 Hint provided - turn ${startingTurnNumber} exists but batch is incomplete (found: [${existingBatchTurns.join(',')}], expected: [${expectedBatchTurns.join(',')}]) - regenerating from turn ${batchStart}`);
         }
-        
-        // ✅ CRITICAL: Override startingTurnNumber to the active turn for single-turn generation
-        startingTurnNumber = activeTurnNumber;
-        console.log(`✅ Overriding startingTurnNumber to ${activeTurnNumber} for hint refresh`);
       } else {
-        console.warn(`⚠️ Active turn ${activeTurnNumber} not found - falling back to batch mode`);
-        hintRefreshMode = false;
+        console.log(`🔄 Hint provided - current turn ${startingTurnNumber} not active or already selected, regenerating from turn ${batchStart}`);
       }
-    } else if (hasHint) {
-      // ✅ NORMAL BATCH MODE: Delete entire batch when hint is provided (for normal batch refill)
-      const batchStart = startingTurnNumber;
-      const batchEnd = startingTurnNumber + 2;
-      console.log(`DELETE_HINT_BATCH_RANGE: start=${batchStart}, end=${batchEnd}, chatId=${chatId}`);
-      console.log(`🔄 Hint provided - deleting unused turns from current batch [${batchStart}, ${batchStart + 1}, ${batchEnd}]`);
       
-      const batchFirstRecipientId  = firstTurnRole === "A" ? userAId : userBId;
-      const batchSecondRecipientId = firstTurnRole === "A" ? userBId : userAId;
-      const batchThirdRecipientId  = firstTurnRole === "A" ? userAId : userBId;
-
-      // ✅ FIX: Delete ONLY unused turns from current batch, scoped by recipient_id
-      const { error: deleteError1 } = await supabase.from("pregenerated_turns")
+      const batchEnd = batchStart + 2;
+      console.log(`🔄 Regenerating batch [${batchStart}, ${batchStart + 1}, ${batchEnd}] (always 3 consecutive turns)`);
+      
+      // ✅ FIX: Delete only unused turns in this batch (preserve turns with selected_message)
+      // NEVER delete or regenerate the active turn
+      const { error: deleteBatchError } = await supabase
+        .from('pregenerated_turns')
         .delete()
-        .eq("chat_id", chatId)
-        .eq("turn_number", batchStart)
-        .eq("recipient_id", batchFirstRecipientId)
-        .is("selected_message", null);
-
-      const { error: deleteError2 } = await supabase.from("pregenerated_turns")
-        .delete()
-        .eq("chat_id", chatId)
-        .eq("turn_number", batchStart + 1)
-        .eq("recipient_id", batchSecondRecipientId)
-        .is("selected_message", null);
-
-      const { error: deleteError3 } = await supabase.from("pregenerated_turns")
-        .delete()
-        .eq("chat_id", chatId)
-        .eq("turn_number", batchEnd)
-        .eq("recipient_id", batchThirdRecipientId)
-        .is("selected_message", null);
-
-      if (deleteError1 || deleteError2 || deleteError3) {
-        console.warn('⚠️ Failed to delete some unused turns (non-critical):', deleteError1 || deleteError2 || deleteError3);
+        .eq('chat_id', chatId)
+        .gte('turn_number', batchStart)
+        .lte('turn_number', batchEnd)
+        .is('selected_message', null); // ✅ CRITICAL: Only delete turns without selected_message
+      
+      if (deleteBatchError) {
+        console.warn('⚠️ Failed to delete batch for hint regeneration (non-critical):', deleteBatchError);
       } else {
-        console.log(`✅ Deleted unused turns from current batch [${batchStart}, ${batchStart + 1}, ${batchEnd}]`);
+        console.log(`✅ Deleted unused turns in batch [${batchStart}-${batchEnd}] to regenerate with hint context (preserved turns with selected_message)`);
       }
+      
+      // Update startingTurnNumber to batchStart so we regenerate this batch
+      startingTurnNumber = batchStart;
+      console.log(`📊 Updated startingTurnNumber to ${startingTurnNumber} (batch start) for hint refresh`);
     }
 
-    // ❌ REMOVED: Active turn skipping logic that modified startingTurnNumber
-    // startingTurnNumber is now ALWAYS max(turn_number) + 1 from DB - never modified
-    // Idempotency checks below will handle existing turns correctly
+    // ✅ CRITICAL FIX: Check if startingTurnNumber is an active turn (exists and unselected)
+    // BUT: Only skip if the entire batch (startingTurnNumber, startingTurnNumber+1, startingTurnNumber+2) already exists
+    // This prevents skipping the next expected turn when only the first turn exists
+    const { data: activeTurnCheck } = await supabase
+      .from('pregenerated_turns')
+      .select('turn_number, selected_message')
+      .eq('chat_id', chatId)
+      .eq('turn_number', startingTurnNumber)
+      .single();
+    
+    const isStartingTurnActive = activeTurnCheck && activeTurnCheck.selected_message === null;
+    if (isStartingTurnActive) {
+      // ✅ Check if the entire batch already exists (all 3 turns)
+      const { data: batchCheck } = await supabase
+        .from('pregenerated_turns')
+        .select('turn_number')
+        .eq('chat_id', chatId)
+        .gte('turn_number', startingTurnNumber)
+        .lte('turn_number', startingTurnNumber + 2);
+      
+      const existingBatchTurns = batchCheck?.map((t: any) => t.turn_number) || [];
+      const expectedBatchTurns = [startingTurnNumber, startingTurnNumber + 1, startingTurnNumber + 2];
+      const hasCompleteBatch = expectedBatchTurns.every(tn => existingBatchTurns.includes(tn));
+      
+      if (hasCompleteBatch) {
+        // ✅ Complete batch exists - skip to next batch to avoid regenerating
+        const newStartingTurnNumber = startingTurnNumber + 3;
+        console.log(`🛡️ Active turn ${startingTurnNumber} detected with complete batch [${expectedBatchTurns.join(',')}] - skipping to next batch. Regenerating from turn ${newStartingTurnNumber} onwards`);
+        startingTurnNumber = newStartingTurnNumber;
+      } else {
+        // ✅ Turn exists but batch is incomplete - regenerate from startingTurnNumber
+        console.log(`✅ Turn ${startingTurnNumber} exists but batch is incomplete (found: [${existingBatchTurns.join(',')}], expected: [${expectedBatchTurns.join(',')}]) - will regenerate from turn ${startingTurnNumber}`);
+      }
+    }
 
     // ✅ FIX 3: Idempotency check - check for ALL turns (used and unused) from starting point
     // Include selected_message to identify turns that should be preserved
-    // ✅ FIX: Add recipient_id scoping - check each turn with its specific recipient
-    // ✅ GUARDRAIL: In hint refresh mode, only check the active turn (not the entire batch)
-    const firstRecipientId = firstTurnRole === "A" ? userAId : userBId;
-    const secondRecipientId = firstTurnRole === "A" ? userBId : userAId;
-    const thirdRecipientId = firstTurnRole === "A" ? userAId : userBId;
-    
-    let existingTurns: any[] = [];
-    let hasAllExpectedTurns = false;
-    let expectedTurnNumbers: number[] = [];
-    let existingTurnNumbers: number[] = [];
-    
-    if (hintRefreshMode) {
-      // ✅ HINT REFRESH MODE: Only check the active turn
-      const { data: existingActiveTurn } = await supabase
-        .from('pregenerated_turns')
-        .select('turn_number, recipient_id, used_at, selected_message')
-        .eq('chat_id', chatId)
-        .eq('turn_number', startingTurnNumber)
-        .maybeSingle();
-      
-      if (existingActiveTurn) {
-        existingTurns = [existingActiveTurn];
-        existingTurnNumbers = [startingTurnNumber];
-        hasAllExpectedTurns = true; // Turn exists, but we deleted it above, so we'll regenerate
-      } else {
-        existingTurns = [];
-        existingTurnNumbers = [];
-        hasAllExpectedTurns = false; // Turn doesn't exist, we'll generate it
-      }
-      
-      expectedTurnNumbers = [startingTurnNumber]; // Only the active turn
-      console.log(`✅ Hint refresh mode: Only checking active turn ${startingTurnNumber}`);
-    } else {
-      // ✅ NORMAL BATCH MODE: Check all 3 turns
-      const { data: existingTurn1 } = await supabase
-        .from('pregenerated_turns')
-        .select('turn_number, recipient_id, used_at, selected_message')
-        .eq('chat_id', chatId)
-        .eq('turn_number', startingTurnNumber)
-        .eq('recipient_id', firstRecipientId)
-        .maybeSingle();
-      
-      const { data: existingTurn2 } = await supabase
-        .from('pregenerated_turns')
-        .select('turn_number, recipient_id, used_at, selected_message')
-        .eq('chat_id', chatId)
-        .eq('turn_number', startingTurnNumber + 1)
-        .eq('recipient_id', secondRecipientId)
-        .maybeSingle();
-      
-      const { data: existingTurn3 } = await supabase
-        .from('pregenerated_turns')
-        .select('turn_number, recipient_id, used_at, selected_message')
-        .eq('chat_id', chatId)
-        .eq('turn_number', startingTurnNumber + 2)
-        .eq('recipient_id', thirdRecipientId)
-        .maybeSingle();
-      
-      existingTurns = [existingTurn1, existingTurn2, existingTurn3].filter(t => t !== null);
-      
-      // ✅ FIX: Check for exact turn_numbers that would be generated (startingTurnNumber, startingTurnNumber+1, startingTurnNumber+2)
-      expectedTurnNumbers = [startingTurnNumber, startingTurnNumber + 1, startingTurnNumber + 2];
-      existingTurnNumbers = existingTurns?.map((t: { turn_number: number }) => t.turn_number) || [];
-      hasAllExpectedTurns = expectedTurnNumbers.every(tn => existingTurnNumbers.includes(tn));
+    const { data: existingTurns, error: existingTurnsError } = await supabase
+      .from('pregenerated_turns')
+      .select('turn_number, recipient_id, used_at, selected_message')
+      .eq('chat_id', chatId)
+      .gte('turn_number', startingTurnNumber)
+      .lte('turn_number', startingTurnNumber + 2) // Only check the 3 turns we're about to generate
+      .order('turn_number', { ascending: true });
+
+    if (existingTurnsError) {
+      console.warn('⚠️ Failed to check existing turns (non-critical):', existingTurnsError);
     }
+
+    // ✅ FIX: Check for exact turn_numbers that would be generated (startingTurnNumber, startingTurnNumber+1, startingTurnNumber+2)
+    const expectedTurnNumbers = [startingTurnNumber, startingTurnNumber + 1, startingTurnNumber + 2];
+    const existingTurnNumbers = existingTurns?.map((t: { turn_number: number }) => t.turn_number) || [];
+    const hasAllExpectedTurns = expectedTurnNumbers.every(tn => existingTurnNumbers.includes(tn));
     
     // ✅ CRITICAL: Check for gaps in the sequence (missing turn numbers like 1, 3, etc.)
     const missingTurns = expectedTurnNumbers.filter(tn => !existingTurnNumbers.includes(tn));
@@ -559,10 +510,9 @@ const messagesData = (rawMessages || []).sort(
     
     // ✅ CRITICAL FIX: More robust idempotency check - if ALL 3 expected turns exist (even if some are used), skip regeneration
     // This prevents deletion of turns that are currently being viewed by users or have been used
-    // EXCEPTION 1: If hasHint is true AND NOT in hint refresh mode, ALWAYS allow regeneration (even if all turns exist) to include hint context
-    // EXCEPTION 2: In hint refresh mode, we already deleted the active turn, so always regenerate it
+    // EXCEPTION: If hintFromB is provided, only regenerate unused turns (preserve used ones)
     // Note: hasHint is already defined in the hint handling section above
-    if (hasAllExpectedTurns && existingTurns && existingTurns.length >= 3 && !hasHint && !hintRefreshMode) {
+    if (hasAllExpectedTurns && existingTurns && existingTurns.length >= 3 && !hasHint) {
       console.log(`✅ Already have all 3 pregenerated turns for turn_numbers ${expectedTurnNumbers.join(', ')}, skipping generation to prevent deletion of displayed turns`);
       return new Response(JSON.stringify({
         success: true,
@@ -580,10 +530,48 @@ const messagesData = (rawMessages || []).sort(
       });
     }
     
-    // ✅ REMOVED: Partial batch deletion logic - this conflicts with hint deletion above
-    // Hint deletion already handles current batch deletion when hasHint is true
-    // If no hint, idempotency check above prevents unnecessary regeneration
-    // This logic was causing duplicate deletions and conflicts with hint handling
+    // ✅ FIX 3: If hint is provided but some turns have selected_message, only regenerate unused ones
+    if (hasHint && hasUsedTurns) {
+      const usedTurnNumbers = turnsWithSelectedMessage.map((t: { turn_number: number }) => t.turn_number);
+      console.log(`⚠️ Some turns in batch have selected_message (${usedTurnNumbers.join(', ')}) - will preserve them and only regenerate unused turns`);
+    }
+    
+    // ✅ CRITICAL FIX: Check if the NEXT turn that will actually be used already exists
+    // If it exists, skip regeneration entirely - don't delete and regenerate
+    // This prevents overwriting existing turns from the initial batch (0,1,2)
+    // EXCEPTION: If hintFromB is provided, force regeneration (hint changes context)
+    const nextTurnExists = existingTurnNumbers.includes(startingTurnNumber);
+    if (nextTurnExists && !hasAllExpectedTurns && startingTurnNumber > 0 && !hasHint) {
+      console.log(`✅ Next turn (${startingTurnNumber}) already exists from previous batch - skipping regeneration to prevent overwrite`);
+      return new Response(JSON.stringify({
+        success: true,
+        stored: 0,
+        message: `Next turn ${startingTurnNumber} already exists - keeping existing turns`,
+        existingTurnNumbers,
+        startingTurnNumber
+      }), {
+        status: 200,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+    
+    // ✅ FIX 3: Only delete unused turns if the next turn is actually missing (preserve turns with selected_message)
+    if (existingTurnNumbers.length > 0 && !hasAllExpectedTurns && !nextTurnExists) {
+      console.log(`⚠️ Found ${existingTurnNumbers.length} partial turns but next turn ${startingTurnNumber} is missing, deleting unused turns and regenerating...`);
+      const { error: deletePartialError } = await supabase
+        .from('pregenerated_turns')
+        .delete()
+        .eq('chat_id', chatId)
+        .gte('turn_number', startingTurnNumber)
+        .lte('turn_number', startingTurnNumber + 2)
+        .is('selected_message', null); // ✅ CRITICAL: Only delete turns without selected_message
+      
+      if (deletePartialError) {
+        console.warn('⚠️ Failed to delete partial unused turns (non-critical):', deletePartialError);
+      } else {
+        console.log(`✅ Deleted unused partial turns to regenerate complete set (preserved turns with selected_message)`);
+      }
+    }
 
 
     
@@ -948,8 +936,6 @@ Use this history to understand the conversation flow and ensure your generated t
       // ✅ Check if we got exactly 3 turns - if not, retry
       if (turnsData.turns && Array.isArray(turnsData.turns) && turnsData.turns.length === 3) {
         // ✅ CRITICAL FIX: Validate roles match expected sequence BEFORE accepting response
-        // Use firstTurnRole to determine expected sequence (matches AI prompt logic)
-        // NOT turn number parity - the sequence is determined by firstTurnRole
         let hasRoleMismatch = false;
         for (let i = 0; i < 3; i++) {
           const turn = turnsData.turns[i];
@@ -959,21 +945,9 @@ Use this history to understand the conversation flow and ensure your generated t
             break;
           }
           
-          // ✅ FIX: Use firstTurnRole to determine expected role (matches AI prompt logic)
-          // The sequence is: firstTurnRole → opposite → firstTurnRole
-          let expectedRole: string;
-          if (i === 0) {
-            // First turn in batch = firstTurnRole
-            expectedRole = firstTurnRole === "A" ? "User A" : "User B";
-          } else if (i === 1) {
-            // Second turn in batch = opposite of firstTurnRole
-            expectedRole = firstTurnRole === "A" ? "User B" : "User A";
-          } else {
-            // Third turn in batch = firstTurnRole again
-            expectedRole = firstTurnRole === "A" ? "User A" : "User B";
-          }
-          
           const turnNumber = startingTurnNumber + i;
+          const isEvenTurn = turnNumber % 2 === 0;
+          const expectedRole = isEvenTurn ? "User A" : "User B";
           const aiRole = turn.role === "A" ? "User A" : (turn.role === "B" ? "User B" : turn.role);
           
           if (aiRole !== expectedRole) {
@@ -991,16 +965,7 @@ Use this history to understand the conversation flow and ensure your generated t
           // Role mismatch detected - retry
           if (attempt === maxRetries) {
             console.error(`❌ Role mismatch persisted after ${maxRetries + 1} attempts - this is a critical error`);
-            // Return error response instead of continuing with wrong roles
-            return new Response(JSON.stringify({
-              error: 'Role mismatch in AI response',
-              details: 'AI generated turns with incorrect roles after multiple retries. Options would be shown to wrong users.',
-              startingTurnNumber,
-              maxRetries: maxRetries + 1
-            }), {
-              status: 500,
-              headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-            });
+            // Will fall through to error handling below
           } else {
             console.warn(`⚠️ Role mismatch detected - retrying generation (attempt ${attempt + 1}/${maxRetries + 1})...`);
             attempt++;
@@ -1045,10 +1010,8 @@ Use this history to understand the conversation flow and ensure your generated t
     // ✅ FIX: Insert rows into pregenerated_turns table with correct global turn_number
     // Only insert turns that don't already exist (to avoid gaps and preserve used turns)
     // Process whatever turns we received (1-3), not hardcoded 3
-    // ✅ GUARDRAIL: In hint refresh mode, only insert the active turn (i=0)
-    const maxTurnsToInsert = hintRefreshMode ? 1 : turnsReceived;
     const inserts = [];
-    for (let i = 0; i < maxTurnsToInsert && i < turnsReceived; i++) {
+    for (let i = 0; i < turnsReceived; i++) {
       const turn = turnsData.turns[i];
       
       if (!turn || !turn.role || !turn.options || !Array.isArray(turn.options) || turn.options.length === 0) {
@@ -1061,26 +1024,13 @@ Use this history to understand the conversation flow and ensure your generated t
         console.warn(`⚠️ Turn ${i} has ${turn.options.length} options (expected 3). Processing available options.`);
       }
 
-      // ✅ FIX 2: Calculate role and recipient_id based on firstTurnRole sequence, NOT turn_number parity
-      // The sequence is determined by firstTurnRole: firstTurnRole → opposite → firstTurnRole
-      // This matches the AI prompt logic and validation logic above
+      // ✅ FIX 2: Calculate role and recipient_id based on turn_number parity, NOT AI role
+      // role = turn_number % 2 === 0 ? "User A" : "User B"
+      // recipient_id must match this role consistently
       const turnNumber = startingTurnNumber + i;
-      let role: string;
-      let recipientId: string;
-      
-      if (i === 0) {
-        // First turn in batch = firstTurnRole
-        role = firstTurnRole === "A" ? "User A" : "User B";
-        recipientId = firstTurnRole === "A" ? userAId : userBId;
-      } else if (i === 1) {
-        // Second turn in batch = opposite of firstTurnRole
-        role = firstTurnRole === "A" ? "User B" : "User A";
-        recipientId = firstTurnRole === "A" ? userBId : userAId;
-      } else {
-        // Third turn in batch = firstTurnRole again
-        role = firstTurnRole === "A" ? "User A" : "User B";
-        recipientId = firstTurnRole === "A" ? userAId : userBId;
-      }
+      const isEvenTurn = turnNumber % 2 === 0;
+      const recipientId = isEvenTurn ? userAId : userBId;
+      const role = isEvenTurn ? "User A" : "User B";
       
       // ✅ VALIDATION: Role should already be validated in retry loop, but double-check here
       const aiRole = turn.role === "A" ? "User A" : (turn.role === "B" ? "User B" : turn.role);
@@ -1222,33 +1172,20 @@ Use this history to understand the conversation flow and ensure your generated t
       });
     }
 
-    // 🔧 FIX: Validate each expected turn WITH correct recipient_id
+    // ✅ FIX 4: Verify all expected turns exist (check for gaps)
     const insertedTurnNumbers = insertedData.map((t: any) => t.turn_number);
-    const [t0, t1, t2] = [
-      { tn: startingTurnNumber,     rid: firstRecipientId },
-      { tn: startingTurnNumber + 1, rid: secondRecipientId },
-      { tn: startingTurnNumber + 2, rid: thirdRecipientId }
-    ];
-
-    const finalCheckResults = [];
-
-    for (const t of [t0, t1, t2]) {
-      const { data: row } = await supabase
-        .from('pregenerated_turns')
-        .select('turn_number')
-        .eq('chat_id', chatId)
-        .eq('turn_number', t.tn)
-        .eq('recipient_id', t.rid)
-        .maybeSingle();
-
-      if (row) finalCheckResults.push(row.turn_number);
-    }
-
-    const finalTurnNumbers = finalCheckResults;
-    const hasAllTurns = finalTurnNumbers.length === 3;
+    const allExpectedTurns = [startingTurnNumber, startingTurnNumber + 1, startingTurnNumber + 2];
+    const finalCheck = await supabase
+      .from('pregenerated_turns')
+      .select('turn_number')
+      .eq('chat_id', chatId)
+      .in('turn_number', allExpectedTurns);
+    
+    const finalTurnNumbers = finalCheck.data?.map((t: any) => t.turn_number) || [];
+    const hasAllTurns = allExpectedTurns.every(tn => finalTurnNumbers.includes(tn));
     
     if (!hasAllTurns) {
-      const missing = [t0.tn, t1.tn, t2.tn].filter(tn => !finalTurnNumbers.includes(tn));
+      const missing = allExpectedTurns.filter(tn => !finalTurnNumbers.includes(tn));
       console.warn(`⚠️ Gap detected in turn sequence - missing turn numbers: ${missing.join(', ')}`);
     } else {
       console.log(`✅ All turns stored sequentially: ${finalTurnNumbers.sort((a, b) => a - b).join(', ')}`);
@@ -1260,7 +1197,6 @@ Use this history to understand the conversation flow and ensure your generated t
     return new Response(JSON.stringify({
       success: true,
       stored: insertedData.length,
-      deferred: false, // Only true when pendingHint && !latestMessageFromA (handled in early return above)
       startingTurnNumber: startingTurnNumber,
       turnNumbers: finalTurnNumbers.sort((a, b) => a - b), // Return all turns in sequence
       insertedTurnNumbers: insertedTurnNumbers

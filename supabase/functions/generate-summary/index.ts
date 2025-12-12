@@ -528,11 +528,44 @@ Respond with ONLY the JSON structure specified in the system prompt.`
 
     // ✅ ENSURE BOTH SUMMARIES EXIST IN PARSED RESPONSE
     if (!parsedResponse.summary_a_perspective && parsedResponse.summary) {
-      // Fallback: use summary as A-perspective if separate field missing
-      parsedResponse.summary_a_perspective = parsedResponse.summary;
+      // Check if summary is in third-person (starts with "The user", "User A", etc.)
+      const summaryText = parsedResponse.summary.trim();
+      const isThirdPerson = /^(The user|User A|They|The person)/i.test(summaryText);
+      
+      if (isThirdPerson) {
+        // Summary is already neutral - use it for summary_shared_neutral
+        parsedResponse.summary_shared_neutral = parsedResponse.summary;
+        
+        // Convert to first-person for A-perspective
+        const aPerspective = parsedResponse.summary
+          .replace(/^The user\s+/gi, 'I ')
+          .replace(/^User A\s+/gi, 'I ')
+          .replace(/\btheir\b/gi, 'my')
+          .replace(/\bthem\b/gi, 'me')
+          .replace(/\bthemself\b/gi, 'myself')
+          .replace(/\bUser A\b/gi, 'I')
+          .replace(/\bUser A is\b/gi, "I'm")
+          .replace(/\bUser A has\b/gi, "I've")
+          .replace(/\bUser A would\b/gi, "I'd")
+          .replace(/\bUser A was\b/gi, "I was")
+          .replace(/\bUser A's\b/gi, "my");
+        
+        parsedResponse.summary_a_perspective = aPerspective;
+      } else {
+        // Summary is already first-person - use it for A-perspective
+        parsedResponse.summary_a_perspective = parsedResponse.summary;
+        
+        // Convert to third-person for neutral (will be handled by the next if block if missing)
+      }
+      
+      // Update context_data
       if (parsedResponse.context_data) {
-        parsedResponse.context_data.summary_a_perspective = parsedResponse.summary;
-        parsedResponse.context_data.summary_a = parsedResponse.summary; // backward compatibility
+        parsedResponse.context_data.summary_a_perspective = parsedResponse.summary_a_perspective;
+        if (parsedResponse.summary_shared_neutral) {
+          parsedResponse.context_data.summary_shared_neutral = parsedResponse.summary_shared_neutral;
+        }
+        parsedResponse.context_data.summary_a = parsedResponse.summary_a_perspective; // backward compatibility
+        parsedResponse.context_data.summary = parsedResponse.summary_a_perspective; // backward compatibility
       }
     }
 

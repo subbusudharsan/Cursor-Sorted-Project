@@ -5281,22 +5281,33 @@ Respond ONLY with valid JSON:
         }
 
         // ✅ Only trigger pregeneration if it wasn't done early
-        console.log("⚡ Triggering pre-generation before navigation (fallback scenario)...");
-        try {
-          const { data: pregenData, error: pregenError } = await supabase.functions.invoke(
-            "generate-pregenerated-turns",
-            {
-              body: { chatId: contactChatId }
+        // ✅ FIX: Check if ANY pregenerated turns exist - if so, skip fallback pregeneration
+        const { data: existingTurnsCheck } = await supabase
+          .from("pregenerated_turns")
+          .select("turn_number")
+          .eq("chat_id", contactChatId)
+          .limit(1);
+        
+        if (existingTurnsCheck && existingTurnsCheck.length > 0) {
+          console.log("⏸️ Pregenerated turns already exist - skipping fallback pregeneration");
+        } else {
+          console.log("⚡ Triggering pre-generation before navigation (fallback scenario)...");
+          try {
+            const { data: pregenData, error: pregenError } = await supabase.functions.invoke(
+              "generate-pregenerated-turns",
+              {
+                body: { chatId: contactChatId }
+              }
+            );
+            if (pregenError) {
+              console.warn("⚠️ Pre-generation failed before navigation (non-critical):", pregenError);
+            } else {
+              console.log("✅ Pre-generation triggered successfully before navigation");
+              console.log("✅ Pre-generation response:", JSON.stringify(pregenData, null, 2));
             }
-          );
-          if (pregenError) {
-            console.warn("⚠️ Pre-generation failed before navigation (non-critical):", pregenError);
-          } else {
-            console.log("✅ Pre-generation triggered successfully before navigation");
-            console.log("✅ Pre-generation response:", JSON.stringify(pregenData, null, 2));
+          } catch (err) {
+            console.warn("⚠️ Error triggering pre-generation before navigation (non-critical):", err instanceof Error ? err.message : String(err));
           }
-        } catch (err) {
-          console.warn("⚠️ Error triggering pre-generation before navigation (non-critical):", err instanceof Error ? err.message : String(err));
         }
       }
 
