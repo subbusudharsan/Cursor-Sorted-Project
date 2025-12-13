@@ -36,7 +36,7 @@ Deno.serve(async (req) => {
     console.log('🔧 generate-pregenerated-turns called');
 
     const requestBody = await req.json();
-    const { chatId, hintFromB: hintFromBParam, latestMessageFromA } = requestBody;
+    const { chatId, hintFromB: hintFromBParam, latestMessageFromA, batchStartTurn } = requestBody;
 
     if (!chatId) {
       return new Response(JSON.stringify({
@@ -341,7 +341,12 @@ const messagesData = (rawMessages || []).sort(
       .limit(1);
     
     let startingTurnNumber = 0;
-    if (!maxTurnError && maxTurnData && maxTurnData.length > 0) {
+    
+    // ✅ NEW: If batchStartTurn provided (hint refresh), use it directly
+    if (batchStartTurn !== undefined && batchStartTurn !== null) {
+      startingTurnNumber = batchStartTurn;
+      console.log(`🔄 Hint refresh: Starting from batch start ${startingTurnNumber}`);
+    } else if (!maxTurnError && maxTurnData && maxTurnData.length > 0) {
       // ✅ Pregenerated turns exist - validate MAX against message count
       const maxTurn = maxTurnData[0].turn_number;
       const maxBasedTurn = maxTurn + 1;

@@ -869,13 +869,23 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           return;
         }
 
+        // ✅ FIX: Fetch hint from context_data to pass to backend
+        const hintFromB = contextData.hint_from_b || null;
+        console.log("🔍 Initial pregeneration - hint check:", {
+          hasHint: !!hintFromB,
+          hintLength: hintFromB?.length || 0
+        });
+
         // Trigger pre-generation in background (non-blocking)
         console.log("⚡ Triggering 3-turn pre-generation...");
         
         const { data: invokeData, error: invokeError } = await supabase.functions.invoke(
           "generate-pregenerated-turns",
           {
-            body: { chatId }
+            body: { 
+              chatId,
+              ...(hintFromB && { hintFromB }) // ✅ Pass hint if it exists
+            }
           }
         );
 
@@ -6181,87 +6191,81 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                           const isUserATurnActiveLocal = userATurnData && userATurnData.selected_message === null;
                           const isUserBTurnActive = userBTurnData && userBTurnData.selected_message === null;
                           
-                          // ✅ SCENARIO 2: User B submits hint during their turn - DELETE their current turn to refresh it
+                          // ✅ SCENARIO 2: User B submits hint during their turn
                           if (isUserBTurnActive) {
-                            console.log(`🔄 User B's turn ${userBCurrentTurn} is active - will delete it to refresh with hint context`);
-                            
-                            // Delete User B's current turn (so it gets regenerated with hint)
-                            const { error: deleteUserBTurnError } = await supabase
+                            // ✅ FIX 2: Calculate batch start (works for any position: 14, 15, or 16)
+                            const batchStart = Math.floor(userBCurrentTurn / 3) * 3; // e.g., 14 for turns 14,15,16
+                            console.log(`🔄 User B's turn ${userBCurrentTurn} is active - refresh batch ${batchStart}-${batchStart + 2} with hint`);
+
+                            // ✅ FIX: Store turn_number BEFORE any state clearing for hint refresh check
+                            const turnNumberToRefresh = userBCurrentTurn;
+                            const recipientIdToRefresh = existing.contact_id;
+
+                            // ✅ FIX 1: Show success message and hide tip box FIRST
+                            setShowTipBox(false);
+                            setHintSubmitted(true);
+                            showNotification('success', 'Context Saved', 'Your perspective will guide future responses');
+
+                            // ✅ FIX: Preserve turn info in currentPregeneratedTurnRef BEFORE clearing UI
+                            // This ensures realtime handler can match turn_number correctly
+                            currentPregeneratedTurnRef.current = {
+                              turn_number: turnNumberToRefresh,
+                              recipient_id: recipientIdToRefresh,
+                              options: [] // Will be replaced by new options from realtime
+                            };
+
+                            // ✅ THEN clear options (after user sees message)
+                            setSuggestedOptions([]);
+                            setShowSuggestedOptions(false);
+
+                            // ✅ FIX 2: Delete entire batch (batchStart to batchStart+2), not just from userBCurrentTurn
+                            // This ensures old options without hint context are removed for the entire batch
+                            const { error: deleteError } = await supabase
                               .from("pregenerated_turns")
                               .delete()
                               .eq("chat_id", currentChatId)
-                              .eq("recipient_id", existing.contact_id)
-                              .eq("turn_number", userBCurrentTurn)
-                              .is("selected_message", null); // ✅ CRITICAL: Only delete if not selected
+                              .gte("turn_number", batchStart)
+                              .lte("turn_number", batchStart + 2)
+                              .is("selected_message", null);
                             
-                            if (deleteUserBTurnError) {
-                              console.error("⚠️ Failed to delete User B's current turn for refresh:", deleteUserBTurnError);
+                            if (deleteError) {
+                              console.error("⚠️ Failed to delete turns for hint refresh:", deleteError);
                             } else {
-                              console.log(`✅ Deleted User B's current turn ${userBCurrentTurn} - will regenerate with hint context`);
+                              console.log(`✅ Deleted batch ${batchStart}-${batchStart + 2} for hint refresh`);
                             }
-                            
-                            // Delete User B's future turns (only unused ones)
-                            const { error: deleteUserBFutureError } = await supabase
-                              .from("pregenerated_turns")
-                              .delete()
-                              .eq("chat_id", currentChatId)
-                              .eq("recipient_id", existing.contact_id)
-                              .gt("turn_number", userBCurrentTurn)
-                              .is("used_at", null)
-                              .is("selected_message", null); // ✅ CRITICAL: Only delete unused turns
-                            
-                            // ✅ SCENARIO 1: Preserve User A's turn 4 completely (options + selected_message)
-                            if (isUserATurnSelected) {
-                              console.log(`✅ Preserving User A's turn ${userACurrentTurn} - already selected (selected_message exists, options preserved in DB)`);
-                              // Turn 4 is already selected - do NOT touch it at all
-                              // Only delete User A's future turns (after turn 4)
-                              const { error: deleteUserAFutureError } = await supabase
-                                .from("pregenerated_turns")
-                                .delete()
-                                .eq("chat_id", currentChatId)
-                                .eq("recipient_id", existing.user_id)
-                                .gt("turn_number", userACurrentTurn)
-                                .is("used_at", null)
-                                .is("selected_message", null);
-                              
-                              if (deleteUserAFutureError) {
-                                console.error("⚠️ Failed to invalidate User A's future turns:", deleteUserAFutureError);
+
+                            // ✅ FIX 3: Use tipText directly (no DB fetch needed - avoids race condition)
+                            console.log(`🔄 Triggering batch regeneration for batch ${batchStart}-${batchStart + 2} with hint context`);
+                            isGeneratingPregeneratedTurnsRef.current[currentChatId] = true;
+                            supabase.functions.invoke("generate-pregenerated-turns", {
+                              body: {
+                                chatId: currentChatId,
+                                hintFromB: tipText.trim(),  // ✅ Use tipText directly - avoids DB fetch race condition
+                                batchStartTurn: batchStart  // ✅ FIX 2: Tell backend batch start
+                              }
+                            }).then(({ data, error }) => {
+                              isGeneratingPregeneratedTurnsRef.current[currentChatId] = false;
+                              if (error) {
+                                console.error("❌ Hint refresh failed:", error);
+                                // Fallback to ensureInitialOptions if hint refresh fails
+                                ensureInitialOptions(currentChatId).catch(err => 
+                                  console.error("❌ Fallback ensureInitialOptions failed:", err)
+                                );
                               } else {
-                                console.log(`✅ Invalidated User A's future turns (preserved turn ${userACurrentTurn} with selected_message)`);
+                                console.log("✅ Hint refresh triggered successfully - waiting for realtime update");
+                                // Don't call ensureInitialOptions - realtime subscription will handle display
                               }
-                            } else if (isUserATurnActiveLocal) {
-                              console.log(`✅ Preserving User A's current turn ${userACurrentTurn} (active - User A is viewing it)`);
-                              // Only delete User A's future turns
-                              const { error: deleteUserAFutureError } = await supabase
-                                .from("pregenerated_turns")
-                                .delete()
-                                .eq("chat_id", currentChatId)
-                                .eq("recipient_id", existing.user_id)
-                                .gt("turn_number", userACurrentTurn)
-                                .is("used_at", null)
-                                .is("selected_message", null);
-                              
-                              if (deleteUserAFutureError) {
-                                console.error("⚠️ Failed to invalidate User A's future turns:", deleteUserAFutureError);
-                              } else {
-                                console.log(`✅ Invalidated User A's future turns (preserved turn ${userACurrentTurn})`);
-                              }
-                            } else {
-                              // User A's turn not active - delete all unused turns
-                              const { error: deleteUserAError } = await supabase
-                                .from("pregenerated_turns")
-                                .delete()
-                                .eq("chat_id", currentChatId)
-                                .eq("recipient_id", existing.user_id)
-                                .is("used_at", null)
-                                .is("selected_message", null);
-                              
-                              if (deleteUserAError) {
-                                console.error("⚠️ Failed to invalidate User A's unused turns:", deleteUserAError);
-                              }
-                            }
+                            }).catch(err => {
+                              isGeneratingPregeneratedTurnsRef.current[currentChatId] = false;
+                              console.error("❌ Error triggering hint refresh:", err);
+                              // Fallback to ensureInitialOptions if hint refresh fails
+                              ensureInitialOptions(currentChatId).catch(fallbackErr => 
+                                console.error("❌ Fallback ensureInitialOptions failed:", fallbackErr)
+                              );
+                            });
                             
-                            console.log(`✅ User B's turn will refresh with hint context (preserved User A's turn if active/selected)`);
+                            // ✅ Exit early to avoid duplicate regeneration in code below
+                            return;
                           } else {
                             // ✅ SCENARIO 1: User B submits hint when it's NOT their turn
                             // Preserve User A's turn 4 completely (options + selected_message)
