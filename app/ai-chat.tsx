@@ -4092,6 +4092,7 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
         {},
         {
           summary: summaryAPerspective, // For backward compatibility (A-perspective)
+          summary_a: summaryAPerspective, // ✅ Add this for backward compatibility
           summary_a_perspective: summaryAPerspective, // ✅ A-perspective summary (emotional, first-person, User A talking to AI)
           summary_shared_neutral: finalSummarySharedNeutral, // ✅ Neutral shared summary (factual, third-person) - NEVER use A-perspective as fallback
           thoughts: thoughtsA,

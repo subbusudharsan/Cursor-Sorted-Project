@@ -36,7 +36,7 @@ Deno.serve(async (req) => {
     console.log('🔧 generate-pregenerated-turns called');
 
     const requestBody = await req.json();
-    const { chatId, hintFromB: hintFromBParam, latestMessageFromA, activeTurnNumber, batchStartTurn } = requestBody;
+    const { chatId, hintFromB: hintFromBParam, latestMessageFromA, activeTurnNumber, batchStartTurn, closureState: closureStateParam, userASmileySent: userASmileySentParam, userBSmileySent: userBSmileySentParam } = requestBody;
 
     if (!chatId) {
       return new Response(JSON.stringify({
@@ -84,7 +84,7 @@ Deno.serve(async (req) => {
     // Load chat row and context_data
     const { data: chatData, error: chatError } = await supabase
       .from("chats")
-      .select("id, user_id, contact_id, context_data")
+      .select("id, user_id, contact_id, context_data, closure_state, user_a_smiley_sent, user_b_smiley_sent")
       .eq("id", chatId)
       .maybeSingle(); // ✅ FIX: Use maybeSingle() instead of single() for safer error handling
 
@@ -106,11 +106,55 @@ Deno.serve(async (req) => {
     // BUT allow regeneration when latestMessageFromA is provided (User A has selected their turn)
     const contextData = chatData.context_data || {};
     const pendingHint = contextData.pendingHint === true;
-    const hintFromB = hintFromBParam || contextData.hint_from_b || '';
+    
+    // ✅ CRITICAL: hint_from_b is persistent state - always fetch from param OR context_data
+    // If hint exists in either place, it MUST be used (trimmed and validated)
+    let hintFromB = '';
+    if (hintFromBParam && hintFromBParam.trim().length > 0) {
+      hintFromB = hintFromBParam.trim();
+    } else if (contextData.hint_from_b && typeof contextData.hint_from_b === 'string' && contextData.hint_from_b.trim().length > 0) {
+      hintFromB = contextData.hint_from_b.trim();
+    }
+    
+    // ✅ CRITICAL: Log hint source for debugging continuity
+    if (hintFromB) {
+      console.log('✅ Hint continuity: Using hintFromB', {
+        source: hintFromBParam ? 'request_body' : 'context_data',
+        length: hintFromB.length,
+        preview: hintFromB.substring(0, 50) + '...'
+      });
+    }
+    
+    // ✅ Extract closure state from request body or database (similar to hintFromB)
+    const closureState = closureStateParam || chatData.closure_state || 'active';
+    const userASmileySent = userASmileySentParam !== undefined ? userASmileySentParam : (chatData.user_a_smiley_sent || false);
+    const userBSmileySent = userBSmileySentParam !== undefined ? userBSmileySentParam : (chatData.user_b_smiley_sent || false);
+    
+    console.log('✅ Closure state extracted:', {
+      closureState,
+      userASmileySent,
+      userBSmileySent,
+      source: closureStateParam ? 'request_body' : 'database'
+    });
 
     console.log('🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵');
     console.log('🚀 BACKEND: generate-pregenerated-turns called');
     console.log('🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵🔵');
+    
+    // ✅ STEP 4: Logging infrastructure - payload hint received (always logs)
+    console.log('📥 PAYLOAD HINT RECEIVED: Edge function received', {
+      functionName: 'generate-pregenerated-turns',
+      chatId,
+      hintFromBParam: hintFromBParam ? hintFromBParam.substring(0, 50) + "..." : null,
+      hintFromBParamLength: hintFromBParam?.length || 0,
+      hintFromContext: contextData.hint_from_b ? contextData.hint_from_b.substring(0, 50) + "..." : null,
+      hintFromContextLength: contextData.hint_from_b?.length || 0,
+      finalHintUsed: hintFromB ? hintFromB.substring(0, 50) + "..." : null,
+      finalHintLength: hintFromB.length,
+      hintSource: hintFromBParam ? 'request_body' : (contextData.hint_from_b ? 'context_data' : 'none'),
+      timestamp: new Date().toISOString()
+    });
+    
     console.log('🔍 Backend hint check:', {
       chatId,
       hasHintFromBParam: !!hintFromBParam,
@@ -274,6 +318,112 @@ const messagesData = (rawMessages || []).sort(
     const messagesFromA = conversationHistory.filter(m => String(m.sender_id) === String(userAId));
     const messagesFromB = conversationHistory.filter(m => String(m.sender_id) === String(userBId));
 
+    // ✅ HYBRID CONTEXT WINDOW: Update conversation progress summary if stale (best-effort, non-blocking)
+    let conversationProgressSummary = contextData?.conversation_progress_summary || '';
+    const currentMessageCount = conversationHistory.length;
+    const lastSummaryMessageCount = contextData?.conversation_progress_message_count || 0;
+    const summaryIsStale = (currentMessageCount - lastSummaryMessageCount) >= 12 || !conversationProgressSummary;
+
+    if (summaryIsStale && currentMessageCount > 0) {
+      try {
+        console.log(`🔄 Updating conversation progress summary (stale: ${currentMessageCount - lastSummaryMessageCount} messages since last update)`);
+        
+        // Load more messages for summary generation (up to last 15 for better context)
+        const { data: summaryMessagesData, error: summaryMessagesError } = await supabase
+          .from("messages")
+          .select("id, sender_id, content, created_at")
+          .eq("chat_id", chatId)
+          .order("created_at", { ascending: false })
+          .limit(15);
+        
+        const summaryMessages = summaryMessagesError ? conversationHistory : 
+          (summaryMessagesData || []).sort(
+            (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+          );
+        
+        // Use recent messages for summary (last 10 for good context while keeping tokens low)
+        const messagesToSummarize = summaryMessages.slice(-10);
+        
+        // Build prompt for summary generation - use neutral third-person language
+        const summaryPrompt = `Summarize the conversation progress in 2-3 concise sentences using NEUTRAL THIRD-PERSON language. Focus on:
+- What has been discussed or resolved
+- Current emotional state or progress
+- Key points or understanding reached
+
+CRITICAL: Use third-person neutral language (e.g., "User A explained...", "User B acknowledged...", "They discussed..."). 
+- Use "User A" and "User B" labels consistently
+- Do NOT use first-person ("I", "me", "my") 
+- Do NOT use names or @ tags
+- This summary will be stored and used as background context for both users
+
+Recent conversation messages:
+${messagesToSummarize.map((msg: any, idx: number) => {
+          const content = typeof msg === 'object' ? msg.content : String(msg);
+          const sender = typeof msg === 'object' && String(msg.sender_id) === String(userAId) ? 'User A' : 'User B';
+          return `${idx + 1}. ${sender}: "${content.substring(0, 150)}${content.length > 150 ? '...' : ''}"`;
+        }).join('\n')}
+
+Generate a brief 2-3 sentence summary in NEUTRAL THIRD-PERSON language (using "User A" and "User B" labels) describing the conversation progress:`;
+
+        // Generate new summary using Haiku (cost-efficient)
+        const CLAUDE_API_KEY = Deno.env.get("CLAUDE_API_KEY");
+        if (CLAUDE_API_KEY) {
+          const summaryResponse = await fetch("https://api.anthropic.com/v1/messages", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-api-key": CLAUDE_API_KEY,
+              "anthropic-version": "2023-06-01"
+            },
+            body: JSON.stringify({
+              model: "claude-3-5-haiku-20241022",
+              max_tokens: 200,
+              temperature: 0.3,
+              messages: [{
+                role: "user",
+                content: summaryPrompt
+              }]
+            })
+          });
+
+          if (summaryResponse.ok) {
+            const summaryData = await summaryResponse.json();
+            const newSummary = summaryData.content[0].text.trim();
+            
+            if (newSummary && newSummary.length > 20) {
+              // Update context_data with new summary
+              const { error: updateError } = await supabase
+                .from("chats")
+                .update({
+                  context_data: {
+                    ...contextData,
+                    conversation_progress_summary: newSummary,
+                    conversation_progress_message_count: currentMessageCount,
+                    conversation_progress_last_updated_at: new Date().toISOString()
+                  }
+                })
+                .eq("id", chatId);
+              
+              if (!updateError) {
+                conversationProgressSummary = newSummary;
+                // Update contextData reference for use later
+                contextData.conversation_progress_summary = newSummary;
+                contextData.conversation_progress_message_count = currentMessageCount;
+                console.log(`✅ Conversation progress summary updated (${newSummary.length} chars)`);
+              } else {
+                console.warn("⚠️ Failed to update conversation_progress_summary in DB, using in-memory version:", updateError);
+              }
+            }
+          }
+        }
+      } catch (error) {
+        // ✅ Best-effort: Continue with existing summary (or empty) if update fails
+        console.warn("⚠️ Conversation progress summary update failed, using existing summary:", error);
+      }
+    } else {
+      console.log(`✅ Using existing conversation progress summary (${conversationProgressSummary.length} chars, ${currentMessageCount - lastSummaryMessageCount} messages since update)`);
+    }
+
     // Extract context_data fields (contextData and hintFromB already extracted above for pendingHint check)
     const summarySharedNeutral = contextData.summary_shared_neutral || contextData.summary || '';
     const thoughtsA = contextData.thoughts_a || contextData.thoughts || '';
@@ -300,23 +450,8 @@ const messagesData = (rawMessages || []).sort(
       }))
     });
 
-    // Determine who should get the FIRST turn in the batch
-    // If User A sent last → next is User B → generate B→A→B
-    // If User B sent last → next is User A → generate A→B→A
-    // If no messages → start with User A → generate A→B→A
-    let firstTurnRole: "A" | "B";
-    if (!lastSenderId) {
-      // No messages yet → start with User A
-      firstTurnRole = "A";
-    } else if (lastSenderId === String(userAId)) {
-      // User A sent last → next is User B
-      firstTurnRole = "B";
-    } else {
-      // User B sent last → next is User A
-      firstTurnRole = "A";
-    }
-
-    // ✅ ALWAYS compute startingTurnNumber from DB truth (entire chat, not per recipient)
+    // ✅ ALWAYS compute startingTurnNumber FIRST (from batchStartTurn or DB max)
+    // This must be done before firstTurnRole calculation
     const { data: maxTurnRow, error: maxTurnErr } = await supabase
       .from('pregenerated_turns')
       .select('turn_number')
@@ -327,7 +462,7 @@ const messagesData = (rawMessages || []).sort(
 
     let startingTurnNumber = 0;
 
-    // ✅ NEW: If batchStartTurn provided (hint refresh), use it
+    // ✅ If batchStartTurn provided (hint refresh), use it
     if (batchStartTurn !== undefined && batchStartTurn !== null) {
       startingTurnNumber = batchStartTurn;
       console.log(`🔄 Hint refresh: Starting from batch start ${startingTurnNumber}`);
@@ -337,51 +472,68 @@ const messagesData = (rawMessages || []).sort(
 
     console.log("🔥 FIXED: Computed startingTurnNumber from DB:", { startingTurnNumber });
 
-    // ✅ IDEMPOTENCY CHECK: Verify the batch doesn't already exist
-    // Check if all 3 turns (startingTurnNumber, startingTurnNumber+1, startingTurnNumber+2) already exist
-    // ✅ FIX: Check each turn with its specific recipient_id
-    const firstTurnRecipientId = firstTurnRole === "A" ? userAId : userBId;
-    const secondTurnRecipientId = firstTurnRole === "A" ? userBId : userAId;
-    const thirdTurnRecipientId = firstTurnRole === "A" ? userAId : userBId;
-    
-    // Check each turn individually with its recipient_id
-    const { data: turn1 } = await supabase
-      .from('pregenerated_turns')
-      .select('turn_number')
-      .eq('chat_id', chatId)
-      .eq('turn_number', startingTurnNumber)
-      .eq('recipient_id', firstTurnRecipientId)
-      .maybeSingle();
-    
-    const { data: turn2 } = await supabase
-      .from('pregenerated_turns')
-      .select('turn_number')
-      .eq('chat_id', chatId)
-      .eq('turn_number', startingTurnNumber + 1)
-      .eq('recipient_id', secondTurnRecipientId)
-      .maybeSingle();
-    
-    const { data: turn3 } = await supabase
-      .from('pregenerated_turns')
-      .select('turn_number')
-      .eq('chat_id', chatId)
-      .eq('turn_number', startingTurnNumber + 2)
-      .eq('recipient_id', thirdTurnRecipientId)
-      .maybeSingle();
-    
-    if (turn1 && turn2 && turn3) {
-      console.log(`⏸️ Batch ${startingTurnNumber}-${startingTurnNumber + 2} already exists with correct recipient_ids - skipping generation`);
-      return new Response(JSON.stringify({
-        success: true,
-        stored: 0,
-        startingTurnNumber,
-        turnNumbers: [startingTurnNumber, startingTurnNumber + 1, startingTurnNumber + 2],
-        insertedTurnNumbers: [],
-        message: 'Batch already exists'
-      }), {
-        status: 200,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-      });
+    // ✅ ALWAYS compute firstTurnRole from batch position (structural, not conversational)
+    // This guarantees stable role sequence for ALL batches, regardless of hint refresh or normal pregeneration
+    // Batch 0-2 → A→B→A, Batch 3-5 → B→A→B, Batch 6-8 → A→B→A, etc.
+    // Completely removes lastSenderId-based role logic for pregenerated turns
+    let firstTurnRole: "A" | "B";
+    const batchIndex = Math.floor(startingTurnNumber / 3);
+    firstTurnRole = (batchIndex % 2 === 0) ? "A" : "B";
+    console.log(`✅ Calculated firstTurnRole=${firstTurnRole} from batch position (batchIndex=${batchIndex}, startingTurnNumber=${startingTurnNumber})`);
+
+    // ✅ RULE: When batchStartTurn is provided, still fetch existingTurns to prevent duplicates
+    // Frontend deletes only unselected turns, so turns with selected_message may still exist
+    // We must check for existing turns (by turn_number only) to avoid duplicate insertions
+    if (batchStartTurn !== undefined && batchStartTurn !== null) {
+      console.log(`🔄 FORCED REGENERATION: batchStartTurn=${batchStartTurn} provided - bypassing idempotency check but will still check for existing turns to prevent duplicates`);
+      console.log(`🔄 Frontend has already deleted batch ${batchStartTurn}-${batchStartTurn + 2} (unselected turns only) - proceeding with forced regeneration`);
+    } else {
+      // ✅ IDEMPOTENCY CHECK: Verify the batch doesn't already exist (normal flow only)
+      // Check if all 3 turns (startingTurnNumber, startingTurnNumber+1, startingTurnNumber+2) already exist
+      // ✅ FIX: Check each turn with its specific recipient_id
+      const firstTurnRecipientId = firstTurnRole === "A" ? userAId : userBId;
+      const secondTurnRecipientId = firstTurnRole === "A" ? userBId : userAId;
+      const thirdTurnRecipientId = firstTurnRole === "A" ? userAId : userBId;
+      
+      // Check each turn individually with its recipient_id
+      const { data: turn1 } = await supabase
+        .from('pregenerated_turns')
+        .select('turn_number')
+        .eq('chat_id', chatId)
+        .eq('turn_number', startingTurnNumber)
+        .eq('recipient_id', firstTurnRecipientId)
+        .maybeSingle();
+      
+      const { data: turn2 } = await supabase
+        .from('pregenerated_turns')
+        .select('turn_number')
+        .eq('chat_id', chatId)
+        .eq('turn_number', startingTurnNumber + 1)
+        .eq('recipient_id', secondTurnRecipientId)
+        .maybeSingle();
+      
+      const { data: turn3 } = await supabase
+        .from('pregenerated_turns')
+        .select('turn_number')
+        .eq('chat_id', chatId)
+        .eq('turn_number', startingTurnNumber + 2)
+        .eq('recipient_id', thirdTurnRecipientId)
+        .maybeSingle();
+      
+      if (turn1 && turn2 && turn3) {
+        console.log(`⏸️ Batch ${startingTurnNumber}-${startingTurnNumber + 2} already exists with correct recipient_ids - skipping generation`);
+        return new Response(JSON.stringify({
+          success: true,
+          stored: 0,
+          startingTurnNumber,
+          turnNumbers: [startingTurnNumber, startingTurnNumber + 1, startingTurnNumber + 2],
+          insertedTurnNumbers: [],
+          message: 'Batch already exists'
+        }), {
+          status: 200,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
     }
 
     console.log(`📊 Conversation state for pre-generation:`, {
@@ -515,6 +667,35 @@ const messagesData = (rawMessages || []).sort(
       
       expectedTurnNumbers = [startingTurnNumber]; // Only the active turn
       console.log(`✅ Hint refresh mode: Only checking active turn ${startingTurnNumber}`);
+    } else if (batchStartTurn !== undefined && batchStartTurn !== null) {
+      // ✅ FIX: When batchStartTurn is provided, check for existing turns by turn_number only (no recipient_id filter)
+      // This prevents duplicate insertions when frontend preserved turns with selected_message
+      const { data: existingTurn1 } = await supabase
+        .from('pregenerated_turns')
+        .select('turn_number, recipient_id, used_at, selected_message')
+        .eq('chat_id', chatId)
+        .eq('turn_number', startingTurnNumber)
+        .maybeSingle();
+      
+      const { data: existingTurn2 } = await supabase
+        .from('pregenerated_turns')
+        .select('turn_number, recipient_id, used_at, selected_message')
+        .eq('chat_id', chatId)
+        .eq('turn_number', startingTurnNumber + 1)
+        .maybeSingle();
+      
+      const { data: existingTurn3 } = await supabase
+        .from('pregenerated_turns')
+        .select('turn_number, recipient_id, used_at, selected_message')
+        .eq('chat_id', chatId)
+        .eq('turn_number', startingTurnNumber + 2)
+        .maybeSingle();
+      
+      existingTurns = [existingTurn1, existingTurn2, existingTurn3].filter(t => t !== null);
+      expectedTurnNumbers = [startingTurnNumber, startingTurnNumber + 1, startingTurnNumber + 2];
+      existingTurnNumbers = existingTurns?.map((t: { turn_number: number }) => t.turn_number) || [];
+      hasAllExpectedTurns = false; // Always allow regeneration when batchStartTurn is provided, but existingTurns will prevent duplicates
+      console.log(`✅ Batch refresh mode: Checking for existing turns ${expectedTurnNumbers.join(', ')} to prevent duplicates (found: ${existingTurnNumbers.join(', ') || 'none'})`);
     } else {
       // ✅ NORMAL BATCH MODE: Check all 3 turns
       const { data: existingTurn1 } = await supabase
@@ -618,6 +799,7 @@ ${hintFromB ? `
 - If hint_from_b is provided, respect it as User B's private perspective.
 `}
 - If closure is detected, include 1 smiley-only option as one of the 3.
+- Choose appropriate emoji from: 🙂 🤝 ❤️ 😊 🫂 👍 😂 😘 😍 based on relationship and tone
 - Do NOT generate branching beyond ${firstTurnRole === "A" ? "A→B→A" : "B→A→B"}.
 - Do NOT generate more than 3 turns.
 - Do NOT generate fewer than 3 turns.
@@ -654,6 +836,19 @@ thoughts_a: ${thoughtsA || '(none provided)'}
 
 thoughts_b: ${thoughtsB || '(none provided)'}
 
+    // ✅ STEP 4: Logging infrastructure - prompt hint injection (always logs)
+    const hintInPrompt = !!hintFromB && hintFromB.trim().length > 0;
+    const hintSectionIncluded = hintInPrompt;
+    console.log('📝 PROMPT HINT INJECTION: AI prompt construction', {
+      functionName: 'generate-pregenerated-turns',
+      chatId,
+      hintInPrompt,
+      hintSectionIncluded,
+      hintTextInPrompt: hintInPrompt ? hintFromB.substring(0, 100) + "..." : null,
+      hintConditionResult: hintInPrompt,
+      timestamp: new Date().toISOString()
+    });
+
 ${hintFromB ? `
 🔐 USER B'S PRIVATE PERSPECTIVE (PERSISTENT CORE CONTEXT FOR ALL TURNS):
 "${hintFromB}"
@@ -664,6 +859,20 @@ ${hintFromB ? `
 This hint is User B's TRUE PERSPECTIVE and MUST DEEPLY INFLUENCE EVERY SINGLE OPTION generated for User B throughout THE ENTIRE CONVERSATION.
 
 This is NOT optional context - this is REQUIRED FOUNDATIONAL CONTEXT that shapes User B's authentic voice.
+
+🎯 MANDATORY REQUIREMENT - USE EXACT WORDS AND REASONING:
+User B's options MUST incorporate the SPECIFIC words, phrases, and reasoning from the hint above:
+- If the hint mentions specific people, events, or feelings, User B's options MUST reference them naturally
+- User B's options should help them express the EXACT perspective and reasons stated in the hint
+- Use the hint's language and tone to make User B's voice authentic and consistent
+- The hint's key points, concerns, and emotional context MUST be reflected in User B's options
+- Help User B communicate their perspective using similar language and reasoning as the hint, but in a polite, respectful way
+
+EXAMPLE: If hint says "I felt hurt when they said X because Y", User B's options should help them express:
+- That they felt hurt (using similar emotional language)
+- What specifically hurt them (referencing X)
+- Why it hurt (referencing Y)
+- In a way that helps User A understand their perspective
 
 The hint reveals:
 - What User B is GENUINELY feeling about the situation (emotional truth)
@@ -678,16 +887,16 @@ Topic context (neutral, factual): "${summarySharedNeutral || '(none provided)'}"
 User B's Hint (User B's perspective): "${hintFromB}"
 
 GENERATE OPTIONS FOR USER B THAT:
-1. ✅ ALWAYS reflect the emotional tone and subject matter from the hint in EVERY turn
-2. ✅ Help User B express THEIR authentic perspective based on this persistent context
-3. ✅ Show that User B has legitimate feelings, valid reasons, and their own truth
-4. ✅ Allow User B to communicate genuinely without directly exposing the private hint text
-5. ✅ Balance fairness - this conversation has TWO perspectives, not just User A's issue
-6. ✅ Maintain absolute consistency with hint's emotional context across ALL turns
-7. ✅ Use hint to inform tone: if hint shows hurt, options reflect that; if defensive, options reflect that
-8. ✅ Reference subjects/people mentioned in hint naturally throughout conversation
-9. ✅ STRONGLY CONVEY User B's reasons - explain WHY User B felt/acted the way they did
-10. ✅ Help User B articulate their perspective clearly so User A can understand their side
+1. ✅ ALWAYS incorporate the SPECIFIC words, phrases, and reasoning from the hint above
+2. ✅ Help User B express THEIR authentic perspective using similar language as the hint
+3. ✅ Show that User B has legitimate feelings, valid reasons, and their own truth (as stated in hint)
+4. ✅ Reference the specific people, events, and concerns mentioned in the hint naturally
+5. ✅ Use the hint's emotional tone and subject matter in EVERY turn
+6. ✅ Help User B articulate their perspective clearly so User A can understand their side
+7. ✅ Maintain absolute consistency with hint's emotional context and reasoning across ALL turns
+8. ✅ Balance fairness - this conversation has TWO perspectives, not just User A's issue
+9. ✅ Use hint to inform tone: if hint shows hurt, options reflect that; if defensive, options reflect that
+10. ✅ STRONGLY CONVEY User B's reasons from the hint - explain WHY User B felt/acted the way they did
 
 PERSISTENCE RULE:
 The hint doesn't "expire" after first response. User B's feelings and perspective from the hint remain RELEVANT and ACTIVE throughout the ENTIRE conversation. Keep incorporating this context into EVERY set of options generated for User B.
@@ -697,6 +906,9 @@ When generating turns for User B (in the ${firstTurnRole === "A" ? "B → A → 
 - If the sequence has User B in the middle or end, those turns must also reflect the hint
 - ALL User B turns must be consistent with the hint's emotional tone and perspective
 - User B's options must respond to previous messages AND incorporate hint context naturally
+- User B's options MUST use the same words, reasoning, and emotional context from the hint
+
+REMEMBER: The hint is User B's private truth. User B's options must help them express this truth using the EXACT words, reasoning, and emotional context from the hint, in a way that helps both users understand each other better.
 ` : `
 hint_from_b: (none provided)
 `}
@@ -763,6 +975,12 @@ Each option MUST contain:
 Continue the conversation naturally
 Are supportive and consistent with the conversation
 If near closure, include 1 smiley-only option as one of the 3
+Choose appropriate emoji from: 🙂 🤝 ❤️ 😊 🫂 👍 😂 😘 😍
+Match to relationship type and conversation tone:
+- Family: ❤️ 🫂 😊 😘 (warm, supportive)
+- Friends: 😊 🤝 😂 😍 (happy, friendly, playful)
+- Work: 🤝 👍 🙂 (professional, respectful)
+- Romantic: ❤️ 😘 😍 😊 (intimate, caring, affectionate)
 ` : `
 Generate 3 consecutive turns: ${firstTurnRole === "A" ? "A → B → A" : "B → A → B"}.
 Each turn must include 3 short options.
@@ -796,10 +1014,50 @@ Each option MUST contain:
 
 Keep them supportive, natural, and consistent with the conversation.
 If near closure, add a smiley-only option as one of the 3.
+Choose appropriate emoji from: 🙂 🤝 ❤️ 😊 🫂 👍 😂 😘 😍
+Match to relationship type and conversation tone:
+- Family: ❤️ 🫂 😊 😘 (warm, supportive)
+- Friends: 😊 🤝 😂 😍 (happy, friendly, playful)
+- Work: 🤝 👍 🙂 (professional, respectful)
+- Romantic: ❤️ 😘 😍 😊 (intimate, caring, affectionate)
+
+${closureState?.startsWith('pending_') ? `
+⚠️ CLOSURE PENDING - SMILEY REQUIRED:
+- One user has already sent a smiley (${closureState === 'pending_user_a_smiley' ? 'User A' : 'User B'})
+- The other user (${closureState === 'pending_user_a_smiley' ? 'User B' : 'User A'}) MUST have a smiley-only option as one of their 3 options
+- Choose appropriate emoji from: 🙂 🤝 ❤️ 😊 🫂 👍 😂 😘 😍
+- Match to relationship type and conversation tone:
+  * Family: ❤️ 🫂 😊 😘 (warm, supportive)
+  * Friends: 😊 🤝 😂 😍 (happy, friendly, playful)
+  * Work: 🤝 👍 🙂 (professional, respectful)
+  * Romantic: ❤️ 😘 😍 😊 (intimate, caring, affectionate)
+- The other 2 options should be text-based and continue naturally
+- Do NOT force closure - user can still choose text options
+` : ''}
+
+⚠️ CONVERSATION EVOLUTION - DO NOT RESTART:
+- The problem/issue has already been discussed in previous messages
+- Options should EVOLVE emotionally: acknowledgment → reflection → acceptance → closure
+- DO NOT re-explain the problem, re-analyze the situation, or restart the discussion
+- Focus on: understanding, validation, moving forward, closure signals, peace
+- If the conversation shows closure signals (thanks, understanding, peace, smileys), reflect that progression
+- Avoid options that loop back to problem analysis, justification, or re-explaining what happened
+${closureState?.startsWith('pending_') ? '- Once closure is pending, options should focus on: appreciation, mutual understanding, peace, moving forward' : ''}
+- DO NOT restart the problem discussion even if users continue with text messages
 
 CONVERSATION CONTEXT:
 ${conversationHistory.length > 0 ? `
-Last ${conversationHistory.length} message(s) in conversation:
+${conversationProgressSummary ? `📋 Conversation Progress (background context - neutral summary):
+${conversationProgressSummary}
+
+Use this to maintain continuity with earlier parts of the conversation that aren't in the recent messages below.
+⚠️ CRITICAL: This summary is in neutral third-person with "User A"/"User B" labels. When generating turns, NEVER use these labels - always use first/second person pronouns:
+- Turn 1 (${firstTurnRole === "A" ? "User A" : "User B"}): Use "I/me/my" for ${firstTurnRole === "A" ? "User A" : "User B"}, "you/your" for ${firstTurnRole === "A" ? "User B" : "User A"} - NEVER say "User A" or "User B"
+- Turn 2 (${firstTurnRole === "A" ? "User B" : "User A"}): Use "I/me/my" for ${firstTurnRole === "A" ? "User B" : "User A"}, "you/your" for ${firstTurnRole === "A" ? "User A" : "User B"} - NEVER say "User A" or "User B"
+- Turn 3 (${firstTurnRole === "A" ? "User A" : "User B"}): Use "I/me/my" for ${firstTurnRole === "A" ? "User A" : "User B"}, "you/your" for ${firstTurnRole === "A" ? "User B" : "User A"} - NEVER say "User A" or "User B"
+- Third parties use their names or pronouns (he/she/they)
+
+` : ''}Recent messages (last ${conversationHistory.length} message(s)):
 ${conversationHistory.map((msg: any, idx: number) => 
   `${idx + 1}. ${msg.sender_id === userAId ? 'User A' : 'User B'}: "${msg.content}"`
 ).join('\n')}
@@ -1037,16 +1295,59 @@ Use this history to understand the conversation flow and ensure your generated t
     }
 
     const turnsReceived = turnsData.turns.length;
-    // ✅ FIX: Accept 1-3 turns, log warning if partial but continue processing
-    if (turnsReceived < 3) {
+    // ✅ CRITICAL: Validate we got exactly 3 turns (except in hint refresh mode)
+    // Hint refresh mode can generate 1 turn, but normal batches must be exactly 3
+    if (!hintRefreshMode && turnsReceived !== 3) {
+      console.error(`❌ CRITICAL: Expected exactly 3 turns, got ${turnsReceived}`);
+      return new Response(JSON.stringify({
+        error: `Expected exactly 3 turns, got ${turnsReceived}`,
+        success: false,
+        turnsReceived
+      }), {
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+    
+    // ✅ FIX: Accept 1-3 turns in hint refresh mode, log warning if partial
+    if (hintRefreshMode && turnsReceived < 1) {
+      console.warn(`⚠️ Partial response in hint refresh mode: Expected at least 1 turn, got ${turnsReceived}`);
+    } else if (!hintRefreshMode && turnsReceived < 3) {
       console.warn(`⚠️ Partial response after ${maxRetries + 1} attempts: Expected 3 turns, got ${turnsReceived}. Processing available turns.`);
     }
 
+    // ✅ Helper function to check if text is emoji-only
+    const isEmojiOnly = (text: string): boolean => {
+      // Check if text is exactly one emoji (no other characters except whitespace)
+      const trimmed = text.trim();
+      // Unicode emoji regex pattern
+      const emojiPattern = /^[\p{Emoji}\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]+$/u;
+      return emojiPattern.test(trimmed) && trimmed.length > 0;
+    };
+
+    // ✅ Helper function to determine if smiley should be enforced for a turn
+    const shouldEnforceSmiley = (turnIndex: number, recipientId: string): boolean => {
+      // Check if this turn should have a smiley option
+      const isTargetUser = closureState?.startsWith('pending_') 
+        ? (closureState === 'pending_user_a_smiley' && recipientId === userBId) || 
+          (closureState === 'pending_user_b_smiley' && recipientId === userAId)
+        : (userASmileySent && recipientId === userBId) || 
+          (userBSmileySent && recipientId === userAId);
+      
+      // Also enforce if closure is detected (not active/early)
+      const closureDetected = closureState && 
+        closureState !== 'active' && 
+        closureState !== 'early' && 
+        !closureState.startsWith('pending_');
+      
+      return isTargetUser || closureDetected;
+    };
+
     // ✅ FIX: Insert rows into pregenerated_turns table with correct global turn_number
     // Only insert turns that don't already exist (to avoid gaps and preserve used turns)
-    // Process whatever turns we received (1-3), not hardcoded 3
+    // ✅ CRITICAL: In normal mode, must insert exactly 3 turns
     // ✅ GUARDRAIL: In hint refresh mode, only insert the active turn (i=0)
-    const maxTurnsToInsert = hintRefreshMode ? 1 : turnsReceived;
+    const maxTurnsToInsert = hintRefreshMode ? 1 : 3; // Always 3 in normal mode, 1 in hint refresh
     const inserts = [];
     for (let i = 0; i < maxTurnsToInsert && i < turnsReceived; i++) {
       const turn = turnsData.turns[i];
@@ -1091,10 +1392,15 @@ Use this history to understand the conversation flow and ensure your generated t
       }
       
       // ✅ FIX 4: Check if this turn already exists (with or without selected_message)
+      // This prevents duplicate turn numbers, especially when batchStartTurn is provided and frontend preserved turns with selected_message
       const existingTurn = existingTurns?.find((t: { turn_number: number }) => t.turn_number === turnNumber);
       if (existingTurn) {
         // Turn already exists - skip insertion to preserve it (especially if it has selected_message)
-        console.log(`⏸️ Turn ${turnNumber} already exists - skipping insertion to preserve existing turn`);
+        console.log(`⏸️ Turn ${turnNumber} already exists - skipping insertion to preserve existing turn`, {
+          hasSelectedMessage: !!existingTurn.selected_message,
+          recipientId: existingTurn.recipient_id,
+          turnNumber: existingTurn.turn_number
+        });
         continue;
       }
 
@@ -1107,12 +1413,50 @@ Use this history to understand the conversation flow and ensure your generated t
         partialResponse: turnsReceived < 3 // Track if this was from a partial response
       };
 
+      // ✅ POST-GENERATION ENFORCEMENT: Ensure exactly one emoji-only option when needed
+      let finalOptions = [...turn.options]; // Copy options array
+      if (shouldEnforceSmiley(i, recipientId)) {
+        const emojiCount = finalOptions.filter(opt => isEmojiOnly(opt)).length;
+        
+        if (emojiCount === 0) {
+          // No emoji-only option found - add one
+          const emojiPool = ['🙂', '🤝', '❤️', '😊', '🫂', '👍', '😂', '😘', '😍'];
+          // Choose emoji based on relationship type (you may need to extract this from context_data)
+          const chosenEmoji = emojiPool[Math.floor(Math.random() * emojiPool.length)];
+          // Replace the last option with emoji-only
+          finalOptions[finalOptions.length - 1] = chosenEmoji;
+          console.log(`✅ POST-GEN: Enforced smiley option for turn ${turnNumber} (replaced last option)`);
+        } else if (emojiCount > 1) {
+          // Too many emoji-only options - keep first, convert others to text
+          let emojiFound = false;
+          finalOptions = finalOptions.map(opt => {
+            if (isEmojiOnly(opt)) {
+              if (!emojiFound) {
+                emojiFound = true;
+                return opt; // Keep first emoji
+              } else {
+                // Convert additional emojis to text (add context-appropriate text)
+                const textVariants = [
+                  "Thanks! 😊",
+                  "Appreciate it! 🙂",
+                  "Got it! 👍"
+                ];
+                return textVariants[Math.floor(Math.random() * textVariants.length)];
+              }
+            }
+            return opt;
+          });
+          console.log(`✅ POST-GEN: Reduced smiley count for turn ${turnNumber} (kept 1 emoji-only)`);
+        }
+        // If emojiCount === 1, we're good - no changes needed
+      }
+
       inserts.push({
         chat_id: chatId,
         turn_number: turnNumber, // ✅ Use global turn_number, not loop index - ensures sequential storage
         recipient_id: recipientId,
         role: role,
-        options: turn.options,
+        options: finalOptions,
         selected_message: null,
         used_at: null,
         source: null, // ✅ Set to NULL initially - will be set when user selects an option
@@ -1155,6 +1499,18 @@ Use this history to understand the conversation flow and ensure your generated t
     // No need to delete old used turns here - they'll be archived on closure
 
     // ✅ FIX 4: Insert only missing turns (ensures sequential storage without gaps)
+    // ✅ CRITICAL: In normal mode, validate we're inserting exactly 3 turns (or fewer if some exist)
+    if (!hintRefreshMode && inserts.length > 3) {
+      console.error(`❌ CRITICAL: Attempting to insert ${inserts.length} turns, but maximum is 3`);
+      return new Response(JSON.stringify({
+        error: `Cannot insert more than 3 turns per batch`,
+        success: false
+      }), {
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+    
     console.log(`💾 Inserting ${inserts.length} pre-generated turn(s) (ensuring sequential storage)...`);
     const { data: insertedData, error: insertError } = await supabase
       .from("pregenerated_turns")

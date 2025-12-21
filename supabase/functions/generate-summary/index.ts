@@ -490,54 +490,43 @@ Respond with ONLY the JSON structure specified in the system prompt.`
       });
     }
 
-    if (!parsedResponse.summary || !parsedResponse.context_data) {
-      console.error('Invalid response format - creating fallback summaries');
+    // ✅ CRITICAL: ALWAYS NORMALIZE - Find summary from ANY location and produce both summaries
+    // This runs on EVERY successful parse, regardless of Claude's response format
+    // Only use fallback if there's truly no source text (actual failure case)
+    
+    // Step 1: Find the source summary text from ANY location (prefer explicit fields, then fallback to generic)
+    let sourceSummary = 
+      parsedResponse.summary_a_perspective ||  // Prefer explicit A-perspective
+      parsedResponse.summary_shared_neutral ||  // Or explicit neutral
+      parsedResponse.summary ||                 // Or root summary
+      parsedResponse.context_data?.summary_a_perspective ||  // Or context_data A-perspective
+      parsedResponse.context_data?.summary_shared_neutral || // Or context_data neutral
+      parsedResponse.context_data?.summary ||                // Or context_data summary
+      '';  // Empty if truly nothing found
 
-      const fallbackSummary = initial_description.substring(0, 200);
-      const userB = tagged_persons?.find((p: any) => p.is_user_b);
-
-      // Create fallback summaries
-      const fallbackAPerspective = `I experienced: ${fallbackSummary}`;
-      const fallbackNeutral = `The discussion is about: ${fallbackSummary.substring(0, 150)}`;
-
-      return new Response(JSON.stringify({
-        summary: fallbackAPerspective,
-        summary_a_perspective: fallbackAPerspective,
-        summary_shared_neutral: fallbackNeutral,
-        key_points: ['Situation described', 'Needs resolution'],
-        context_data: {
-          summary: fallbackAPerspective,
-          summary_a: fallbackAPerspective,  // backward compatibility
-          summary_a_perspective: fallbackAPerspective,
-          summary_shared_neutral: fallbackNeutral,
-          key_points: ['Situation described', 'Needs resolution'],
-          pronoun_map: userB ? { user_b: 'you/your', third_party: {} } : { third_party: {} },
-          relationship_context: {
-            user_b_role: userB ? 'direct' : 'indirect',
-            category: userB?.relationship || 'General'
-          }
-        }
-      }), {
-        status: 200,
-        headers: {
-          ...corsHeaders,
-          'Content-Type': 'application/json'
-        }
-      });
+    // Step 2: Ensure context_data exists (preserve existing fields if any)
+    if (!parsedResponse.context_data) {
+      parsedResponse.context_data = {};
     }
+    // Preserve existing context_data fields (key_points, pronoun_map, relationship_context, etc.)
+    const existingContextData = { ...parsedResponse.context_data };
 
-    // ✅ ENSURE BOTH SUMMARIES EXIST IN PARSED RESPONSE
-    if (!parsedResponse.summary_a_perspective && parsedResponse.summary) {
-      // Check if summary is in third-person (starts with "The user", "User A", etc.)
-      const summaryText = parsedResponse.summary.trim();
-      const isThirdPerson = /^(The user|User A|They|The person)/i.test(summaryText);
+    // Step 3: If we have source text, ALWAYS normalize to produce both summaries
+    if (sourceSummary && sourceSummary.trim()) {
+      const summaryText = sourceSummary.trim();
       
+      // Detect perspective: third-person starts with "The user", "User A", "They", "The person", or names
+      // First-person starts with "I", "I'm", "I've", "I'd", "I was", etc.
+      const isThirdPerson = /^(The user|User A|They|The person|.*? (accused|made|said|did|was|were|is|are))/i.test(summaryText);
+      const isFirstPerson = /^(I\s|I'm|I've|I'd|I was|I am)/i.test(summaryText);
+
+      let aPerspective: string;
+      let neutralSummary: string;
+
       if (isThirdPerson) {
-        // Summary is already neutral - use it for summary_shared_neutral
-        parsedResponse.summary_shared_neutral = parsedResponse.summary;
-        
-        // Convert to first-person for A-perspective
-        const aPerspective = parsedResponse.summary
+        // Source is neutral/third-person - use as neutral, convert to first-person for A-perspective
+        neutralSummary = summaryText;
+        aPerspective = summaryText
           .replace(/^The user\s+/gi, 'I ')
           .replace(/^User A\s+/gi, 'I ')
           .replace(/\btheir\b/gi, 'my')
@@ -548,89 +537,133 @@ Respond with ONLY the JSON structure specified in the system prompt.`
           .replace(/\bUser A has\b/gi, "I've")
           .replace(/\bUser A would\b/gi, "I'd")
           .replace(/\bUser A was\b/gi, "I was")
-          .replace(/\bUser A's\b/gi, "my");
-        
-        parsedResponse.summary_a_perspective = aPerspective;
-      } else {
-        // Summary is already first-person - use it for A-perspective
-        parsedResponse.summary_a_perspective = parsedResponse.summary;
-        
-        // Convert to third-person for neutral (will be handled by the next if block if missing)
-      }
-      
-      // Update context_data
-      if (parsedResponse.context_data) {
-        parsedResponse.context_data.summary_a_perspective = parsedResponse.summary_a_perspective;
-        if (parsedResponse.summary_shared_neutral) {
-          parsedResponse.context_data.summary_shared_neutral = parsedResponse.summary_shared_neutral;
-        }
-        parsedResponse.context_data.summary_a = parsedResponse.summary_a_perspective; // backward compatibility
-        parsedResponse.context_data.summary = parsedResponse.summary_a_perspective; // backward compatibility
-      }
-    }
-
-    if (!parsedResponse.summary_shared_neutral) {
-      console.warn('⚠️ Warning: Claude did not generate summary_shared_neutral. Creating fallback.');
-      // Create fallback neutral summary from A-perspective by converting to third-person
-      const aPerspectiveText = parsedResponse.summary_a_perspective || parsedResponse.summary || '';
-      const fallbackNeutral = aPerspectiveText
-        ? aPerspectiveText
-            .replace(/^I\s+/gi, 'User A ')
-            .replace(/\bmy\b/gi, 'their')
-            .replace(/\bme\b/gi, 'them')
-            .replace(/\bmyself\b/gi, 'themself')
-            .replace(/\bI\b/gi, 'User A')
-            .replace(/\bI'm\b/gi, 'User A is')
-            .replace(/\bI've\b/gi, 'User A has')
-            .replace(/\bI'd\b/gi, 'User A would')
-        : `The discussion is about: ${initial_description.substring(0, 150)}`;
-      
-      parsedResponse.summary_shared_neutral = fallbackNeutral;
-      
-      // Update context_data too
-      if (parsedResponse.context_data) {
-        parsedResponse.context_data.summary_shared_neutral = fallbackNeutral;
-      } else {
-        parsedResponse.context_data = {
-          summary_shared_neutral: fallbackNeutral,
-        };
-      }
-    }
-
-    // ✅ ENSURE context_data EXISTS and HAS BOTH SUMMARIES
-    if (!parsedResponse.context_data) {
-      parsedResponse.context_data = {};
-    }
-    
-    // ✅ CRITICAL: Ensure summary_a_perspective is ALWAYS in context_data
-    if (!parsedResponse.context_data.summary_a_perspective) {
-      // Use summary_a_perspective from root, or summary as fallback
-      parsedResponse.context_data.summary_a_perspective = parsedResponse.summary_a_perspective || parsedResponse.summary || '';
-    }
-    
-    // ✅ Backward compatibility fields (ALWAYS set from summary_a_perspective)
-    if (parsedResponse.context_data.summary_a_perspective) {
-      parsedResponse.context_data.summary_a = parsedResponse.context_data.summary_a_perspective; // backward compatibility
-      parsedResponse.context_data.summary = parsedResponse.context_data.summary_a_perspective; // backward compatibility
-    }
-    
-    // ✅ CRITICAL: Ensure summary_shared_neutral is set (use the fallback if it was created above)
-    if (!parsedResponse.context_data.summary_shared_neutral) {
-      parsedResponse.context_data.summary_shared_neutral = parsedResponse.summary_shared_neutral || '';
-      // If still empty, create fallback (should have been created above, but double-check)
-      if (!parsedResponse.context_data.summary_shared_neutral && parsedResponse.context_data.summary_a_perspective) {
-        const fallbackNeutral = parsedResponse.context_data.summary_a_perspective
+          .replace(/\bUser A's\b/gi, "my")
+          .replace(/\bthe user\b/gi, 'I')
+          .replace(/\bthe user's\b/gi, "my");
+      } else if (isFirstPerson) {
+        // Source is first-person - use as A-perspective, convert to third-person for neutral
+        aPerspective = summaryText;
+        neutralSummary = summaryText
+          // CRITICAL: Order matters! Do specific contractions FIRST before generic "I"
+          .replace(/\bI'm\b/gi, 'User A is')
+          .replace(/\bI've\b/gi, 'User A has')
+          .replace(/\bI'd\b/gi, 'User A would')
+          .replace(/\bI'll\b/gi, 'User A will')
+          .replace(/\bI was\b/gi, 'User A was')
+          .replace(/\bI am\b/gi, 'User A is')
+          .replace(/\bI were\b/gi, 'User A were')
+          // Then handle "I" at start of sentence
           .replace(/^I\s+/gi, 'User A ')
+          // Then handle standalone "I" in middle (but not in contractions - already handled above)
+          .replace(/\bI\b/gi, 'User A')
+          // Handle possessive and object pronouns
           .replace(/\bmy\b/gi, 'their')
           .replace(/\bme\b/gi, 'them')
           .replace(/\bmyself\b/gi, 'themself')
-          .replace(/\bI\b/gi, 'User A')
+          .replace(/\bmine\b/gi, 'theirs')
+          // Handle "we" and "us" (important for group contexts)
+          .replace(/\bwe\b/gi, 'they')
+          .replace(/\bus\b/gi, 'them')
+          .replace(/\bour\b/gi, 'their')
+          .replace(/\bours\b/gi, 'theirs')
+          .replace(/\bourselves\b/gi, 'themselves');
+      } else {
+        // Ambiguous - assume it's first-person (most common case) and convert to both
+        aPerspective = summaryText;
+        neutralSummary = summaryText
+          // CRITICAL: Order matters! Do specific contractions FIRST before generic "I"
           .replace(/\bI'm\b/gi, 'User A is')
           .replace(/\bI've\b/gi, 'User A has')
-          .replace(/\bI'd\b/gi, 'User A would');
-        parsedResponse.context_data.summary_shared_neutral = fallbackNeutral;
-        parsedResponse.summary_shared_neutral = fallbackNeutral;
+          .replace(/\bI'd\b/gi, 'User A would')
+          .replace(/\bI'll\b/gi, 'User A will')
+          .replace(/\bI was\b/gi, 'User A was')
+          .replace(/\bI am\b/gi, 'User A is')
+          .replace(/\bI were\b/gi, 'User A were')
+          // Then handle "I" at start of sentence
+          .replace(/^I\s+/gi, 'User A ')
+          // Then handle standalone "I" in middle (but not in contractions - already handled above)
+          .replace(/\bI\b/gi, 'User A')
+          // Handle possessive and object pronouns
+          .replace(/\bmy\b/gi, 'their')
+          .replace(/\bme\b/gi, 'them')
+          .replace(/\bmyself\b/gi, 'themself')
+          .replace(/\bmine\b/gi, 'theirs')
+          // Handle "we" and "us" (important for group contexts)
+          .replace(/\bwe\b/gi, 'they')
+          .replace(/\bus\b/gi, 'them')
+          .replace(/\bour\b/gi, 'their')
+          .replace(/\bours\b/gi, 'theirs')
+          .replace(/\bourselves\b/gi, 'themselves');
       }
+
+      // Step 4: CRITICAL VALIDATION - Ensure summaries are different
+      if (aPerspective.trim() === neutralSummary.trim()) {
+        console.warn('⚠️ WARNING: Normalized summaries are identical! Forcing proper conversion.');
+        // Force re-conversion with more aggressive rules
+        neutralSummary = aPerspective
+          .replace(/\bI'm\b/gi, 'User A is')
+          .replace(/\bI've\b/gi, 'User A has')
+          .replace(/\bI'd\b/gi, 'User A would')
+          .replace(/\bI'll\b/gi, 'User A will')
+          .replace(/\bI was\b/gi, 'User A was')
+          .replace(/\bI am\b/gi, 'User A is')
+          .replace(/\bI were\b/gi, 'User A were')
+          .replace(/^I\s+/gi, 'User A ')
+          .replace(/\bI\b/gi, 'User A')
+          .replace(/\bmy\b/gi, 'their')
+          .replace(/\bme\b/gi, 'them')
+          .replace(/\bmyself\b/gi, 'themself')
+          .replace(/\bmine\b/gi, 'theirs')
+          .replace(/\bwe\b/gi, 'they')
+          .replace(/\bus\b/gi, 'them')
+          .replace(/\bour\b/gi, 'their')
+          .replace(/\bours\b/gi, 'theirs')
+          .replace(/\bourselves\b/gi, 'themselves');
+        
+        // If still identical after forced conversion, add prefix to neutral
+        if (aPerspective.trim() === neutralSummary.trim()) {
+          console.error('❌ CRITICAL: Summaries still identical after forced conversion. Adding prefix to neutral.');
+          neutralSummary = `The discussion is about: ${neutralSummary}`;
+        }
+      }
+
+      // Step 5: ALWAYS set both summaries at ROOT level
+      parsedResponse.summary_a_perspective = aPerspective;
+      parsedResponse.summary_shared_neutral = neutralSummary;
+      
+      // Step 6: ALWAYS set both summaries in context_data (preserve existing fields)
+      parsedResponse.context_data = {
+        ...existingContextData,
+        summary_a_perspective: aPerspective,
+        summary_shared_neutral: neutralSummary,
+        summary: aPerspective, // Context summary = A-perspective (backward compat)
+        summary_a: aPerspective, // Context summary_a = A-perspective (backward compat)
+      };
+      
+      // Step 7: Set backward compatibility fields at root
+      parsedResponse.summary = aPerspective; // Root summary = A-perspective (backward compat)
+    } else {
+      // Step 8: TRUE FAILURE CASE - No source summary found at all (should be rare)
+      // This only happens if Claude returned completely invalid response or network/server issue
+      console.error('❌ CRITICAL: No source summary found in Claude response. Using fallback.');
+      const fallbackSummary = initial_description.substring(0, 200);
+      const userB = tagged_persons?.find((p: any) => p.is_user_b);
+
+      const fallbackAPerspective = `I experienced: ${fallbackSummary}`;
+      const fallbackNeutral = `The discussion is about: ${fallbackSummary.substring(0, 150)}`;
+
+      parsedResponse.summary_a_perspective = fallbackAPerspective;
+      parsedResponse.summary_shared_neutral = fallbackNeutral;
+      parsedResponse.summary = fallbackAPerspective;
+      
+      // Preserve existing context_data fields, add fallback summaries
+      parsedResponse.context_data = {
+        ...existingContextData,
+        summary_a_perspective: fallbackAPerspective,
+        summary_shared_neutral: fallbackNeutral,
+        summary: fallbackAPerspective,
+        summary_a: fallbackAPerspective,
+      };
     }
 
     // ✅ LOG BOTH SUMMARIES FOR DEBUGGING (confirm they exist and are different)

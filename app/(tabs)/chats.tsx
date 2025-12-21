@@ -334,7 +334,7 @@ const finalChats = Array.from(contactChatMap.values()).map((chat) => {
   const isUserB = !isUserA;
 
   if (isUserA) {
-    const issueSummary = chat?.context_data?.summary_a || chat?.context_data?.summary || '';
+    const issueSummary = chat?.context_data?.summary_a_perspective || chat?.context_data?.summary_a || chat?.context_data?.summary || '';
     return {
       ...chat,
       ongoing_count: myOngoing,

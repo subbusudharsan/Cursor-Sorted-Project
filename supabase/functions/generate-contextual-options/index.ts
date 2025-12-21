@@ -79,17 +79,6 @@ Deno.serve(async (req) => {
         headers: { ...corsHeaders, "Content-Type": "application/json" }
       });
     }
-    
-    console.log("📥 Edge function received request:", {
-      chatId,
-      recipientId,
-      currentUserId,
-      wordLimit,
-      hasSummary: !!summary,
-      hasThoughts: !!thoughts,
-      hasConversationHistory: !!conversationHistory,
-      conversationHistoryLength: Array.isArray(conversationHistory) ? conversationHistory.length : 0
-    });
 
     // ✅ REMOVED: Word limit no longer used (single-sentence validation only)
 
@@ -108,30 +97,8 @@ Deno.serve(async (req) => {
     // Initialize Supabase client with service role key
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    // ✅ Ensure conversationHistory is an array
-    const safeConversationHistory = Array.isArray(conversationHistory) ? conversationHistory : [];
-    
-    // Detect if this is the very first message from User A
-    const isVeryFirstMessage = safeConversationHistory.length === 0;
-
-    // ✅ Detect conversation timing context (for context-aware opening)
-    let conversationTimingContext = "normal";
-    if (lastMessageTimestamp) {
-      const timeSinceLastMessage = Date.now() - new Date(lastMessageTimestamp).getTime();
-      const minutesSince = timeSinceLastMessage / (1000 * 60);
-      const hoursSince = minutesSince / 60;
-      const daysSince = hoursSince / 24;
-
-      if (minutesSince < 30) {
-        conversationTimingContext = "recent_argument"; // Just happened
-      } else if (hoursSince < 6) {
-        conversationTimingContext = "same_day";
-      } else if (daysSince > 7) {
-        conversationTimingContext = "long_gap"; // Haven't talked in a while
-      }
-    }
-
-    // ✅ Get chat data to properly identify User A vs User B and extract tagged entities
+    // ✅ CRITICAL FIX: Get chat data FIRST (before any logging that uses contextData)
+    // This prevents "Cannot access 'contextData' before initialization" error
     const { data: chatData, error: chatDataError } = await supabase
       .from('chats')
       .select('user_id, contact_id, context_data, user_a_smiley_sent, user_b_smiley_sent, closure_state, is_resolved')
@@ -164,16 +131,85 @@ Deno.serve(async (req) => {
       });
     }
 
+    // ✅ CRITICAL FIX: Initialize contextData EARLY (before any logging that uses it)
+    const contextData = chatData?.context_data || {};
     const isRecipientUserA = recipientId === chatData?.user_id;
     const isRecipientUserB = recipientId === chatData?.contact_id;
-
-    // ✅ Extract context data early to avoid initialization errors
-    const contextData = chatData?.context_data || {};
     const summarySharedNeutral = summary_shared_neutral || contextData.summary_shared_neutral || '';
     
     // ✅ FIX: Retrieve hintFromB from context_data as fallback (similar to summarySharedNeutral)
     const hintFromBWithFallback = hintFromB || hint_from_b || contextData.hint_from_b || contextData.hintFromB || '';
     const shouldUseHint = isRecipientUserB && hintFromBWithFallback;
+    
+    // ✅ STEP 4: Logging infrastructure - payload hint received (always logs)
+    // ✅ NOW safe to use contextData, hintFromBWithFallback, and shouldUseHint
+    console.log('📥 PAYLOAD HINT RECEIVED: Edge function received', {
+      functionName: 'generate-contextual-options',
+      chatId,
+      recipientId,
+      hintFromBParam: hintFromB ? hintFromB.substring(0, 50) + "..." : null,
+      hintFromBParamLength: hintFromB?.length || 0,
+      hintFromBParamAlt: hint_from_b ? hint_from_b.substring(0, 50) + "..." : null,
+      hintFromBParamAltLength: hint_from_b?.length || 0,
+      hintFromContext: contextData.hint_from_b ? contextData.hint_from_b.substring(0, 50) + "..." : null,
+      hintFromContextLength: contextData.hint_from_b?.length || 0,
+      finalHintUsed: hintFromBWithFallback ? hintFromBWithFallback.substring(0, 50) + "..." : null,
+      finalHintLength: hintFromBWithFallback?.length || 0,
+      hintSource: hintFromB ? 'request_body_hintFromB' : (hint_from_b ? 'request_body_hint_from_b' : (contextData.hint_from_b ? 'context_data' : 'none')),
+      shouldUseHint,
+      timestamp: new Date().toISOString()
+    });
+    
+    console.log("📥 Edge function received request:", {
+      chatId,
+      recipientId,
+      currentUserId,
+      wordLimit,
+      hasSummary: !!summary,
+      hasThoughts: !!thoughts,
+      hasConversationHistory: !!conversationHistory,
+      conversationHistoryLength: Array.isArray(conversationHistory) ? conversationHistory.length : 0
+    });
+
+    // ✅ Ensure conversationHistory is an array
+    const safeConversationHistory = Array.isArray(conversationHistory) ? conversationHistory : [];
+    
+    // Detect if this is the very first message from User A
+    const isVeryFirstMessage = safeConversationHistory.length === 0;
+
+    // ✅ Detect conversation timing context (for context-aware opening)
+    let conversationTimingContext = "normal";
+    if (lastMessageTimestamp) {
+      const timeSinceLastMessage = Date.now() - new Date(lastMessageTimestamp).getTime();
+      const minutesSince = timeSinceLastMessage / (1000 * 60);
+      const hoursSince = minutesSince / 60;
+      const daysSince = hoursSince / 24;
+
+      if (minutesSince < 30) {
+        conversationTimingContext = "recent_argument"; // Just happened
+      } else if (hoursSince < 6) {
+        conversationTimingContext = "same_day";
+      } else if (daysSince > 7) {
+        conversationTimingContext = "long_gap"; // Haven't talked in a while
+      }
+    }
+    
+    // ✅ STEP 4: Logging infrastructure - prompt hint injection (always logs)
+    const hintInPrompt = shouldUseHint && hintFromBWithFallback.trim().length > 0;
+    console.log('📝 PROMPT HINT INJECTION: AI prompt construction', {
+      functionName: 'generate-contextual-options',
+      chatId,
+      recipientId,
+      hintInPrompt,
+      hintSectionIncluded: hintInPrompt,
+      hintTextInPrompt: hintInPrompt ? hintFromBWithFallback.substring(0, 100) + "..." : null,
+      promptLength: 0, // Will be calculated when prompt is constructed
+      hintConditionResult: hintInPrompt,
+      shouldUseHint,
+      isRecipientUserB,
+      hintFromBWithFallbackLength: hintFromBWithFallback.length,
+      timestamp: new Date().toISOString()
+    });
     
     // ✅ Extract thoughts and session data early
     const thoughtsA = contextData.thoughts_a || contextData.thoughts || thoughts || '';
@@ -289,7 +325,7 @@ Deno.serve(async (req) => {
         const content = typeof msg === 'object' ? msg.content : String(msg);
         const contentStr = String(content).trim();
         return /^[\p{Emoji}]+$/u.test(contentStr) || 
-               /🙂|😊|❤️|🤝|💙|🫂|✨|👍/.test(contentStr);
+               /🙂|😊|❤️|🤝|🫂|👍|😂|😘|😍/.test(contentStr);
       });
     };
     
@@ -302,7 +338,7 @@ Deno.serve(async (req) => {
       if (!senderMatchesOther) return false;
       const content = String(msg.content || '');
       const contentStr = content.trim();
-      return /^[\p{Emoji}]+$/u.test(contentStr) || /🙂|😊|❤️|🤝|💙|🫂|✨|👍/.test(contentStr);
+      return /^[\p{Emoji}]+$/u.test(contentStr) || /🙂|😊|❤️|🤝|🫂|👍|😂|😘|😍/.test(contentStr);
     });
     
     console.log("👥 User identification:", {
@@ -618,6 +654,38 @@ const cleanPerspective = (text: string | undefined): string => {
 
   let cleaned = text;
 
+  // ✅ NEW: Handle "User A" and "User B" labels from neutral summary
+  // These labels appear in conversation_progress_summary and need perspective conversion
+  if (isRecipientUserA) {
+    // Generating for User A → "User A" becomes "I", "User B" becomes "you"
+    cleaned = cleaned.replace(/\bUser A\b/gi, (match, offset, source) => 
+      applySentenceCase('I', offset, source)
+    );
+    cleaned = cleaned.replace(/\bUser A's\b/gi, (match, offset, source) => 
+      applySentenceCase('my', offset, source)
+    );
+    cleaned = cleaned.replace(/\bUser B\b/gi, (match, offset, source) => 
+      applySentenceCase('you', offset, source)
+    );
+    cleaned = cleaned.replace(/\bUser B's\b/gi, (match, offset, source) => 
+      applySentenceCase('your', offset, source)
+    );
+  } else {
+    // Generating for User B → "User B" becomes "I", "User A" becomes "you"
+    cleaned = cleaned.replace(/\bUser B\b/gi, (match, offset, source) => 
+      applySentenceCase('I', offset, source)
+    );
+    cleaned = cleaned.replace(/\bUser B's\b/gi, (match, offset, source) => 
+      applySentenceCase('my', offset, source)
+    );
+    cleaned = cleaned.replace(/\bUser A\b/gi, (match, offset, source) => 
+      applySentenceCase('you', offset, source)
+    );
+    cleaned = cleaned.replace(/\bUser A's\b/gi, (match, offset, source) => 
+      applySentenceCase('your', offset, source)
+    );
+  }
+
   // ✅ CRITICAL FIX: Replace BOTH @Name and plain Name references
   // The summary may contain "Aradhya said" (without @) which needs to become "you said"
 
@@ -824,6 +892,96 @@ console.log("✅ Perspective cleanup complete - using cleaned versions:", {
   currentMessageLength: cleanCurrentMessage.length,
   conversationHistoryLength: cleanConversationHistory.length
 });
+
+// ✅ HYBRID CONTEXT WINDOW: Update conversation progress summary if stale (best-effort, non-blocking)
+let conversationProgressSummary = contextData?.conversation_progress_summary || '';
+const currentMessageCount = safeConversationHistory.length;
+const lastSummaryMessageCount = contextData?.conversation_progress_message_count || 0;
+const summaryIsStale = (currentMessageCount - lastSummaryMessageCount) >= 12 || !conversationProgressSummary;
+
+if (summaryIsStale && currentMessageCount > 0) {
+  try {
+    console.log(`🔄 Updating conversation progress summary (stale: ${currentMessageCount - lastSummaryMessageCount} messages since last update)`);
+    
+    // Use recent messages for summary (last 10 for good context while keeping tokens low)
+    const messagesToSummarize = safeConversationHistory.slice(-10);
+    
+    // Build prompt for summary generation - use neutral third-person language
+    const userALabel = isRecipientUserA ? 'User A' : 'User B';
+    const userBLabel = isRecipientUserA ? 'User B' : 'User A';
+    
+    const summaryPrompt = `Summarize the conversation progress in 2-3 concise sentences using NEUTRAL THIRD-PERSON language. Focus on:
+- What has been discussed or resolved
+- Current emotional state or progress  
+- Key points or understanding reached
+
+CRITICAL: Use third-person neutral language (e.g., "User A explained...", "User B acknowledged...", "They discussed..."). 
+- Use "User A" and "User B" labels consistently
+- Do NOT use first-person ("I", "me", "my") 
+- Do NOT use names or @ tags
+- This summary will be stored and used as background context for both users
+
+Recent conversation messages:
+${messagesToSummarize.map((msg: any, idx: number) => {
+  const content = typeof msg === 'object' ? msg.content : String(msg);
+  const sender = typeof msg === 'object' && msg.sender_id === recipientId ? userALabel : userBLabel;
+  return `${idx + 1}. ${sender}: "${content.substring(0, 150)}${content.length > 150 ? '...' : ''}"`;
+}).join('\n')}
+
+Generate a brief 2-3 sentence summary in NEUTRAL THIRD-PERSON language (using "User A" and "User B" labels) describing the conversation progress:`;
+
+    // Generate new summary using Haiku (cost-efficient)
+    const summaryResponse = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": CLAUDE_API_KEY,
+        "anthropic-version": "2023-06-01"
+      },
+      body: JSON.stringify({
+        model: "claude-3-5-haiku-20241022",
+        max_tokens: 200,
+        temperature: 0.3,
+        messages: [{
+          role: "user",
+          content: summaryPrompt
+        }]
+      })
+    });
+
+    if (summaryResponse.ok) {
+      const summaryData = await summaryResponse.json();
+      const newSummary = summaryData.content[0].text.trim();
+      
+      if (newSummary && newSummary.length > 20) {
+        // Update context_data with new summary
+        const { error: updateError } = await supabase
+          .from("chats")
+          .update({
+            context_data: {
+              ...contextData,
+              conversation_progress_summary: newSummary,
+              conversation_progress_message_count: currentMessageCount,
+              conversation_progress_last_updated_at: new Date().toISOString()
+            }
+          })
+          .eq("id", chatId);
+        
+        if (!updateError) {
+          conversationProgressSummary = newSummary;
+          console.log(`✅ Conversation progress summary updated (${newSummary.length} chars)`);
+        } else {
+          console.warn("⚠️ Failed to update conversation_progress_summary in DB, using in-memory version:", updateError);
+        }
+      }
+    }
+  } catch (error) {
+    // ✅ Best-effort: Continue with existing summary (or empty) if update fails
+    console.warn("⚠️ Conversation progress summary update failed, using existing summary:", error);
+  }
+} else {
+  console.log(`✅ Using existing conversation progress summary (${conversationProgressSummary.length} chars, ${currentMessageCount - lastSummaryMessageCount} messages since update)`);
+}
 
 // Determine who the AI is generating options for
 const generatingFor = isRecipientUserA ? 'User A' : 'User B';
@@ -1138,7 +1296,7 @@ if (recipientEntity && recipientEntity.entity_name) {
     const thoughtsIndicatePositiveView = /(positive|hopeful|optimistic|better|improved|healing|progress|growth|forward|together|closer)/i.test(allThoughts);
     
     // Detect smiley emojis in conversation
-    const hasSmileyInMessages = /🙂|😊|❤️|🤝|💙|🫂|✨|👍/.test(recentMessages) || 
+    const hasSmileyInMessages = /🙂|😊|❤️|🤝|🫂|👍|😂|😘|😍/.test(recentMessages) || 
                                  safeConversationHistory.some(m => {
                                    const content = typeof m === 'object' ? m.content : String(m);
                                    const contentStr = String(content).trim();
@@ -1667,7 +1825,18 @@ ${!isVeryFirstMessage ? `
   ${structuredContext}
   ${tagContext}
   ` : ''}
-  
+
+${conversationProgressSummary && !isVeryFirstMessage ? `
+📋 CONVERSATION PROGRESS (background context - ${isRecipientUserA ? 'User A' : 'User B'} is speaking):
+${cleanPerspective(conversationProgressSummary)}
+
+Use this to maintain continuity with earlier parts of the conversation that aren't in the recent messages below.
+⚠️ CRITICAL: The summary above has been cleaned for perspective. When generating options:
+- ${isRecipientUserA ? 'User A' : 'User B'} (the speaker) ALWAYS uses "I/me/my" for themselves
+- ${isRecipientUserA ? 'User B' : 'User A'} (the listener) ALWAYS uses "you/your" - NEVER use "User A" or "User B" labels in generated options
+- Third parties (like Selvi) use their names or pronouns (he/she/they)
+- NEVER say "User A did X" or "User B said Y" - always use first/second person pronouns
+` : ''}
 
 ⚠️ CRITICAL RECIPIENT RULE:
 The recipient is the person receiving these message options.
@@ -2269,14 +2438,16 @@ Generate ALL ${isVeryFirstMessage ? '5' : '3'} options as SINGLE EMOJI responses
 - 🙂 (peaceful, content closure)
 - 🤝 (mutual respect and agreement)
 - ❤️ (warm affection and care)
-- 💙 (sincere emotional connection)
 - 😊 (happy, positive closure)
 - 🫂 (supportive embrace)
-- ✨ (new beginning, moving forward)
+- 👍 (thumbs up, agreement)
+- 😂 (laughing, joyful closure)
+- 😘 (kiss, affectionate closure)
+- 😍 (heart eyes, loving closure)
 
 Choose the ${isVeryFirstMessage ? '5' : '3'} most appropriate emojis based on:
-- Relationship type (${contactCategory}): Family = ❤️/🫂, Friends = 😊/🤝, Work = 🤝/👍
-- Conversation tone: Deep emotional = ❤️/💙, Light resolution = 😊/✨
+- Relationship type (${contactCategory}): Family = ❤️/🫂/😊/😘, Friends = 😊/🤝/😂/😍, Work = 🤝/👍/🙂, Romantic = ❤️/😘/😍/😊
+- Conversation tone: Deep emotional = ❤️/😘/😍, Light resolution = 😊/😂, Professional = 🤝/👍
 - Cultural appropriateness
 
 CRITICAL: ONLY single emojis - no text, no combinations, no explanations.
@@ -2286,7 +2457,7 @@ Resolution is emerging. Mix appreciation with smiley options to naturally guide 
 
 Generate ${isVeryFirstMessage ? '5' : '3'} options with MIXED format:
 - ${isVeryFirstMessage ? '2-3' : '1-2'} brief text options showing gratitude/appreciation (short, single sentence)
-- ${isVeryFirstMessage ? '2-3' : '1-2'} SINGLE EMOJI options from: 🙂 🤝 ❤️ 😊 🫂 ✨ 💙
+- ${isVeryFirstMessage ? '2-3' : '1-2'} SINGLE EMOJI options from: 🙂 🤝 ❤️ 😊 🫂 👍 😂 😘 😍
 
 Text options should:
 - Share gratitude or relief tied to something they said
@@ -2294,10 +2465,10 @@ Text options should:
 - Express appreciation naturally: "I appreciate you being open with me"
 
 Emoji options should match relationship and tone:
-- Family: ❤️ 🫂 (warm, supportive)
-- Friends: 😊 🤝 (happy, friendly)
-- Work: 🤝 👍 (professional, respectful)
-- Romantic: ❤️ 💙 😊 (intimate, caring)
+- Family: ❤️ 🫂 😊 😘 (warm, supportive)
+- Friends: 😊 🤝 😂 😍 (happy, friendly, playful)
+- Work: 🤝 👍 🙂 (professional, respectful)
+- Romantic: ❤️ 😘 😍 😊 (intimate, caring, affectionate)
 
 TONE GUIDANCE:
 - Acknowledge the specific progress that was made
@@ -2863,6 +3034,7 @@ ${canUserBAskToShareAfterHint ? `
 
 🎯 CRITICAL - ALL OPTIONS MUST BE RELEVANT, COMPLETE, AND MEANINGFUL:
 - Latest message: "${cleanCurrentMessage}"
+${conversationProgressSummary && !isVeryFirstMessage ? `- Conversation context: ${conversationProgressSummary.substring(0, 150)}${conversationProgressSummary.length > 150 ? '...' : ''}` : ''}
 - ALL ${isVeryFirstMessage ? '5' : '3'} options MUST respond to THIS message OR the summary topic (for first message)
 - ❌ NEVER generate generic, weak, or incomplete options like:
   * "can you tell me more" (too generic, no substance)
@@ -3020,10 +3192,10 @@ ${otherUserSentSmiley || otherUserRecentSmiley ? `
 - Generate ${isVeryFirstMessage ? '5' : '3'} options with ${isVeryFirstMessage ? '2-3' : '1-2'} smiley emojis
 - Mix: ${isVeryFirstMessage ? '2-3' : '1-2'} text options + ${isVeryFirstMessage ? '2' : '1'} smiley emoji
 - This allows both users to close the conversation naturally
-- Choose appropriate emojis: 🙂 🤝 ❤️ 💙 😊 🫂 ✨ 👍
+- Choose appropriate emojis: 🙂 🤝 ❤️ 😊 🫂 👍 😂 😘 😍
 ` : emotionalClosureScore >= 0.8 && safeConversationHistory.length >= 8 ? `
 ✨ VERY HIGH CLOSURE: Generate ALL ${isVeryFirstMessage ? '5' : '3'} options as SINGLE EMOJIS ONLY.
-Choose from: 🙂 🤝 ❤️ 💙 😊 🫂 ✨ 👍
+Choose from: 🙂 🤝 ❤️ 😊 🫂 👍 😂 😘 😍
 Match to relationship (${contactCategory}) and conversation tone.
 NO TEXT - just emojis.
 ` : emotionalClosureScore >= 0.5 ? `
@@ -4280,7 +4452,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       
       // ✅ If other user sent smiley, prioritize smiley options
       if (otherUserSentSmiley || otherUserRecentSmiley) {
-        const emojiPool = ['🙂','🤝','❤️','💙','😊','🫂','✨','👍'];
+        const emojiPool = ['🙂','🤝','❤️','😊','🫂','👍','😂','😘','😍'];
         const emojiCount = enhancedOptions.filter(opt => /^[\p{Emoji}]+$/u.test(opt.trim())).length;
         const targetEmojiCount = isVeryFirstMessage ? 2 : 1; // 1-2 smiley options
         
@@ -4300,8 +4472,8 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
         return;
       }
 
-      const emojiPoolHigh = ['🙂','🤝','❤️','💙','😊','🫂','✨','👍'];
-      const emojiPoolModerate = ['🙂','🤝','😊','❤️'];
+      const emojiPoolHigh = ['🙂','🤝','❤️','😊','🫂','👍','😂','😘','😍'];
+      const emojiPoolModerate = ['🙂','🤝','😊','❤️','😂','😍'];
       const emojiPool = emotionalClosureScore >= 0.8 ? emojiPoolHigh : emojiPoolModerate;
 
       const hasEmojiOption = enhancedOptions.some(opt => /^[\p{Emoji}]+$/u.test(opt.trim()));
@@ -4629,7 +4801,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     }
 
     if (finalClosureDetected) {
-      const emojiPoolHigh = ['🙂','🤝','❤️','💙','😊','🫂','✨','👍'];
+      const emojiPoolHigh = ['🙂','🤝','❤️','😊','🫂','👍','😂','😘','😍'];
       const closureEmoji = selected.find(opt => /^[\p{Emoji}]+$/u.test(opt.trim()));
       if (!closureEmoji) {
         const emojiChoice = emojiPoolHigh[Math.floor(Math.random() * emojiPoolHigh.length)];
@@ -4781,7 +4953,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
         normalized = normalized.replace(/([\p{Emoji}\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}])\1+/gu, '$1');
         
         // Remove repeated text-based smileys like ":):):)" or "😊😊😊"
-        normalized = normalized.replace(/(:\)|:\(|:D|:P|:o|:O|😊|🙂|😁|😄|😃|😀|😉|😎|🤗|🤝|❤️|💙|🫂|✨|👍)\1+/gi, '$1');
+        normalized = normalized.replace(/(:\)|:\(|:D|:P|:o|:O|😊|🙂|😁|😄|😃|😀|😉|😎|🤗|🤝|❤️|🫂|👍|😂|😘|😍)\1+/gi, '$1');
         
         return normalized;
       };
@@ -4841,7 +5013,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
         });
       } else if (currentSmileyCount < 2) {
         // Too few smileys - add single smiley to positions 2 and 4 if they don't have one
-        const smileyEmojis = ['🙂', '😊', '🤝', '❤️', '💙', '🫂', '✨', '👍'];
+        const smileyEmojis = ['🙂', '😊', '🤝', '❤️', '🫂', '👍', '😂', '😘', '😍'];
         let addedCount = 0;
         
         targetSmileyPositions.forEach(pos => {
@@ -4941,6 +5113,19 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     console.log("✅ Successfully inserted options for recipient:", recipientId);
     console.log("   Insert data:", insertData);
     console.log("   Options saved:", normalizedOptions);
+    
+    // ✅ STEP 4: Logging infrastructure - fallback storage (always logs)
+    console.log("💾 FALLBACK STORAGE: generate-contextual-options result storage", {
+      chatId,
+      recipientId,
+      storedInDB: true,
+      tableName: "message_options",
+      recordId: insertData?.id || null,
+      optionsCount: normalizedOptions.length,
+      source: "generate-contextual-options",
+      storageError: null,
+      timestamp: new Date().toISOString()
+    });
 
     console.log("✅ Returning success response with options for recipient:", recipientId);
     
