@@ -5225,23 +5225,41 @@ Respond ONLY with valid JSON:
         .update({ conversation_phase: "discussion" })
         .eq("id", contactChatId);
 
-      // ✅ CRITICAL: Check for pregenerated turns FIRST (from early creation)
-      // If they exist, skip generate-contextual-options entirely - use pregenerated turns only
-      const { data: existingPregens } = await supabase
-        .from("pregenerated_turns")
-        .select("id, turn_number, recipient_id")
-        .eq("chat_id", contactChatId)
-        .eq("recipient_id", user.id) // ✅ Check for User A's turns specifically (turn 0)
-        .is("used_at", null)
-        .limit(1);
+      // ✅ CRITICAL: Wait for early pregeneration to complete before checking
+      // Add a delay and retry mechanism to ensure pregenerated turns are stored
+      // Early pregeneration takes 1-2 seconds, so we wait up to 3 seconds
+      let pregenCheckAttempts = 0;
+      const maxPregenCheckAttempts = 10; // Check up to 3 seconds (10 * 300ms)
+      let existingPregens = null;
+
+      console.log("🔍 Waiting for early pregeneration to complete before checking...");
+      while (pregenCheckAttempts < maxPregenCheckAttempts) {
+        const { data: checkPregens } = await supabase
+          .from("pregenerated_turns")
+          .select("id, turn_number, recipient_id")
+          .eq("chat_id", contactChatId)
+          .eq("recipient_id", user.id) // ✅ Check for User A's turns specifically (turn 0)
+          .is("selected_message", null)
+          .limit(1);
+
+        if (checkPregens && checkPregens.length > 0) {
+          existingPregens = checkPregens;
+          console.log(`✅ Pregenerated turns found after ${pregenCheckAttempts * 300}ms - skipping generate-contextual-options`);
+          break;
+        }
+
+        // Wait 300ms before retrying (early pregeneration takes 1-2 seconds)
+        await new Promise(resolve => setTimeout(resolve, 300));
+        pregenCheckAttempts++;
+      }
 
       if (existingPregens && existingPregens.length > 0) {
         console.log("✅ Pregenerated turns already exist (from early creation) - skipping generate-contextual-options and pregeneration");
         console.log("✅ User A will see options immediately from pregenerated_turns table");
         // ✅ Skip generate-contextual-options entirely - pregenerated turns will be used
       } else {
-        // ✅ Only call generate-contextual-options if pregenerated turns don't exist (fallback only)
-        console.log("ℹ️ No pregenerated turns found - generating contextual options as fallback");
+        // ✅ Only call generate-contextual-options if pregenerated turns don't exist after waiting (fallback only)
+        console.log("⚠️ No pregenerated turns found after waiting - using generate-contextual-options as fallback");
         await supabase.functions.invoke("generate-contextual-options", {
           body: {
             chatId: contactChatId,

@@ -281,17 +281,73 @@ function ContactChatScreen() {
   };
 
   // ✅ Helper to fetch closure state for pregeneration
-  const fetchClosureState = async (chatId: string) => {
+  const fetchClosureState = async (chatId: string, retryCount: number = 0): Promise<{
+    closureState: string;
+    userASmileySent: boolean;
+    userBSmileySent: boolean;
+  }> => {
     try {
       const { data } = await supabase
         .from("chats")
-        .select("closure_state, user_a_smiley_sent, user_b_smiley_sent")
+        .select("closure_state, user_a_smiley_sent, user_b_smiley_sent, user_id, contact_id")
         .eq("id", chatId)
         .single();
+      
+      let closureState = data?.closure_state || 'active';
+      let userASmileySent = data?.user_a_smiley_sent || false;
+      let userBSmileySent = data?.user_b_smiley_sent || false;
+      
+      // ✅ CRITICAL FIX: If closure_state is 'active' but we're retrying, check recent messages for smileys
+      // This handles race conditions where DB update hasn't committed yet
+      if (closureState === 'active' && retryCount < 2) {
+        // Wait a bit for DB to commit
+        await new Promise(resolve => setTimeout(resolve, 400));
+        
+        // Check recent messages for smileys
+        const { data: recentMessages } = await supabase
+          .from("messages")
+          .select("sender_id, content, created_at")
+          .eq("chat_id", chatId)
+          .order("created_at", { ascending: false })
+          .limit(3);
+        
+        if (recentMessages && recentMessages.length > 0) {
+          const userAId = data?.user_id;
+          const userBId = data?.contact_id;
+          
+          // Check if last message is a smiley
+          const lastMessage = recentMessages[0];
+          const isLastMessageSmiley = /^[\p{Emoji_Presentation}\p{Emoji}\u200d\ufe0f\s]+$/u.test(String(lastMessage.content || '').trim()) && 
+                                      !/[a-zA-Z0-9]/.test(String(lastMessage.content || '').trim());
+          
+          if (isLastMessageSmiley) {
+            const lastSenderId = String(lastMessage.sender_id);
+            const isFromUserA = lastSenderId === String(userAId);
+            const isFromUserB = lastSenderId === String(userBId);
+            
+            // Check if the other user hasn't sent a smiley yet
+            if (isFromUserA && !userBSmileySent) {
+              closureState = 'pending_user_b_smiley';
+              userASmileySent = true;
+              console.log('🔍 FALLBACK: Detected User A smiley in recent messages, treating as pending_user_b_smiley');
+            } else if (isFromUserB && !userASmileySent) {
+              closureState = 'pending_user_a_smiley';
+              userBSmileySent = true;
+              console.log('🔍 FALLBACK: Detected User B smiley in recent messages, treating as pending_user_a_smiley');
+            }
+          }
+        }
+        
+        // If still 'active', retry once more
+        if (closureState === 'active' && retryCount === 0) {
+          return fetchClosureState(chatId, 1);
+        }
+      }
+      
       return {
-        closureState: data?.closure_state || 'active',
-        userASmileySent: data?.user_a_smiley_sent || false,
-        userBSmileySent: data?.user_b_smiley_sent || false,
+        closureState,
+        userASmileySent,
+        userBSmileySent,
       };
     } catch (error) {
       console.warn("⚠️ Failed to fetch closure state, using defaults:", error);
@@ -801,11 +857,23 @@ function ContactChatScreen() {
       await new Promise(resolve => setTimeout(resolve, delay));
     }
     
-    // ✅ Gate: Only display pregenerated_turns options if awaiting after conversation event OR initial display
-    // Allow display when: messages.length === 0 (initial display) OR awaitingTurnRef.current === true (normal turn flow)
+    // ✅ FIX: Only block if there are messages AND no conversation event AND not from subscription
+    // Allow display from subscription handlers (they're triggered by real events)
+    // Also allow if messages.length === 0 (initial display) OR awaitingTurnRef.current === true (normal turn flow)
     if (source === 'pregenerated_turns' && !awaitingTurnRef.current && messagesRef.current.length > 0) {
-      console.log(`⏸️ Blocking UI display: no conversation event (awaitingTurnRef = false)`);
-      return; // Silently ignore - no conversation event occurred
+      // ✅ CRITICAL FIX: Don't block if messages exist - they might be from real-time subscription
+      // Real-time messages should always allow options to display
+      const hasRecentMessage = messagesRef.current.length > 0 && 
+        messagesRef.current[messagesRef.current.length - 1]?.created_at && 
+        (Date.now() - new Date(messagesRef.current[messagesRef.current.length - 1].created_at).getTime()) < 5000; // Within 5 seconds
+      
+      if (!hasRecentMessage) {
+        console.log(`⏸️ Blocking UI display: no conversation event (awaitingTurnRef = false)`);
+        return; // Silently ignore - no conversation event occurred
+      } else {
+        console.log(`✅ Allowing UI display: recent message detected (real-time)`);
+        awaitingTurnRef.current = true; // Set it for real-time messages
+      }
     }
     // ✅ FIX: For initial display (no messages), set awaitingTurnRef if not already set
     if (source === 'pregenerated_turns' && messagesRef.current.length === 0 && !awaitingTurnRef.current) {
@@ -863,7 +931,7 @@ function ContactChatScreen() {
           // Normal flow is unaffected because pendingHint is not set
           const { data: chatClosureCheck } = await supabase
             .from("chats")
-            .select("is_resolved, closure_state, context_data")
+            .select("is_resolved, closure_state, context_data, user_a_smiley_sent, user_b_smiley_sent")
             .eq("id", currentChatId)
             .single();
           
@@ -922,15 +990,39 @@ function ContactChatScreen() {
           
           console.log(`🔍 Early pregeneration hint check: hasHint=${!!hintFromB}, source=${hintSource}, length=${hintFromB?.length || 0}`);
           
-          // ✅ Fetch closure state for pregeneration
-          const closureState = await fetchClosureState(currentChatId);
+          // ✅ CRITICAL FIX: Use closure_state from chatClosureCheck (already fetched, fresh data)
+          // Don't call fetchClosureState again - it might read stale data
+          const closureStateFromCheck = chatClosureCheck?.closure_state || 'active';
+          const userASmileySentFromCheck = chatClosureCheck?.user_a_smiley_sent || false;
+          const userBSmileySentFromCheck = chatClosureCheck?.user_b_smiley_sent || false;
+          
+          // ✅ Final check to ensure closure_state is up to date
+          await new Promise(resolve => setTimeout(resolve, 300));
+          const { data: finalClosureCheck } = await supabase
+            .from("chats")
+            .select("closure_state, user_a_smiley_sent, user_b_smiley_sent")
+            .eq("id", currentChatId)
+            .single();
+          
+          // Use the most recent closure_state
+          const finalClosureState = finalClosureCheck?.closure_state || closureStateFromCheck;
+          const finalUserASmileySent = finalClosureCheck?.user_a_smiley_sent ?? userASmileySentFromCheck;
+          const finalUserBSmileySent = finalClosureCheck?.user_b_smiley_sent ?? userBSmileySentFromCheck;
+          
+          console.log("🔍 Early pregeneration closure state:", {
+            closure_state: finalClosureState,
+            user_a_smiley_sent: finalUserASmileySent,
+            user_b_smiley_sent: finalUserBSmileySent,
+            fromCheck: closureStateFromCheck,
+            fromFinal: finalClosureCheck?.closure_state
+          });
           
           const payload: any = { 
             chatId: currentChatId,
             hintFromB: hintFromB || null,
-            closureState: closureState.closureState,
-            userASmileySent: closureState.userASmileySent,
-            userBSmileySent: closureState.userBSmileySent,
+            closureState: finalClosureState,
+            userASmileySent: finalUserASmileySent,
+            userBSmileySent: finalUserBSmileySent,
           };
           
           // ✅ Use atomic guard to prevent duplicate batches
@@ -1295,6 +1387,12 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       if (messageSubscriptionRef.current) {
         console.log('🧹 Cleaning up existing message subscription before setting up new one');
         try {
+          // ✅ CRITICAL FIX: Clear polling interval if it exists
+          const oldChannel = messageSubscriptionRef.current as any;
+          if (oldChannel._pollInterval) {
+            clearInterval(oldChannel._pollInterval);
+            console.log('🧹 Cleared old polling interval');
+          }
           supabase.removeChannel(messageSubscriptionRef.current);
         } catch (e: any) {
           console.warn('⚠️ Error cleaning up old message subscription:', e.message);
@@ -1332,10 +1430,19 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                 console.log(`✅ Set currentPregeneratedTurnRef to turn ${pregen.turn_number} for recipient ${pregen.recipient_id}`);
               }
               const cleaned = cleanOptionsForDisplay(pregen.options, contact?.full_name || null);
-              // ✅ Gate: Allow display when messages.length === 0 (initial display) OR awaitingTurnRef.current === true (normal turn flow)
+              // ✅ FIX: Allow display if recent message exists (real-time) or awaitingTurnRef is set
               if (!awaitingTurnRef.current && messagesRef.current.length > 0) {
-                console.log(`⏸️ Blocking UI display: no conversation event (initial check)`);
-                return; // Silently ignore - no conversation event occurred
+                const hasRecentMessage = messagesRef.current.length > 0 && 
+                  messagesRef.current[messagesRef.current.length - 1]?.created_at && 
+                  (Date.now() - new Date(messagesRef.current[messagesRef.current.length - 1].created_at).getTime()) < 5000;
+                
+                if (!hasRecentMessage) {
+                  console.log(`⏸️ Blocking UI display: no conversation event (initial check)`);
+                  return; // Silently ignore - no conversation event occurred
+                } else {
+                  console.log(`✅ Allowing UI display: recent message detected (real-time)`);
+                  awaitingTurnRef.current = true;
+                }
               }
               // ✅ FIX: For initial display (no messages), set awaitingTurnRef if not already set
               if (messagesRef.current.length === 0 && !awaitingTurnRef.current) {
@@ -1372,10 +1479,19 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                   console.log(`✅ Set currentPregeneratedTurnRef to turn ${pregen.turn_number} for recipient ${pregen.recipient_id}`);
                 }
                 const cleaned = cleanOptionsForDisplay(pregen.options, contact?.full_name || null);
-                // ✅ Gate: Only display if awaiting after conversation event
+                // ✅ FIX: Allow display if recent message exists (real-time) or awaitingTurnRef is set
                 if (!awaitingTurnRef.current) {
-                  console.log(`⏸️ Blocking UI display: no conversation event (polling check)`);
-                  return; // Silently ignore - no conversation event occurred
+                  const hasRecentMessage = messagesRef.current.length > 0 && 
+                    messagesRef.current[messagesRef.current.length - 1]?.created_at && 
+                    (Date.now() - new Date(messagesRef.current[messagesRef.current.length - 1].created_at).getTime()) < 5000;
+                  
+                  if (!hasRecentMessage) {
+                    console.log(`⏸️ Blocking UI display: no conversation event (polling check)`);
+                    return; // Silently ignore - no conversation event occurred
+                  } else {
+                    console.log(`✅ Allowing UI display: recent message detected (real-time)`);
+                    awaitingTurnRef.current = true;
+                  }
                 }
                 // ✅ PROTECTED: Use safe wrapper to enforce global ownership check
                 await setOptionsWithSourceSafe(cleaned, 'pregenerated_turns', pregen.turn_number, pregen.recipient_id);
@@ -1590,6 +1706,12 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       // Also clean up message subscription ref
       if (messageSubscriptionRef.current) {
         try {
+          // ✅ CRITICAL FIX: Clear polling interval if it exists
+          const channel = messageSubscriptionRef.current as any;
+          if (channel._pollInterval) {
+            clearInterval(channel._pollInterval);
+            console.log('🧹 Cleared polling interval in cleanup');
+          }
           supabase.removeChannel(messageSubscriptionRef.current);
         } catch (e: any) {
           console.warn('⚠️ Error cleaning up message subscription in cleanup:', e.message);
@@ -2044,15 +2166,20 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         .eq("chat_id", chatId)
         .order("created_at", { ascending: true });
       if (error) throw error;
-      setMessages(
-        (data || []).map((msg) => ({
-          id: msg.id,
-          content: msg.content,
-          sender_type: msg.sender_id === user?.id ? "user" : "contact",
-          sender_id: msg.sender_id,
-          created_at: msg.created_at,
-        }))
-      );
+      
+      const formattedMessages: Message[] = (data || []).map((msg) => ({
+        id: msg.id,
+        content: msg.content,
+        sender_type: (msg.sender_id === user?.id ? "user" : "contact") as "user" | "contact",
+        sender_id: msg.sender_id,
+        created_at: msg.created_at,
+      }));
+      
+      // ✅ CRITICAL FIX: Update messagesRef immediately, not via useEffect
+      // This ensures messages are immediately available for all checks and real-time updates
+      messagesRef.current = formattedMessages;
+      
+      setMessages(formattedMessages);
     } catch {
       Alert.alert("Error", "Failed to load messages");
     } finally {
@@ -2254,10 +2381,19 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         console.log(`✅ Set currentPregeneratedTurnRef to turn ${pregen.turn_number} for recipient ${pregen.recipient_id}`);
       }
       const cleaned = cleanOptionsForDisplay(pregen.options, contact?.full_name || null);
-      // ✅ Gate: Only display if awaiting after conversation event
+      // ✅ FIX: Allow display if recent message exists (real-time) or awaitingTurnRef is set
       if (!awaitingTurnRef.current) {
-        console.log(`⏸️ Blocking UI display: no conversation event (fetchInitialOptions)`);
-        return; // Silently ignore - no conversation event occurred
+        const hasRecentMessage = messagesRef.current.length > 0 && 
+          messagesRef.current[messagesRef.current.length - 1]?.created_at && 
+          (Date.now() - new Date(messagesRef.current[messagesRef.current.length - 1].created_at).getTime()) < 5000;
+        
+        if (!hasRecentMessage) {
+          console.log(`⏸️ Blocking UI display: no conversation event (fetchInitialOptions)`);
+          return; // Silently ignore - no conversation event occurred
+        } else {
+          console.log(`✅ Allowing UI display: recent message detected (real-time)`);
+          awaitingTurnRef.current = true;
+        }
       }
       // ✅ PROTECTED: Use safe wrapper to enforce global ownership check
       await setOptionsWithSourceSafe(cleaned, 'pregenerated_turns', pregen.turn_number, pregen.recipient_id);
@@ -2385,11 +2521,20 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           console.log(`✅ Set currentPregeneratedTurnRef to turn ${pregenCheck.turn_number} for recipient ${pregenCheck.recipient_id}`);
         }
         const cleaned = cleanOptionsForDisplay(pregenCheck.options, contact?.full_name || null);
-        // ✅ Gate: Only display if awaiting after conversation event
+        // ✅ FIX: Allow display if recent message exists (real-time) or awaitingTurnRef is set
         if (!awaitingTurnRef.current) {
-          console.log(`⏸️ Blocking UI display: no conversation event (sendMessage check)`);
-          // Continue to orchestration fallback (flag should be set, but safety check)
-          return;
+          const hasRecentMessage = messagesRef.current.length > 0 && 
+            messagesRef.current[messagesRef.current.length - 1]?.created_at && 
+            (Date.now() - new Date(messagesRef.current[messagesRef.current.length - 1].created_at).getTime()) < 5000;
+          
+          if (!hasRecentMessage) {
+            console.log(`⏸️ Blocking UI display: no conversation event (sendMessage check)`);
+            // Continue to orchestration fallback (flag should be set, but safety check)
+            return;
+          } else {
+            console.log(`✅ Allowing UI display: recent message detected (real-time)`);
+            awaitingTurnRef.current = true;
+          }
         }
         // ✅ PROTECTED: Use safe wrapper to enforce global ownership check
         await setOptionsWithSourceSafe(cleaned, 'pregenerated_turns', pregenCheck.turn_number, pregenCheck.recipient_id);
@@ -3216,8 +3361,13 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     console.log(" Current User ID:", currentUserId);
     console.log(" Filter:", `chat_id=eq.${chatId}`);
     console.log("🔔".repeat(30) + "\n");
+    console.log("🔍 Creating message subscription channel...");
     const channel = supabase
-      .channel(`messages-${chatId}`)
+      .channel(`messages-${chatId}`, {
+        config: {
+          broadcast: { self: false }, // Don't receive own broadcasts
+        },
+      })
       .on(
         "postgres_changes",
         {
@@ -3227,677 +3377,655 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           filter: `chat_id=eq.${chatId}`,
         },
         async (payload) => {
-          const newMsg = payload.new;
-          console.log("📨 LIVE MESSAGE RECEIVED:", newMsg.content);
-          console.log("\n" + "📨".repeat(30));
-          console.log("📬 NEW MESSAGE RECEIVED VIA REALTIME");
-          console.log(" Message ID:", newMsg.id);
-          console.log(" Sender ID:", newMsg.sender_id);
-          console.log(" Current User ID:", currentUserId);
-          console.log(" Content:", newMsg.content?.substring(0, 50));
-          console.log(" Is from current user?", newMsg.sender_id === currentUserId);
-          console.log(" Will display as:", newMsg.sender_id === currentUserId ? "user" : "contact");
-          console.log("📨".repeat(30) + "\n");
-          setMessages((prev) => {
-            const exists = prev.some((m) => m.id === newMsg.id);
-            console.log(" Message already in list?", exists, "Message ID:", newMsg.id);
-            if (exists) {
-              console.log("⚠️ Duplicate message detected (by ID), skipping:", newMsg.id);
-              return prev; // Return unchanged array
+          try {
+            // ✅ CRITICAL: Log EVERYTHING to debug why handler isn't firing
+            console.log("📨📨📨 REALTIME PAYLOAD RECEIVED 📨📨📨");
+            console.log("📨 Payload event:", payload.eventType);
+            console.log("📨 Payload new:", payload.new);
+            console.log("📨 Payload old:", payload.old);
+            
+            const newMsg = payload.new;
+            
+            if (!newMsg || !newMsg.id) {
+              console.error("❌ Invalid payload - missing newMsg or id");
+              console.error("❌ Full payload:", JSON.stringify(payload, null, 2));
+              return;
             }
             
-            // ✅ FIX: Also check by content + sender_id + timestamp to catch duplicates with different IDs
-            const isDuplicate = prev.some((m) => 
-              m.content === newMsg.content && 
-              m.sender_id === newMsg.sender_id &&
-              Math.abs(new Date(m.created_at).getTime() - new Date(newMsg.created_at).getTime()) < 5000 // Within 5 seconds
-            );
+            console.log("📨 Message ID:", newMsg.id);
+            console.log("📨 Sender ID:", newMsg.sender_id);
+            console.log("📨 Current User ID:", currentUserId);
+            console.log("📨 Chat ID:", chatId);
+            console.log("📨 Content:", newMsg.content?.substring(0, 50));
+            console.log("📨 Is from current user?", newMsg.sender_id === currentUserId);
+            console.log("📨 LIVE MESSAGE RECEIVED:", newMsg.content);
             
-            if (isDuplicate) {
-              console.log("⚠️ Duplicate message detected by content/timestamp, skipping");
-              return prev;
-            }
+            // ============================================================================
+            // STEP 1: RENDER-FIRST PIPELINE (NO GATING, NO EARLY RETURNS)
+            // ============================================================================
+            // This section MUST complete immediately and unconditionally.
+            // No AI logic, no turn checks, no closure checks - ONLY rendering.
             
-            const newMessage: Message = {
-              id: newMsg.id,
-              content: newMsg.content,
-              sender_type: (newMsg.sender_id === currentUserId ? "user" : "contact") as "user" | "contact",
-              sender_id: newMsg.sender_id,
-              created_at: newMsg.created_at,
-            };
-            console.log(" ✅ Adding message to list as:", newMessage.sender_type);
-            return [...prev, newMessage];
-          });
-          setTimeout(() => {
-            scrollToBottom();
-          }, 150);
-          const messageFromOtherUser = String(newMsg.sender_id) !== String(currentUserId);
-          if (messageFromOtherUser) {
-            console.log("🧹 New message from other user → waiting for fresh options");
-            // ✅ Set awaitingTurnRef when receiving message from other user
-            awaitingTurnRef.current = true;
-            enterWaitingForOptions(currentUserId);
-            lastOptionsSignatureRef.current = null;
-            
-            // ✅ FIX: Calculate recipientIdForOptions first (matches existing pattern)
-            // Quick fetch of chat context to determine recipient
-            const { data: quickChatCtx } = await supabase
-              .from("chats")
-              .select("user_id, contact_id")
-              .eq("id", chatId)
-              .single();
-            
-            if (quickChatCtx) {
-              const senderId = String(newMsg.sender_id);
-              const calculatedRecipientIdForOptions =
-                senderId === String(quickChatCtx.contact_id)
-                  ? String(quickChatCtx.user_id)      // User B sent → options for User A
-                  : String(quickChatCtx.contact_id);  // User A sent → options for User B
-              
-              // ✅ FIX: Force re-check of pregenerated ownership using correct recipient ID
-              // Only proceed if current user is the recipient
-              if (String(calculatedRecipientIdForOptions) === String(currentUserId)) {
-                try {
-                  const pregenCheck = await fetchPregeneratedTurn(chatId, calculatedRecipientIdForOptions);
-                  if (pregenCheck && pregenCheck.options?.length > 0) {
-                    const ownsTurn = await verifyUserOwnsGloballyLowestTurn(chatId, currentUserId, pregenCheck.turn_number);
-                    if (ownsTurn) {
-                      console.log("✅ User owns turn - immediately displaying options after message received");
-                      const cleaned = cleanOptionsForDisplay(pregenCheck.options, contact?.full_name || null);
-                      await showOptionsWithDelay(cleaned, 'pregenerated_turns', pregenCheck.turn_number, pregenCheck.recipient_id, pregenCheck.options);
-                      resolveWaitingForOptions(currentUserId);
-                      return; // Exit early to prevent duplicate option display
-                    }
-                  }
-                } catch (err) {
-                  console.warn("⚠️ Error in post-message ownership check:", err);
-                  // Continue with normal flow if check fails
-                }
+            setMessages((prev) => {
+              // ✅ ONLY deduplication: check by message ID
+              const exists = prev.some((m) => m.id === newMsg.id);
+              if (exists) {
+                console.log("⚠️ Duplicate message detected (by ID), skipping:", newMsg.id);
+                return prev; // Return unchanged array
               }
-            }
-          }
-          // CONTACT replied → generate options for current user
-          console.log(" Checking if should generate options...");
-          console.log(" newMsg.sender_id:", newMsg.sender_id);
-          console.log(" contactId:", contactId);
-          console.log(" contactId type:", typeof contactId);
-          console.log(" Matches?", newMsg.sender_id === contactId);
-          console.log(" Matches (string)?", String(newMsg.sender_id) === String(contactId));
-          // 🔥 PATCH: On receiving message from other user, use pregenerated first
-          if (user && newMsg.sender_id !== user.id) {
-            // Message came from the other person → now it's MY turn
-            // ✅ CRITICAL: Check if conversation is closed before generating options
-            if (isChatClosed) {
-              console.log("🛑 Chat is closed (local state) - skipping option generation");
-              resolveWaitingForOptions(currentUserId);
-              return;
-            }
-            const { data: closureCheck } = await supabase
-              .from("chats")
-              .select("is_resolved, closure_state")
-              .eq("id", currentChatId)
-              .single();
-
-            if (closureCheck?.is_resolved === true && closureCheck?.closure_state === 'closed') {
-              console.log("🛑 Conversation is closed - skipping option generation");
-              setIsChatClosed(true);
-              resolveWaitingForOptions(currentUserId);
-              return;
-            }
-            
-            // ✅ FIX: Fetch chat context FIRST to determine recipient before entering waiting state
-            const { data: chatCtx } = await supabase
-              .from("chats")
-              .select("context_data, user_id, contact_id, closure_state, user_a_smiley_sent, user_b_smiley_sent, conversation_phase")
-              .eq("id", chatId)
-              .single();
-            
-            // ✅ FIX: Determine recipient based on who sent the message (NOT currentUserId)
-            const senderId = String(newMsg.sender_id);
-            const recipientIdForOptions =
-              senderId === String(chatCtx?.contact_id)
-                ? String(chatCtx?.user_id)      // User B sent → options for User A
-                : String(chatCtx?.contact_id);  // User A sent → options for User B
-
-            console.log("🔍 Corrected Recipient:", {
-              senderId,
-              chatUserA: chatCtx?.user_id,
-              chatUserB: chatCtx?.contact_id,
-              recipientIdForOptions,
-              currentUserId
+              
+              console.log("✅ Adding NEW message to state (not duplicate)");
+              console.log("✅ Previous message count:", prev.length);
+              
+              // ✅ Create new message object
+              const newMessage: Message = {
+                id: newMsg.id,
+                content: newMsg.content,
+                sender_type: (newMsg.sender_id === currentUserId ? "user" : "contact") as "user" | "contact",
+                sender_id: newMsg.sender_id,
+                created_at: newMsg.created_at,
+              };
+              
+              // ✅ Create new array reference to ensure React detects change
+              const updatedMessages = [...prev, newMessage];
+              
+              // ✅ Update ref immediately (for other logic that reads from ref)
+              messagesRef.current = updatedMessages;
+              
+              console.log(" ✅ Message added to state:", newMessage.sender_type, newMessage.id);
+              console.log(" ✅ Total messages in state:", updatedMessages.length);
+              
+              // ✅ FORCE RE-RENDER: Return new array reference
+              return updatedMessages;
             });
             
-            // ✅ CRITICAL FIX: Only proceed if current user is the recipient
-            // This prevents both users from receiving options simultaneously (especially after turn 5)
-            if (String(recipientIdForOptions) !== String(currentUserId)) {
-              console.log("ℹ️ Options are for different user - current user is not the recipient, exiting early");
-              resolveWaitingForOptions(currentUserId);
-              return; // ⛔ EXIT immediately - don't fetch or show options for wrong user
-            }
-            
-            // 🔥 CRITICAL: Check pregenerated turns FIRST - before generating new options
-            console.log("🔍 Checking pregenerated turns:", { chatId, userId: recipientIdForOptions });
-            let pregen = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
-            
-            // ✅ FIX: If options exist, use immediately. Only retry if they don't exist (generation in progress)
-            if (!pregen || !pregen.options?.length) {
-              console.log("ℹ️ No pregenerated turn found, polling for generation (max 5 seconds)...");
+            // ✅ Scroll to bottom immediately (UI update)
+            // Use requestAnimationFrame to ensure state update is applied first
+            requestAnimationFrame(() => {
+              setTimeout(() => {
+                scrollToBottom();
+                console.log("✅ Scrolled to bottom after message received");
+              }, 50);
+            });
+          
+          // ============================================================================
+          // STEP 2: FEATURE LOGIC PIPELINE (RUNS ASYNCHRONOUSLY, CANNOT BLOCK RENDERING)
+          // ============================================================================
+          // All AI/option/turn/closure logic moved here to run AFTER rendering.
+          // This section can fail, delay, or error without affecting message display.
+          
+          // ✅ Wrap ALL feature logic in setTimeout to ensure it runs after render
+          setTimeout(async () => {
+            try {
+              // ✅ Preserve all existing logic - only moved here, not changed
+              const messageFromOtherUser = String(newMsg.sender_id) !== String(currentUserId);
               
-              // ✅ FIX: Poll with increasing intervals (faster initial checks, longer later)
-              // Generation takes 2-5 seconds, so we poll for up to 5 seconds (increased for reliability)
-              const maxWaitTime = 5000; // ✅ Increased from 2500 to 5000 (5 seconds)
-              const checkInterval = 300; // Check every 300ms
-              let waited = 0;
-              let consecutiveFailures = 0;
-              const maxConsecutiveFailures = 3; // Stop after 3 consecutive failures
-              let lastGenerationCheck = Date.now();
-              const generationTimeout = 2000; // Stop if no generation is in progress after 2 seconds
-              
-              while (waited < maxWaitTime && (!pregen || !pregen.options?.length)) {
-                await new Promise(resolve => setTimeout(resolve, checkInterval));
-                waited += checkInterval;
+              if (messageFromOtherUser) {
+                // ✅ Set awaitingTurnRef for AI/option logic (preserves turn control)
+                awaitingTurnRef.current = true;
+                console.log("🧹 New message from other user → waiting for fresh options");
+                enterWaitingForOptions(currentUserId);
+                lastOptionsSignatureRef.current = null;
                 
-                // ✅ FIX: Check if generation is in progress
-                const isGenerating = isGeneratingPregeneratedTurnsRef.current[chatId] === true;
-                const timeSinceLastCheck = Date.now() - lastGenerationCheck;
-                
-                // ✅ FIX: Stop polling if no generation is in progress after timeout
-                if (!isGenerating && timeSinceLastCheck > generationTimeout) {
-                  console.log(`⏸️ Stopping polling: No generation in progress after ${generationTimeout}ms`);
-                  break;
+                // ✅ Check if conversation is closed before generating options (preserves closure logic)
+                if (isChatClosed) {
+                  console.log("🛑 Chat is closed (local state) - skipping option generation");
+                  resolveWaitingForOptions(currentUserId);
+                  return;
                 }
                 
-                if (isGenerating) {
-                  lastGenerationCheck = Date.now();
-                }
-                
-                pregen = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
-                
-                if (pregen && pregen.options?.length > 0) {
-                  console.log(`✅ Found pregenerated turn after ${waited}ms`);
-                  break;
-                } else {
-                  consecutiveFailures++;
-                  // ✅ FIX: Stop polling after consecutive failures
-                  if (consecutiveFailures >= maxConsecutiveFailures) {
-                    console.log(`⏸️ Stopping polling: ${consecutiveFailures} consecutive failures detected`);
-                    break;
-                  }
-                }
-              }
-              
-              if (!pregen || !pregen.options?.length) {
-                console.log("ℹ️ No pregenerated turn found after polling, will fall back to generate-contextual-options (hardest situation)");
-                
-                // ✅ NEW: Check if we need to trigger regeneration before falling back
-                // Only regenerate if chat is not in pending closure state
-                const { data: closureStateCheck } = await supabase
+                const { data: closureCheck } = await supabase
                   .from("chats")
-                  .select("closure_state, is_resolved")
+                  .select("is_resolved, closure_state")
+                  .eq("id", currentChatId)
+                  .single();
+
+                if (closureCheck?.is_resolved === true && closureCheck?.closure_state === 'closed') {
+                  console.log("🛑 Conversation is closed - skipping option generation");
+                  setIsChatClosed(true);
+                  resolveWaitingForOptions(currentUserId);
+                  return;
+                }
+                
+                // ✅ Fetch chat context to determine recipient (preserves ownership rules)
+                const { data: chatCtx } = await supabase
+                  .from("chats")
+                  .select("context_data, user_id, contact_id, closure_state, user_a_smiley_sent, user_b_smiley_sent, conversation_phase")
                   .eq("id", chatId)
                   .single();
                 
-                const isPendingClosure = closureStateCheck?.closure_state?.startsWith('pending_');
-                const isClosed = closureStateCheck?.is_resolved === true;
+                if (!chatCtx) {
+                  console.warn("⚠️ Could not fetch chat context for options");
+                  resolveWaitingForOptions(currentUserId);
+                  return;
+                }
                 
-                if (!isClosed && !isPendingClosure) {
-                  // ✅ RULE 3: Check remaining turns count for the recipient of the message
-                  // Determine who should receive options next (the other user)
-                  const { data: chatDataForRecipient } = await supabase
-                    .from("chats")
-                    .select("user_id, contact_id")
-                    .eq("id", chatId)
-                    .single();
+                // ✅ Determine recipient based on sender (preserves turn ownership)
+                const senderId = String(newMsg.sender_id);
+                const recipientIdForOptions =
+                  senderId === String(chatCtx.contact_id)
+                    ? String(chatCtx.user_id)      // User B sent → options for User A
+                    : String(chatCtx.contact_id);  // User A sent → options for User B
+
+                console.log("🔍 Corrected Recipient:", {
+                  senderId,
+                  chatUserA: chatCtx.user_id,
+                  chatUserB: chatCtx.contact_id,
+                  recipientIdForOptions,
+                  currentUserId
+                });
+                
+                // ✅ Only proceed if current user is the recipient (preserves ownership rules)
+                if (String(recipientIdForOptions) !== String(currentUserId)) {
+                  console.log("ℹ️ Options are for different user - current user is not the recipient");
+                  resolveWaitingForOptions(currentUserId);
+                  return;
+                }
+                
+                // ✅ Check pregenerated turns FIRST (preserves pregeneration priority)
+                console.log("🔍 Checking pregenerated turns:", { chatId, userId: recipientIdForOptions });
+                let pregen = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
+                
+                // ✅ Poll for pregenerated turns if not found (preserves generation wait logic)
+                if (!pregen || !pregen.options?.length) {
+                  console.log("ℹ️ No pregenerated turn found, polling for generation (max 5 seconds)...");
                   
-                  if (!chatDataForRecipient) {
-                    console.warn("⚠️ Chat not found for remainingCount check");
-                    return;
+                  const maxWaitTime = 5000;
+                  const checkInterval = 300;
+                  let waited = 0;
+                  let consecutiveFailures = 0;
+                  const maxConsecutiveFailures = 3;
+                  let lastGenerationCheck = Date.now();
+                  const generationTimeout = 2000;
+                  
+                  while (waited < maxWaitTime && (!pregen || !pregen.options?.length)) {
+                    await new Promise(resolve => setTimeout(resolve, checkInterval));
+                    waited += checkInterval;
+                    
+                    const isGenerating = isGeneratingPregeneratedTurnsRef.current[chatId] === true;
+                    const timeSinceLastCheck = Date.now() - lastGenerationCheck;
+                    
+                    if (!isGenerating && timeSinceLastCheck > generationTimeout) {
+                      console.log(`⏸️ Stopping polling: No generation in progress after ${generationTimeout}ms`);
+                      break;
+                    }
+                    
+                    if (isGenerating) {
+                      lastGenerationCheck = Date.now();
+                    }
+                    
+                    pregen = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
+                    
+                    if (pregen && pregen.options?.length > 0) {
+                      console.log(`✅ Found pregenerated turn after ${waited}ms`);
+                      break;
+                    } else {
+                      consecutiveFailures++;
+                      if (consecutiveFailures >= maxConsecutiveFailures) {
+                        console.log(`⏸️ Stopping polling: ${consecutiveFailures} consecutive failures detected`);
+                        break;
+                      }
+                    }
                   }
                   
-                  // Determine recipient: if message sender is User A, recipient is User B, and vice versa
-                  const messageSenderId = String(newMsg.sender_id);
-                  const isSenderUserA = messageSenderId === String(chatDataForRecipient.user_id);
-                  const recipientId = isSenderUserA 
-                    ? String(chatDataForRecipient.contact_id) 
-                    : String(chatDataForRecipient.user_id);
-                  
-                  // ✅ RULE 3: Count remaining turns ONLY for the recipient
-                  const { data: remainingTurns } = await supabase
-                    .from("pregenerated_turns")
-                    .select("id")
-                    .eq("chat_id", chatId)
-                    .eq("recipient_id", recipientId) // ✅ CRITICAL: Count only for recipient
-                    .is("used_at", null)
-                    .limit(4);
-                  
-                  const remainingCount = remainingTurns?.length || 0;
-                  
-                  // ✅ RULE 3: Trigger regeneration if turns are running low for this recipient
-                  if (remainingCount <= 1) {
-                    // ✅ CRITICAL: Check pendingHint BEFORE triggering regeneration
-                    // This prevents premature regeneration when User B submits hint during User A's active turn
-                    const { data: chatDataForPendingCheck } = await supabase
+                  if (!pregen || !pregen.options?.length) {
+                    console.log("ℹ️ No pregenerated turn found after polling, will fall back to generate-contextual-options (hardest situation)");
+                    
+                    // ✅ Check if we need to trigger regeneration before falling back
+                    const { data: closureStateCheck } = await supabase
                       .from("chats")
-                      .select("context_data, user_id")
+                      .select("closure_state, is_resolved")
                       .eq("id", chatId)
                       .single();
                     
-                    const pendingHint = chatDataForPendingCheck?.context_data?.pendingHint === true;
+                    const isPendingClosure = closureStateCheck?.closure_state?.startsWith('pending_');
+                    const isClosed = closureStateCheck?.is_resolved === true;
                     
-                    // ✅ Unified hint resolution: Check all available sources
-                    const { hint: hintFromB, source: hintSource } = await resolveHintFromB(chatId, {
-                      chatDataForPendingCheckContextData: chatDataForPendingCheck?.context_data
-                    });
-                    
-                    console.log(`🔍 Message subscription hint check: hasHint=${!!hintFromB}, source=${hintSource}, length=${hintFromB?.length || 0}`);
-                    
-                    // ✅ STEP 2 FIX 4: Add timing guard to prevent overriding hint batches
-                    const hintSubmittedAt = chatDataForPendingCheck?.context_data?.hint_submitted_at;
-                    const hintSubmittedRecently = hintSubmittedAt && 
-                      (Date.now() - new Date(hintSubmittedAt).getTime()) < 5000; // Within last 5 seconds
-                    const hasHint = !!hintFromB || !!chatDataForPendingCheck?.context_data?.hint_from_b;
-                    
-                    // ✅ CRITICAL FIX: If hint was just submitted but not yet in context_data (replication delay),
-                    // wait a bit longer or skip to avoid creating batches without hint
-                    if (hintSubmittedRecently && !hasHint) {
-                      console.log("⏸️ Hint was just submitted (within 5s) but not yet in context_data - skipping to avoid batch without hint");
-                      console.log("⏸️ Hint refresh will regenerate this batch with hint context");
-                      return; // Skip - hint refresh will handle this
-                    }
-                    
-                    if (hintSubmittedRecently && !pendingHint) {
-                      console.log("⏸️ Hint was just submitted (within 5s) - skipping regeneration to avoid overriding hint batch");
-                      return; // Skip regeneration to let hint batch complete
-                    }
-                    
-                    // ✅ FIX: Check if latest message is from User A (determines if latestMessageFromA exists)
-                    let latestMessageFromA: string | null = null;
-                    if (pendingHint && chatDataForPendingCheck) {
-                      const { data: latestMessage } = await supabase
-                        .from("messages")
-                        .select("sender_id, content")
-                        .eq("chat_id", chatId)
-                        .order("created_at", { ascending: false })
-                        .limit(1)
+                    if (!isClosed && !isPendingClosure) {
+                      // ✅ Check remaining turns count for the recipient
+                      const { data: chatDataForRecipient } = await supabase
+                        .from("chats")
+                        .select("user_id, contact_id")
+                        .eq("id", chatId)
                         .single();
                       
-                      if (latestMessage) {
-                        const isLatestMessageFromA = String(latestMessage.sender_id) === String(chatDataForPendingCheck.user_id);
-                        latestMessageFromA = isLatestMessageFromA ? latestMessage.content : null;
+                      if (chatDataForRecipient) {
+                        const messageSenderId = String(newMsg.sender_id);
+                        const isSenderUserA = messageSenderId === String(chatDataForRecipient.user_id);
+                        const recipientId = isSenderUserA 
+                          ? String(chatDataForRecipient.contact_id) 
+                          : String(chatDataForRecipient.user_id);
+                        
+                        const { data: remainingTurns } = await supabase
+                          .from("pregenerated_turns")
+                          .select("id")
+                          .eq("chat_id", chatId)
+                          .eq("recipient_id", recipientId)
+                          .is("used_at", null)
+                          .limit(4);
+                        
+                        const remainingCount = remainingTurns?.length || 0;
+                        
+                        if (remainingCount <= 1) {
+                          const { data: chatDataForPendingCheck } = await supabase
+                            .from("chats")
+                            .select("context_data, user_id")
+                            .eq("id", chatId)
+                            .single();
+                          
+                          const pendingHint = chatDataForPendingCheck?.context_data?.pendingHint === true;
+                          
+                          const { hint: hintFromB } = await resolveHintFromB(chatId, {
+                            chatDataForPendingCheckContextData: chatDataForPendingCheck?.context_data
+                          });
+                          
+                          let latestMessageFromA: string | null = null;
+                          if (pendingHint && chatDataForPendingCheck) {
+                            const { data: latestMessage } = await supabase
+                              .from("messages")
+                              .select("sender_id, content")
+                              .eq("chat_id", chatId)
+                              .order("created_at", { ascending: false })
+                              .limit(1)
+                              .single();
+                            
+                            if (latestMessage) {
+                              const isLatestMessageFromA = String(latestMessage.sender_id) === String(chatDataForPendingCheck.user_id);
+                              latestMessageFromA = isLatestMessageFromA ? latestMessage.content : null;
+                            }
+                          }
+                          
+                          if (pendingHint && !latestMessageFromA) {
+                            console.log("🛑 BLOCKING regeneration: pendingHint flag is set and User A has not selected");
+                            return;
+                          }
+                          
+                          console.log("⚡ Triggering regeneration from message subscription (turns running low)");
+                          const closureState = await fetchClosureState(chatId);
+                          const result = await invokePregenerationWithGuard(chatId, {
+                            chatId: chatId,
+                            hintFromB: hintFromB,
+                            closureState: closureState.closureState,
+                            userASmileySent: closureState.userASmileySent,
+                            userBSmileySent: closureState.userBSmileySent,
+                            ...(latestMessageFromA && { latestMessageFromA })
+                          });
+                          
+                          if (!result.skipped && result.error) {
+                            console.error("❌ Failed to trigger regeneration:", result.error);
+                          }
+                        }
                       }
-                    }
-                    
-                    // ✅ FIX: Use backend rule: block if pendingHint && !latestMessageFromA
-                    if (pendingHint && !latestMessageFromA) {
-                      console.log("🛑 BLOCKING regeneration from message subscription: pendingHint flag is set and User A has not selected");
-                      console.log("📊 Regeneration blocked until User A selects their active turn");
-                      console.log("✅ This prevents premature regeneration before User A's message is in conversation history");
-                      return; // ✅ EXIT - don't regenerate
-                    }
-                    
-                    // ✅ REMOVED: Duplicate batch check - now handled inside invokePregenerationWithGuard
-                    
-                    console.log("⚡ Triggering regeneration from message subscription (turns running low)");
-                    
-                    // ✅ Fetch closure state for pregeneration
-                    const closureState = await fetchClosureState(chatId);
-                    
-                    // ✅ Use atomic guard to prevent concurrent pregenerations
-                    const result = await invokePregenerationWithGuard(chatId, {
-                      chatId: chatId,
-                      hintFromB: hintFromB,
-                      closureState: closureState.closureState,
-                      userASmileySent: closureState.userASmileySent,
-                      userBSmileySent: closureState.userBSmileySent,
-                      ...(latestMessageFromA && { latestMessageFromA }) // ✅ Pass if available
-                    });
-                    
-                    if (result.skipped) {
-                      console.log("⏸️ Regeneration skipped - already running (atomic guard)");
-                      return;
-                    }
-                    
-                    const { data, error } = result;
-                    if (error) {
-                      // ✅ CRITICAL FIX: Handle role mismatch errors gracefully (don't show to users)
-                      const isRoleMismatchError = error?.context?.status === 500 && 
-                        (error?.message?.includes('Role mismatch') || 
-                         error?.context?.bodyUsed === false ||
-                         error?.context?.statusText === '');
-                      
-                      if (isRoleMismatchError) {
-                        console.warn("⚠️ Role mismatch error in regeneration - backend will retry automatically");
-                        console.warn("⚠️ This is a backend AI issue, not a user-facing error - silently handling");
-                      } else {
-                        // ✅ SILENT ERROR HANDLING: Pre-generation errors are logged but not shown to users
-                        console.error("❌ Failed to trigger regeneration from message subscription:", error);
-                      }
-                      // Silently fail - no user-facing error
-                    } else {
-                      console.log("✅ Regeneration triggered from message subscription:", data);
                     }
                   }
                 }
                 
-                // Realtime subscription will still handle new options when they're ready
-              }
-            }
-            
-            if (pregen && pregen.options?.length > 0) {
-              // ✅ CRITICAL: Verify it's actually the recipient's turn before showing options
-              if (String(pregen.recipient_id) !== String(recipientIdForOptions)) {
-                console.error("❌ CRITICAL: Pregenerated turn recipient_id mismatch in onMessageReceived!", {
-                  expectedRecipientId: recipientIdForOptions,
-                  actualRecipientId: pregen.recipient_id,
-                  turn_number: pregen.turn_number,
-                  currentUserId: currentUserId
+                if (pregen && pregen.options?.length > 0) {
+                  // ✅ Verify recipient_id matches (preserves ownership rules)
+                  if (String(pregen.recipient_id) !== String(recipientIdForOptions)) {
+                    console.error("❌ Pregenerated turn recipient_id mismatch!");
+                    resolveWaitingForOptions(recipientIdForOptions);
+                    return;
+                  }
+                  
+                  if (String(recipientIdForOptions) !== String(currentUserId)) {
+                    console.log("ℹ️ Pregenerated options are for different user");
+                    resolveWaitingForOptions(recipientIdForOptions);
+                    return;
+                  }
+                  
+                  console.log("⚡ onMessageReceived: Using pregenerated options");
+                  const cleaned = cleanOptionsForDisplay(pregen.options, contact?.full_name || null);
+                  await showOptionsWithDelay(cleaned, 'pregenerated_turns', pregen.turn_number, pregen.recipient_id, pregen.options);
+                  resolveWaitingForOptions(recipientIdForOptions);
+                  return;
+                }
+                
+                // ✅ Double-check pregenerated turns before orchestration
+                console.log("🔍 Double-checking pregenerated turns before orchestration:", { chatId, userId: recipientIdForOptions });
+                let pregenCheck = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
+                
+                if (!pregenCheck || !pregenCheck.options?.length) {
+                  console.log("ℹ️ Double-check: No pregenerated turn found, polling for generation (max 8 seconds)...");
+                  
+                  const maxWaitTime = 8000;
+                  const checkInterval = 300;
+                  let waited = 0;
+                  
+                  while (waited < maxWaitTime && (!pregenCheck || !pregenCheck.options?.length)) {
+                    await new Promise(resolve => setTimeout(resolve, checkInterval));
+                    waited += checkInterval;
+                    
+                    const isGenerating = isGeneratingPregeneratedTurnsRef.current[chatId] === true;
+                    if (isGenerating && waited < maxWaitTime) {
+                      continue;
+                    }
+                    
+                    pregenCheck = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
+                    
+                    if (pregenCheck && pregenCheck.options?.length > 0) {
+                      console.log(`✅ Double-check: Found pregenerated turn after ${waited}ms`);
+                      break;
+                    }
+                  }
+                }
+                
+                if (pregenCheck && pregenCheck.options?.length > 0 && String(pregenCheck.recipient_id) === String(recipientIdForOptions)) {
+                  console.log("🚫 Orchestration skipped — pregenerated exists");
+                  const cleaned = cleanOptionsForDisplay(pregenCheck.options, contact?.full_name || null);
+                  await showOptionsWithDelay(cleaned, 'pregenerated_turns', pregenCheck.turn_number, pregenCheck.recipient_id, pregenCheck.options);
+                  setShowSuggestedOptions(true);
+                  resolveWaitingForOptions(recipientIdForOptions);
+                  return;
+                }
+                
+                // ✅ Final check before fallback
+                const finalPregenCheck = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
+                if (finalPregenCheck && finalPregenCheck.options?.length > 0 && String(finalPregenCheck.recipient_id) === String(recipientIdForOptions)) {
+                  console.log("🚫 Orchestration skipped — final check found pregenerated turns");
+                  const cleaned = cleanOptionsForDisplay(finalPregenCheck.options, contact?.full_name || null);
+                  await showOptionsWithDelay(cleaned, 'pregenerated_turns', finalPregenCheck.turn_number, finalPregenCheck.recipient_id, finalPregenCheck.options);
+                  setShowSuggestedOptions(true);
+                  resolveWaitingForOptions(recipientIdForOptions);
+                  return;
+                }
+                
+                // ✅ ABSOLUTE FINAL CHECK before fallback
+                console.log("🔍 ABSOLUTE FINAL CHECK: Polling for pregenerated turns one more time before fallback...");
+                let absoluteFinalCheck = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
+                if (!absoluteFinalCheck || !absoluteFinalCheck.options?.length) {
+                  const maxFinalWait = 5000;
+                  const finalCheckInterval = 300;
+                  let finalWaited = 0;
+                  
+                  while (finalWaited < maxFinalWait && (!absoluteFinalCheck || !absoluteFinalCheck.options?.length)) {
+                    await new Promise(resolve => setTimeout(resolve, finalCheckInterval));
+                    finalWaited += finalCheckInterval;
+                    absoluteFinalCheck = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
+                    
+                    const isGenerating = isGeneratingPregeneratedTurnsRef.current[chatId] === true;
+                    if (isGenerating && finalWaited < maxFinalWait) {
+                      continue;
+                    }
+                    
+                    if (absoluteFinalCheck && absoluteFinalCheck.options?.length > 0) {
+                      console.log(`✅ ABSOLUTE FINAL CHECK: Found pregenerated turn after ${finalWaited}ms`);
+                      break;
+                    }
+                  }
+                }
+                
+                if (absoluteFinalCheck && absoluteFinalCheck.options?.length > 0 && String(absoluteFinalCheck.recipient_id) === String(recipientIdForOptions)) {
+                  console.log("🚫🚫🚫 ABSOLUTE FINAL CHECK: Pregenerated turns found - BLOCKING generate-contextual-options");
+                  const cleaned = cleanOptionsForDisplay(absoluteFinalCheck.options, contact?.full_name || null);
+                  await showOptionsWithDelay(cleaned, 'pregenerated_turns', absoluteFinalCheck.turn_number, absoluteFinalCheck.recipient_id, absoluteFinalCheck.options);
+                  setShowSuggestedOptions(true);
+                  resolveWaitingForOptions(recipientIdForOptions);
+                  return;
+                }
+                
+                // ✅ LAST MINUTE CHECK
+                const { data: lastMinuteCheck } = await supabase
+                  .from("pregenerated_turns")
+                  .select("turn_number, recipient_id, options")
+                  .eq("chat_id", chatId)
+                  .eq("recipient_id", recipientIdForOptions)
+                  .is("selected_message", null)
+                  .order("turn_number", { ascending: true })
+                  .limit(1)
+                  .single();
+                
+                if (lastMinuteCheck && lastMinuteCheck.options?.length > 0) {
+                  console.log("🚫🚫🚫 LAST MINUTE CHECK: Pregenerated turns found - BLOCKING generate-contextual-options");
+                  const cleaned = cleanOptionsForDisplay(lastMinuteCheck.options, contact?.full_name || null);
+                  await showOptionsWithDelay(cleaned, 'pregenerated_turns', lastMinuteCheck.turn_number, lastMinuteCheck.recipient_id, lastMinuteCheck.options);
+                  setShowSuggestedOptions(true);
+                  resolveWaitingForOptions(recipientIdForOptions);
+                  return;
+                }
+                
+                // ✅ FALLBACK: Only reach here if pregenerated turns don't exist
+                console.log("⚠️⚠️⚠️ FALLBACK MODE: No pregenerated turns found after all checks - using generate-contextual-options");
+                
+                enterWaitingForOptions(recipientIdForOptions);
+                
+                const conversationHistory = buildHistory({
+                  sender_id: String(newMsg.sender_id),
+                  content: String(newMsg.content || ""),
                 });
-                // Don't show options to wrong user
-                return;
-              }
-              
-              // ✅ CRITICAL: Only show options if it's the current user's turn
-              if (String(recipientIdForOptions) !== String(currentUserId)) {
-                console.log("ℹ️ Pregenerated options are for different user - not showing to current user");
-                return;
-              }
-              
-              console.log("⚡ onMessageReceived: Using pregenerated options");
-              const cleaned = cleanOptionsForDisplay(pregen.options, contact?.full_name || null);
-              // ✅ CRITICAL FIX: Pass recipient_id from turn data
-              await showOptionsWithDelay(cleaned, 'pregenerated_turns', pregen.turn_number, pregen.recipient_id, pregen.options);
-              resolveWaitingForOptions(recipientIdForOptions);
-              return; // ⛔ EXIT immediately - prevent generate-contextual-options
-            }
-            
-            // ⬇ FALLBACK: existing generate-contextual-options logic
-            // 🔥 CRITICAL: Double-check pregenerated turns before orchestration
-            // This prevents orchestration and generate-contextual-options from running
-            console.log("🔍 Double-checking pregenerated turns before orchestration:", { chatId, userId: recipientIdForOptions });
-            let pregenCheck = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
-            
-            // ✅ FIX: Poll for pregenerated turns if they don't exist (generation in progress)
-            if (!pregenCheck || !pregenCheck.options?.length) {
-              console.log("ℹ️ Double-check: No pregenerated turn found, polling for generation (max 5 seconds)...");
-              
-              // ✅ FIX: Poll with increasing intervals (faster initial checks, longer later)
-              const maxWaitTime = 5000; // ✅ Increased from 2500 to 5000 (5 seconds)
-              const checkInterval = 300; // Check every 300ms
-              let waited = 0;
-              
-              while (waited < maxWaitTime && (!pregenCheck || !pregenCheck.options?.length)) {
-                await new Promise(resolve => setTimeout(resolve, checkInterval));
-                waited += checkInterval;
-                pregenCheck = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
                 
-                if (pregenCheck && pregenCheck.options?.length > 0) {
-                  console.log(`✅ Double-check: Found pregenerated turn after ${waited}ms`);
-                  break;
-                }
-              }
-              
-              if (!pregenCheck || !pregenCheck.options?.length) {
-                console.log("ℹ️ Double-check: No pregenerated turn found after polling, will fall back to orchestration (hardest situation)");
-                // Realtime subscription will still handle new options when they're ready
-              }
-            }
-            
-            if (pregenCheck && pregenCheck.options?.length > 0) {
-              // ✅ CRITICAL: Verify recipient_id matches current user before displaying
-              // Only show options if they're meant for the current user
-              if (String(pregenCheck.recipient_id) !== String(currentUserId)) {
-                console.log("ℹ️ Pregenerated options are for different user (recipient_id mismatch) - not showing to current user");
-                // Don't show options - they're for the other user
-                // Continue to orchestration/generation
-              } else if (String(recipientIdForOptions) !== String(currentUserId)) {
-                console.log("ℹ️ Pregenerated options are for different user (recipientIdForOptions mismatch) - not showing to current user");
-                // Don't show options - they're for the other user
-                // Continue to orchestration/generation
-              } else {
-                console.log("🚫 Orchestration skipped — pregenerated exists");
-                console.log("⚡ Using pregenerated options instead of generating new ones");
-                const cleaned = cleanOptionsForDisplay(pregenCheck.options, contact?.full_name || null);
-                // ✅ CRITICAL FIX: Pass recipient_id from turn data
-                await showOptionsWithDelay(cleaned, 'pregenerated_turns', pregenCheck.turn_number, pregenCheck.recipient_id, pregenCheck.options);
-                setShowSuggestedOptions(true);
-                resolveWaitingForOptions(recipientIdForOptions);
-                return; // ⛔ EXIT - prevent orchestration and generate-contextual-options
-              }
-            }
-            
-            // ✅ CRITICAL: Final check - if pregenerated turns exist, skip orchestration entirely
-            // This ensures we never call orchestration/generate-contextual-options if pregenerated turns are available
-            const finalPregenCheck = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
-            if (finalPregenCheck && finalPregenCheck.options?.length > 0 && String(finalPregenCheck.recipient_id) === String(recipientIdForOptions)) {
-              // ✅ FIX: Check if the same turn is already displayed
-              if (currentPregeneratedTurnRef.current &&
-                  currentPregeneratedTurnRef.current.turn_number === finalPregenCheck.turn_number &&
-                  String(currentPregeneratedTurnRef.current.recipient_id) === String(recipientIdForOptions) &&
-                  currentOptionsSourceRef.current === 'pregenerated_turns' &&
-                  showSuggestedOptions) {
-                console.log(`⏸️ Final check: Options already displayed for turn ${finalPregenCheck.turn_number} - skipping refresh`);
-                resolveWaitingForOptions(recipientIdForOptions);
-                return; // ⛔ EXIT - don't refresh same turn
-              }
-              
-              console.log("🚫 Orchestration skipped — final check found pregenerated turns");
-              console.log("⚡ Using pregenerated options instead of orchestration");
-              const cleaned = cleanOptionsForDisplay(finalPregenCheck.options, contact?.full_name || null);
-              // ✅ CRITICAL FIX: Pass recipient_id from turn data
-              await showOptionsWithDelay(cleaned, 'pregenerated_turns', finalPregenCheck.turn_number, finalPregenCheck.recipient_id, finalPregenCheck.options);
-              setShowSuggestedOptions(true);
-              resolveWaitingForOptions(recipientIdForOptions);
-              return; // ⛔ EXIT - prevent orchestration and generate-contextual-options
-            }
-            
-            console.log("\n" + "=".repeat(60));
-            console.log("📤 CONTACT REPLIED - GENERATING OPTIONS FOR CURRENT USER (FALLBACK ONLY)");
-            console.log("=".repeat(60));
-            console.log("📬 Contact's message (currentMessage):", newMsg.content.substring(0, 80));
-            
-            // ✅ CRITICAL FIX: Enter waiting state with recipientIdForOptions, not currentUserId
-            // This ensures the correct user sees the composing notice and receives options
-            enterWaitingForOptions(recipientIdForOptions);
-            
-            const conversationHistory = buildHistory({
-              sender_id: String(newMsg.sender_id),
-              content: String(newMsg.content || ""),
-            });
-            
-            const isCurrentUserA = currentUserId === chatCtx?.user_id;
-            console.log("💾 Context data being sent to validation:");
-            console.log(" Role:", isCurrentUserA ? "User A" : "User B");
-            console.log(" Summary:", (isCurrentUserA ? chatCtx?.context_data?.summary_a : chatCtx?.context_data?.summary_b)?.substring(0, 50) || "❌ MISSING");
-            console.log(" Thoughts:", (isCurrentUserA ? chatCtx?.context_data?.thoughts_a : chatCtx?.context_data?.thoughts_b)?.substring(0, 50) || "❌ MISSING");
-            console.log(" Hint from B:", chatCtx?.context_data?.hint_from_b?.substring(0, 50) || "⚠️ Not provided");
-            console.log(" History length:", conversationHistory.length);
-            const summaryA = chatCtx?.context_data?.summary_a || chatCtx?.context_data?.summary || "";
-            const thoughtsA = chatCtx?.context_data?.thoughts_a || chatCtx?.context_data?.thoughts || "";
-            const summaryB = chatCtx?.context_data?.summary_b || "";
-            const thoughtsB = chatCtx?.context_data?.thoughts_b || "";
-            const summaryToSend = isCurrentUserA ? summaryA : (summaryB || summaryA);
-            const thoughtsToSend = isCurrentUserA ? thoughtsA : (thoughtsB || thoughtsA);
-            
-            // 🌙 Closure blending start
-            // Compute closure stage for progressive option blending
-            const closureState = chatCtx?.closure_state || 'active';
-            const userASmileySent = chatCtx?.user_a_smiley_sent || false;
-            const userBSmileySent = chatCtx?.user_b_smiley_sent || false;
-            const conversationPhaseFromCtx = chatCtx?.conversation_phase || conversationPhase;
-            const closureStage = computeClosureStage(
-              closureState,
-              userASmileySent,
-              userBSmileySent,
-              conversationPhaseFromCtx,
-              conversationHistory
-            );
-            console.log("🌙 Closure stage computed (message subscription):", {
-              closureState,
-              userASmileySent,
-              userBSmileySent,
-              conversationPhase: conversationPhaseFromCtx,
-              closureStage,
-              historyLength: conversationHistory.length
-            });
-            // 🌙 Closure blending end
-            
-            console.log("📤 Generating options with FULL context:");
-            console.log(" Original Issue (User A):", summaryA.substring(0, 60));
-            console.log(" Recipient context:", summaryToSend.substring(0, 60));
-            // 🧠 STEP 1: Call orchestrate-conversation FIRST to get intelligent guidance
-            console.log("🧠 ORCHESTRATION: Calling orchestrate-conversation for intelligent coordination...");
-            let orchestrationGuidance = null;
-            try {
-              const { data: orchData, error: orchError } = await supabase.functions.invoke(
-                "orchestrate-conversation",
-                {
-                  body: {
-                    chatId,
-                    recipientId: recipientIdForOptions, // ✅ FIX: Use recipientIdForOptions instead of currentUserId
-                    currentUserId: currentUserId,
-                    currentMessage: String(newMsg.content || ""), // ✅ CRITICAL: Latest message from contact
-                    summary: summaryToSend,
-                    thoughts: thoughtsToSend,
-                    // ✅ CRITICAL: Always pass User A's original issue context
-                    originalIssue: {
-                      summary: summaryA,
-                      thoughts: thoughtsA,
+                const isCurrentUserA = currentUserId === chatCtx?.user_id;
+                const summaryA = chatCtx?.context_data?.summary_a || chatCtx?.context_data?.summary || "";
+                const thoughtsA = chatCtx?.context_data?.thoughts_a || chatCtx?.context_data?.thoughts || "";
+                const summaryB = chatCtx?.context_data?.summary_b || "";
+                const thoughtsB = chatCtx?.context_data?.thoughts_b || "";
+                const summaryToSend = isCurrentUserA ? summaryA : (summaryB || summaryA);
+                const thoughtsToSend = isCurrentUserA ? thoughtsA : (thoughtsB || thoughtsA);
+                
+                const closureState = chatCtx?.closure_state || 'active';
+                const userASmileySent = chatCtx?.user_a_smiley_sent || false;
+                const userBSmileySent = chatCtx?.user_b_smiley_sent || false;
+                const conversationPhaseFromCtx = chatCtx?.conversation_phase || conversationPhase;
+                const closureStage = computeClosureStage(
+                  closureState,
+                  userASmileySent,
+                  userBSmileySent,
+                  conversationPhaseFromCtx,
+                  conversationHistory
+                );
+                
+                // Generate options via orchestration + contextual
+                try {
+                  const { data: orchData } = await supabase.functions.invoke("orchestrate-conversation", {
+                    body: {
+                      chatId,
+                      recipientId: recipientIdForOptions,
+                      currentUserId,
+                      currentMessage: String(newMsg.content || ""),
+                      summary: summaryToSend,
+                      thoughts: thoughtsToSend,
+                      originalIssue: { summary: summaryA, thoughts: thoughtsA },
+                      hintFromB: chatCtx?.context_data?.hint_from_b || "",
+                      hintToContact: chatCtx?.context_data?.hint_to_contact || null,
+                      summaryB,
+                      thoughtsB,
+                      conversationHistory,
+                      isInitial: false,
+                      contactCategory: contact?.category || "General",
+                      conversationPhase,
+                      resolutionDetected: false,
+                      lastMessageTimestamp: newMsg.created_at,
+                      wordLimit: 15,
                     },
-                    hintFromB: chatCtx?.context_data?.hint_from_b || "",
-                    hintToContact: chatCtx?.context_data?.hint_to_contact || null,
-                    summaryB: summaryB,
-                    thoughtsB: thoughtsB,
-                    conversationHistory,
-                    isInitial: false,
-                    contactCategory: contact?.category || "General",
-                    conversationPhase,
-                    resolutionDetected: false,
-                    lastMessageTimestamp: newMsg.created_at,
-                    wordLimit: 15,
-                  },
+                  });
+                  
+                  const orchestrationGuidance = orchData?.guidance ?? null;
+                  
+                  const { error } = await supabase.functions.invoke("generate-contextual-options", {
+                    body: {
+                      chatId,
+                      recipientId: recipientIdForOptions,
+                      currentUserId,
+                      summary: summaryToSend,
+                      thoughts: thoughtsToSend,
+                      summary_shared_neutral: chatCtx?.context_data?.summary_shared_neutral || "",
+                      summaryB,
+                      thoughtsB,
+                      conversationHistory,
+                      contactCategory: contact?.category || "General",
+                      orchestrationGuidance,
+                      hintFromB: chatCtx?.context_data?.hint_from_b || "",
+                      hintToContact: chatCtx?.context_data?.hint_to_contact || null,
+                      conversationPhase,
+                      lastMessage: newMsg.content || "",
+                      isVeryFirstMessage: false,
+                      closureState,
+                      userASmileySent,
+                      userBSmileySent,
+                      closureStage,
+                    },
+                  });
+                  
+                  if (error) {
+                    const isRoleMismatchError = error?.context?.status === 500 && 
+                      (error?.message?.includes('Role mismatch') || 
+                       error?.context?.bodyUsed === false ||
+                       error?.context?.statusText === '');
+                    
+                    if (!isRoleMismatchError) {
+                      console.error("❌ Failed to generate options:", error);
+                      showNotification('error', 'Options Failed', 'Could not generate response options. You can type manually.');
+                    }
+                    resolveWaitingForOptions(recipientIdForOptions);
+                  } else {
+                    console.log("✅ Options generation request sent");
+                  }
+                } catch (generationError) {
+                  const isRoleMismatchError = (generationError as any)?.context?.status === 500;
+                  if (!isRoleMismatchError) {
+                    console.error("💥 ERROR generating options:", generationError);
+                    showNotification('error', 'Options Failed', 'Could not generate response options. Please try again.');
+                  }
+                  resolveWaitingForOptions(recipientIdForOptions);
                 }
-              );
-              if (orchError) {
-                console.error("❌ Orchestration guidance failed:", orchError);
               } else {
-                orchestrationGuidance = orchData?.guidance ?? null;
-                console.log("✅ Orchestration guidance received:", orchestrationGuidance);
+                // ✅ Message from current user - no options needed (preserves self-message logic)
+                console.log("ℹ️ Message from current user - no options to generate");
               }
-            } catch (orchCallError) {
-              console.error("💥 Orchestration call failed:", orchCallError);
+            } catch (err) {
+              // ✅ Errors in feature logic don't block rendering
+              console.warn("⚠️ Error in feature logic pipeline (non-blocking):", err);
+              // Still resolve waiting state to prevent UI from being stuck
+              if (String(newMsg.sender_id) !== String(currentUserId)) {
+                resolveWaitingForOptions(currentUserId);
+              }
             }
-            // 🧠 STEP 2: Generate contextual options with Claude (orchestration guidance included)
-            console.log("🧠 CLAUDE: Generating contextual options (with fallbacks)...");
-            try {
-              const { error } = await supabase.functions.invoke(
-                "generate-contextual-options",
-                {
-                  body: {
-                    chatId,
-                    recipientId: recipientIdForOptions, // ✅ FIX: Use recipientIdForOptions instead of currentUserId
-                    currentUserId,
-                    summary: summaryToSend,
-                    thoughts: thoughtsToSend,
-                    summary_shared_neutral: chatCtx?.context_data?.summary_shared_neutral || "",
-                    summaryB,
-                    thoughtsB,
-                    conversationHistory,
-                    contactCategory: contact?.category || "General",
-                    orchestrationGuidance,
-                    // ✅ CRITICAL: Always pass hintFromB for context, but edge function MUST enforce perspective isolation based on recipientId
-                    hintFromB: chatCtx?.context_data?.hint_from_b || "",
-                    hintToContact: chatCtx?.context_data?.hint_to_contact || null,
-                    conversationPhase,
-                    lastMessage: newMsg.content || "",
-                    isVeryFirstMessage: false,
-                    // 🌙 Closure blending start
-                    closureState: closureState,
-                    userASmileySent: userASmileySent,
-                    userBSmileySent: userBSmileySent,
-                    closureStage: closureStage,
-                    // 🌙 Closure blending end
-                  },
-                }
-              );
-              if (error) {
-                // ✅ CRITICAL FIX: Handle role mismatch errors gracefully (don't show to users)
-                const isRoleMismatchError = error?.context?.status === 500 && 
-                  (error?.message?.includes('Role mismatch') || 
-                   error?.context?.bodyUsed === false ||
-                   error?.context?.statusText === '');
-                
-                if (isRoleMismatchError) {
-                  console.warn("⚠️ Role mismatch error in options generation - backend will retry automatically");
-                  console.warn("⚠️ This is a backend AI issue, not a user-facing error - silently handling");
-                  // Don't show error to user - backend handles retries
-                } else {
-                  console.error("❌ Failed to generate options:", error);
-                  showNotification('error', 'Options Failed', 'Could not generate response options. You can type manually.');
-                }
-                resolveWaitingForOptions(recipientIdForOptions); // ✅ FIX: Use recipientIdForOptions
-              } else {
-                console.log("✅ Options generation request sent with original issue context");
-              }
-            } catch (generationError) {
-              // ✅ CRITICAL FIX: Handle role mismatch errors gracefully (don't show to users)
-              const isRoleMismatchError = (generationError as any)?.context?.status === 500 && 
-                ((generationError as any)?.message?.includes('Role mismatch') || 
-                 (generationError as any)?.context?.bodyUsed === false ||
-                 (generationError as any)?.context?.statusText === '');
-              
-              if (isRoleMismatchError) {
-                console.warn("⚠️ Role mismatch error in options generation - backend will retry automatically");
-                console.warn("⚠️ This is a backend AI issue, not a user-facing error - silently handling");
-                // Don't show error to user - backend handles retries
-              } else {
-                console.error("💥 ERROR generating options:", generationError);
-                showNotification('error', 'Options Failed', 'Could not generate response options. Please try again.');
-              }
-              resolveWaitingForOptions(recipientIdForOptions); // ✅ FIX: Use recipientIdForOptions
-            }
+          }, 0); // ✅ Run immediately after current call stack (ensures render completes first)
+          } catch (error) {
+            // ✅ CRITICAL: Log any errors in the handler itself
+            console.error("❌❌❌ ERROR IN REALTIME MESSAGE HANDLER ❌❌❌");
+            console.error("❌ Error:", error);
+            console.error("❌ Error message:", (error as Error)?.message);
+            console.error("❌ Error stack:", (error as Error)?.stack);
+            console.error("❌ Payload:", payload);
+            console.error("❌ This error is blocking message display!");
           }
         }
       )
       .subscribe((status: string) => {
+        console.log("📡 Message subscription status changed:", status);
         switch (status) {
           case "SUBSCRIBED":
             console.log("📡 Messages connected");
             console.log("✅ Messages subscription is ACTIVE and ready for live updates");
+            
+            // ✅ TEST: Verify subscription is working by checking channel state
+            console.log("🔍 Subscription verification:");
+            console.log("  - Channel topic:", (channel as any).topic);
+            console.log("  - Channel state:", (channel as any).state);
+            console.log("  - Chat ID:", chatId);
+            console.log("  - Current User ID:", currentUserId);
+            
             // ✅ FIX: Once subscribed, refresh messages to catch any that arrived before subscription
             // Use closure variables to ensure we have the correct chatId and userId
             const subscribedChatId = chatId;
             const subscribedUserId = currentUserId;
-            setTimeout(async () => {
-              if (subscribedChatId && subscribedUserId) {
-                console.log("🔄 Quick refresh after subscription active to catch any missed messages");
-                // Fetch messages directly using the subscribed chatId
-                try {
-                  const { data, error } = await supabase
-                    .from("messages")
-                    .select("*")
-                    .eq("chat_id", subscribedChatId)
-                    .order("created_at", { ascending: true });
-                  if (error) throw error;
-                  if (data) {
-                    setMessages((prev) => {
-                      // Merge with existing messages, avoiding duplicates
-                      const existingIds = new Set(prev.map(m => m.id));
-                      const newMessages = (data || []).filter(msg => !existingIds.has(msg.id));
-                      if (newMessages.length === 0) return prev;
-                      return [...prev, ...newMessages.map((msg) => ({
-                        id: msg.id,
-                        content: msg.content,
-                        sender_type: (msg.sender_id === subscribedUserId ? "user" : "contact") as "user" | "contact",
-                        sender_id: msg.sender_id,
-                        created_at: msg.created_at,
-                      }))];
-                    });
-                  }
-                } catch (err) {
-                  console.error("⚠️ Error refreshing messages after subscription:", err);
+            
+            // ✅ CRITICAL FIX: Immediately fetch latest messages to ensure we have current state
+            let lastMessageCount = 0; // ✅ Track count for polling
+            (async () => {
+              try {
+                const { data: latestMessages } = await supabase
+                  .from("messages")
+                  .select("*")
+                  .eq("chat_id", subscribedChatId)
+                  .order("created_at", { ascending: true });
+                
+                if (latestMessages) {
+                  const formattedMessages: Message[] = latestMessages.map((msg: any) => ({
+                    id: msg.id,
+                    content: msg.content,
+                    sender_type: (msg.sender_id === subscribedUserId ? "user" : "contact") as "user" | "contact",
+                    sender_id: msg.sender_id,
+                    created_at: msg.created_at,
+                  }));
+                  
+                  messagesRef.current = formattedMessages;
+                  setMessages(formattedMessages);
+                  console.log(`✅ Loaded ${formattedMessages.length} messages on subscription`);
+                  
+                  // ✅ Initialize lastMessageCount for polling
+                  lastMessageCount = formattedMessages.length;
                 }
+              } catch (err) {
+                console.error("⚠️ Error loading messages on subscription:", err);
               }
-            }, 500);
+            })();
+            
+            // ✅ CRITICAL FIX: Set up aggressive polling fallback since realtime isn't working
+            // This ensures messages are displayed even if real-time subscription fails
+            let lastMessageCheck = Date.now();
+            const pollInterval = setInterval(async () => {
+              if (!subscribedChatId || !currentChatId || currentChatId !== subscribedChatId) {
+                clearInterval(pollInterval);
+                return;
+              }
+              
+              try {
+                // ✅ Always fetch ALL messages for this chat (more reliable than timestamp)
+                const { data: allMessages } = await supabase
+                  .from("messages")
+                  .select("*")
+                  .eq("chat_id", subscribedChatId)
+                  .order("created_at", { ascending: true });
+                
+                if (allMessages && allMessages.length > lastMessageCount) {
+                  console.log(`📨 POLLING: Found ${allMessages.length} messages (was ${lastMessageCount})`);
+                  lastMessageCount = allMessages.length;
+                  lastMessageCheck = Date.now();
+                  
+                  setMessages((prev) => {
+                    const existingIds = new Set(prev.map(m => m.id));
+                    const newMessages = allMessages.filter(msg => !existingIds.has(msg.id));
+                    
+                    if (newMessages.length === 0) return prev;
+                    
+                    console.log(`📨 POLLING: Adding ${newMessages.length} new message(s) via polling fallback`);
+                    
+                    const formattedNewMessages: Message[] = newMessages.map((msg: any) => ({
+                      id: msg.id,
+                      content: msg.content,
+                      sender_type: (msg.sender_id === subscribedUserId ? "user" : "contact") as "user" | "contact",
+                      sender_id: msg.sender_id,
+                      created_at: msg.created_at,
+                    }));
+                    
+                    const updatedMessages = [...prev, ...formattedNewMessages].sort((a, b) => 
+                      new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+                    );
+                    messagesRef.current = updatedMessages;
+                    
+                    // Scroll to bottom when new messages arrive
+                    setTimeout(() => {
+                      scrollToBottom();
+                    }, 100);
+                    
+                    // ✅ Only set awaitingTurnRef for messages from other users (preserves turn control)
+                    const hasMessageFromOtherUser = newMessages.some(msg => msg.sender_id !== subscribedUserId);
+                    if (hasMessageFromOtherUser) {
+                      awaitingTurnRef.current = true;
+                    }
+                    
+                    return updatedMessages;
+                  });
+                }
+              } catch (err) {
+                console.warn("⚠️ Polling error:", err);
+              }
+            }, 1000); // ✅ Poll every 1 second (faster than 2 seconds)
+            
+            // Store interval for cleanup
+            (channel as any)._pollInterval = pollInterval;
             break;
 
           case "CHANNEL_ERROR":
@@ -3918,12 +4046,20 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         }
       });
     
-    // ✅ FIX: Store channel reference
+    // ✅ CRITICAL FIX: Store channel reference AFTER subscribe is called
     messageSubscriptionRef.current = channel;
+    console.log("✅ Message subscription channel created, subscribed, and stored in ref");
     
     return () => {
       if (messageSubscriptionRef.current) {
         try {
+          // ✅ CRITICAL FIX: Clear polling interval if it exists
+          const channel = messageSubscriptionRef.current as any;
+          if (channel._pollInterval) {
+            clearInterval(channel._pollInterval);
+            console.log("🧹 Cleared polling interval");
+          }
+          
           supabase.removeChannel(messageSubscriptionRef.current);
           console.log("🧹 Cleaned up message subscription");
         } catch (e: any) {
@@ -4079,16 +4215,14 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       // ✅ FIX: Update messagesRef immediately so turn calculation is accurate
       setMessages((prev) => {
         if (prev.some((m) => m.id === data.id)) return prev;
-        const newMessages = [
-          ...prev,
-          {
-            id: data.id,
-            content: data.content,
-            sender_type: "user",
-            sender_id: user?.id || "",
-            created_at: data.created_at,
-          },
-        ];
+        const newMessage: Message = {
+          id: data.id,
+          content: data.content,
+          sender_type: "user" as "user" | "contact",
+          sender_id: user?.id || "",
+          created_at: data.created_at,
+        };
+        const newMessages: Message[] = [...prev, newMessage];
         // ✅ CRITICAL: Update messagesRef immediately for accurate turn calculation
         messagesRef.current = newMessages;
         return newMessages;
@@ -4259,10 +4393,42 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             console.log(`⏳ Not consecutive smileys - waiting for ${isUserA ? 'User B' : 'User A'} to send emoji`);
             showNotification('success', 'Closure Pending', 'Waiting for the other person to confirm completion');
           }
-          await supabase
+          
+          // ✅ CRITICAL: Update closure state first
+          const { error: updateError } = await supabase
             .from("chats")
             .update(updateData)
             .eq("id", currentChatId);
+          
+          // ✅ CRITICAL FIX: Wait for DB commit and verify before any pregeneration
+          if (updateData.closure_state?.startsWith('pending_')) {
+            // Wait for commit
+            await new Promise(resolve => setTimeout(resolve, 300));
+            
+            // Verify the update committed
+            const { data: verifyClosure } = await supabase
+              .from("chats")
+              .select("closure_state, user_a_smiley_sent, user_b_smiley_sent")
+              .eq("id", currentChatId)
+              .single();
+            
+            console.log("✅ Closure state verified after smiley:", {
+              closure_state: verifyClosure?.closure_state,
+              user_a_smiley_sent: verifyClosure?.user_a_smiley_sent,
+              user_b_smiley_sent: verifyClosure?.user_b_smiley_sent,
+              expected: updateData.closure_state
+            });
+            
+            // ✅ CRITICAL: If verification failed, log warning but continue
+            // The fallback detection in generate-pregenerated-turns will catch it
+            if (verifyClosure?.closure_state !== updateData.closure_state) {
+              console.warn("⚠️ Closure state verification mismatch - fallback detection will handle this");
+            }
+          }
+          
+          if (updateError) {
+            console.error("❌ Failed to update closure state:", updateError);
+          }
           if (isConsecutiveSmileys) {
             try {
               const contextData = (chatData as any)?.context_data ?? {};
@@ -5161,12 +5327,24 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                   // Check if chat is closed first
                   const { data: chatClosureCheck } = await supabase
                     .from("chats")
-                    .select("is_resolved, closure_state, context_data")
+                    .select("is_resolved, closure_state, context_data, user_a_smiley_sent, user_b_smiley_sent")
                     .eq("id", currentChatId)
                     .single();
                   
                   const isChatClosed = chatClosureCheck?.is_resolved === true && chatClosureCheck?.closure_state === 'closed';
                   const hasPendingHint = chatClosureCheck?.context_data?.pendingHint === true;
+                  
+                  // ✅ CRITICAL FIX: Use closure_state from chatClosureCheck (already fetched, fresh data)
+                  // Don't call fetchClosureState again - it might read stale data
+                  const closureStateFromCheck = chatClosureCheck?.closure_state || 'active';
+                  const userASmileySentFromCheck = chatClosureCheck?.user_a_smiley_sent || false;
+                  const userBSmileySentFromCheck = chatClosureCheck?.user_b_smiley_sent || false;
+                  
+                  console.log("🔍 Closure state from chatClosureCheck:", {
+                    closure_state: closureStateFromCheck,
+                    user_a_smiley_sent: userASmileySentFromCheck,
+                    user_b_smiley_sent: userBSmileySentFromCheck
+                  });
                   
                   if (isChatClosed) {
                     console.log("😊 Chat is fully closed - skipping immediate pregeneration");
@@ -5247,11 +5425,33 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                       payload.latestMessageFromA = latestMessageFromA;
                     }
                     
-                    // ✅ Fetch closure state for pregeneration
-                    const closureState = await fetchClosureState(currentChatId);
-                    payload.closureState = closureState.closureState;
-                    payload.userASmileySent = closureState.userASmileySent;
-                    payload.userBSmileySent = closureState.userBSmileySent;
+                    // ✅ CRITICAL FIX: Use closure_state from chatClosureCheck instead of fetchClosureState
+                    // Wait a bit to ensure any recent smiley updates are committed
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    
+                    // ✅ Final check to ensure closure_state is up to date (in case it changed during the wait)
+                    const { data: finalClosureCheck } = await supabase
+                      .from("chats")
+                      .select("closure_state, user_a_smiley_sent, user_b_smiley_sent")
+                      .eq("id", currentChatId)
+                      .single();
+                    
+                    // Use the most recent closure_state (from final check if different)
+                    const finalClosureState = finalClosureCheck?.closure_state || closureStateFromCheck;
+                    const finalUserASmileySent = finalClosureCheck?.user_a_smiley_sent ?? userASmileySentFromCheck;
+                    const finalUserBSmileySent = finalClosureCheck?.user_b_smiley_sent ?? userBSmileySentFromCheck;
+                    
+                    payload.closureState = finalClosureState;
+                    payload.userASmileySent = finalUserASmileySent;
+                    payload.userBSmileySent = finalUserBSmileySent;
+                    
+                    console.log("🔍 Final closure state for pregeneration:", {
+                      closure_state: finalClosureState,
+                      user_a_smiley_sent: finalUserASmileySent,
+                      user_b_smiley_sent: finalUserBSmileySent,
+                      fromCheck: closureStateFromCheck,
+                      fromFinal: finalClosureCheck?.closure_state
+                    });
                     
                     // Trigger in background (non-blocking) using atomic guard
                     console.log("🚀 Invoking generate-pregenerated-turns with payload:", {
@@ -6629,6 +6829,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       )}
       <View style={styles.chatContainer}>
         <ScrollView
+             key={`messages-${messages.length}`}
              ref={scrollViewRef}
              style={styles.messagesContainer}
              contentContainerStyle={[

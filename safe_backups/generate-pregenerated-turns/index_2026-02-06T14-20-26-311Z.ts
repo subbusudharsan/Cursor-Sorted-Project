@@ -1673,201 +1673,78 @@ Use this history to understand the conversation flow and ensure your generated t
         if (!option || typeof option !== 'string') return option;
         let fixed = option;
         
-        const isRecipientUserA = recipientId === userAId;
-        const isRecipientUserB = recipientId === userBId;
-        const userAName = isRecipientUserA ? null : (contactName || null);
-        const userBName = isRecipientUserB ? null : (contactName || null);
+        // ✅ CRITICAL: Replace the other user's name with "you" when they're being addressed directly
+        // Extract names from conversation history that might be used incorrectly
+        const otherUserId = recipientId === userAId ? userBId : userAId;
         
-        // ✅ STEP 1: Remove listener name references (same as generate-contextual-options)
-        const removeListenerName = (text: string): string => {
-          if (!text || typeof text !== 'string') return text;
-          let cleaned = text;
-          const listenerName = isRecipientUserA ? userBName : userAName;
-          const listenerVariants = buildNameVariants(listenerName);
-
-          if (listenerVariants.length === 0) return cleaned;
-
-          listenerVariants.forEach(variant => {
-            const escaped = escapeRegex(variant);
-            const hasSpace = /\s/.test(variant);
-
-            // Replace plain name references
-            cleaned = cleaned.replace(new RegExp(`\\b${escaped}'s\\b`, 'gi'), (match, offset, source) =>
-              applySentenceCase('your', offset, source)
-            );
-            cleaned = cleaned.replace(new RegExp(`\\b${escaped}'\\b`, 'gi'), (match, offset, source) =>
-              applySentenceCase('your', offset, source)
-            );
-            cleaned = cleaned.replace(new RegExp(`\\b${escaped}\\b`, 'gi'), (match, offset, source) =>
-              applySentenceCase('you', offset, source)
-            );
-
-            // Handle @ patterns
-            if (hasSpace) {
-              cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'s\\b`, 'gi'), (match, offset, source) =>
-                applySentenceCase('your', offset, source)
-              );
-              cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'\\b`, 'gi'), (match, offset, source) =>
-                applySentenceCase('your', offset, source)
-              );
-              cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}\\b`, 'gi'), (match, offset, source) =>
-                applySentenceCase('you', offset, source)
-              );
-            } else {
-              cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'s\\b`, 'gi'), (match, offset, source) =>
-                applySentenceCase('your', offset, source)
-              );
-              cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}'\\b`, 'gi'), (match, offset, source) =>
-                applySentenceCase('your', offset, source)
-              );
-              cleaned = cleaned.replace(new RegExp(`@\\s*${escaped}\\b`, 'gi'), (match, offset, source) =>
-                applySentenceCase('you', offset, source)
-              );
-            }
-          });
-
-          return cleaned;
-        };
+        // Find names in conversation history that refer to the other user
+        // Look for patterns like "When [Name] suggested" where Name should be "you"
+        // This is a simplified approach - we'll replace common patterns
         
-        // ✅ STEP 2: Apply listener phrase fixes
-        const applyListenerPhraseFixes = (input: string): string => {
-          let output = input;
-
-          const possessiveTargets = [
-            'perspective', 'side', 'point of view', 'point-of-view', 'point', 'feelings', 'thoughts',
-            'take', 'story', 'stories', 'reasons', 'experience', 'experiences', 'situation', 'situations',
-            'needs', 'opinion', 'opinions', 'feedback', 'actions', 'behavior', 'choices', 'life', 'world',
-            'friendship', 'relationship', 'comments', 'comment', 'words', 'energy', 'time', 'effort'
-          ];
-
-          possessiveTargets.forEach(target => {
-            const pattern = new RegExp(`\\btheir ${escapeRegex(target)}\\b`, 'gi');
-            output = output.replace(pattern, (match, offset, source) =>
-              applySentenceCaseToPhrase(`your ${target}`, offset, source)
-            );
-          });
-
-          output = output.replace(/\btheirs\b/gi, (match, offset, source) =>
-            applySentenceCaseToPhrase('yours', offset, source)
+        // ✅ Fix: "When [Name] suggested/did/said" → "When you suggested/did/said"
+        // Pattern: "When Selvi suggested" → "When you suggested" (if addressing User B named Selvi)
+        // We'll use a regex that catches common name patterns followed by action verbs
+        const nameActionPattern = /\bwhen\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+(suggested|said|told|asked|did|was|is|are|told|mentioned|commented|replied|responded)\b/gi;
+        fixed = fixed.replace(nameActionPattern, (match, name, verb) => {
+          // Only replace if it's clearly addressing the listener (not a third party)
+          // Check if the name appears in recent messages from the other user
+          const isOtherUser = conversationHistory.some((msg: any) => 
+            String(msg.sender_id) === String(otherUserId) && 
+            msg.content && 
+            msg.content.toLowerCase().includes(name.toLowerCase())
           );
-
-          const simpleThemPhrases: Array<{ pattern: RegExp; replacement: string }> = [
-            { pattern: /\bunderstand them\b/gi, replacement: 'understand you' },
-            { pattern: /\bhear them\b/gi, replacement: 'hear you' },
-            { pattern: /\bhear them out\b/gi, replacement: 'hear you out' },
-            { pattern: /\bsupport them\b/gi, replacement: 'support you' },
-            { pattern: /\bhelp them\b/gi, replacement: 'help you' },
-            { pattern: /\breach out to them\b/gi, replacement: 'reach out to you' },
-            { pattern: /\bcheck on them\b/gi, replacement: 'check on you' },
-            { pattern: /\bcheck in on them\b/gi, replacement: 'check in on you' },
-            { pattern: /\bbe there for them\b/gi, replacement: 'be there for you' },
-            { pattern: /\bfor their sake\b/gi, replacement: 'for your sake' }
-          ];
-
-          simpleThemPhrases.forEach(({ pattern, replacement }) => {
-            output = output.replace(pattern, (match, offset, source) =>
-              applySentenceCaseToPhrase(replacement, offset, source)
-            );
-          });
-
-          output = output.replace(/\btalk (to|with) them\b/gi, (match, preposition, offset, source) =>
-            applySentenceCaseToPhrase(`talk ${preposition.toLowerCase()} you`, offset, source)
-          );
-
-          output = output.replace(/\bspeak (to|with) them\b/gi, (match, preposition, offset, source) =>
-            applySentenceCaseToPhrase(`speak ${preposition.toLowerCase()} you`, offset, source)
-          );
-
-          output = output.replace(/\bchat (to|with) them\b/gi, (match, preposition, offset, source) =>
-            applySentenceCaseToPhrase(`chat ${preposition.toLowerCase()} you`, offset, source)
-          );
-
-          output = output.replace(/\blisten to them\b/gi, (match, offset, source) =>
-            applySentenceCaseToPhrase('listen to you', offset, source)
-          );
-
-          return output;
-        };
-        
-        // ✅ STEP 3: Comprehensive possessive noun replacement (with context checking)
-        const possessiveNouns = [
-          'stuff', 'things', 'comment', 'comments', 'behavior', 'actions', 'words', 'tone', 'attitude',
-          'approach', 'support', 'help', 'effort', 'job', 'promotion', 'success', 'wins', 'achievements',
-          'accomplishments', 'relationship', 'friendship', 'situation', 'perspective', 'view', 'plan',
-          'plans', 'idea', 'ideas', 'response', 'reaction', 'side', 'feelings', 'thoughts', 'needs',
-          'opinion', 'opinions', 'feedback', 'choices', 'life', 'world', 'experience', 'experiences'
-        ];
-        
-        if (isRecipientUserA || isRecipientUserB) {
-          possessiveNouns.forEach(noun => {
-            // Pattern: "her noun", "his noun", "their noun" → "your noun" (with context check)
-            fixed = fixed.replace(new RegExp(`\\b(her|his|their)\\s+${noun}\\b`, 'gi'), (match, pronoun, offset, source) => {
-              const contextStart = Math.max(0, offset - 30);
-              const contextEnd = Math.min(source.length, offset + match.length + 30);
-              const context = source.substring(contextStart, contextEnd).toLowerCase();
-              
-              const hasThirdPartyReference = /\b(to|about|with|from|talking to|speaking to|congratulating|talking about|speaking about)\s+(her|him|them|she|he|they)\b/i.test(context);
-              const beforeMatch = source.substring(contextStart, offset);
-              const hasThirdPartyName = /\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\s+(her|his|their)\s+${noun}\b/i.test(beforeMatch + match);
-              
-              if (!hasThirdPartyReference && !hasThirdPartyName) {
-                return applySentenceCaseToPhrase(`your ${noun}`, offset, source);
-              }
-              return match;
-            });
-            
-            // Pattern: "her own noun", "his own noun", "their own noun" → "your own noun"
-            fixed = fixed.replace(new RegExp(`\\b(her|his|their)\\s+own\\s+${noun}\\b`, 'gi'), (match, pronoun, offset, source) => {
-              const contextStart = Math.max(0, offset - 30);
-              const contextEnd = Math.min(source.length, offset + match.length + 30);
-              const context = source.substring(contextStart, contextEnd).toLowerCase();
-              
-              const hasThirdPartyReference = /\b(to|about|with|from|talking to|speaking to|congratulating|talking about|speaking about)\s+(her|him|them|she|he|they)\b/i.test(context);
-              const beforeMatch = source.substring(contextStart, offset);
-              const hasThirdPartyName = /\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?\s+(her|his|their)\\s+own\\s+${noun}\b/i.test(beforeMatch + match);
-              
-              if (!hasThirdPartyReference && !hasThirdPartyName) {
-                return applySentenceCaseToPhrase(`your own ${noun}`, offset, source);
-              }
-              return match;
-            });
-          });
           
-          // Common phrases
-          const commonPhrases = [
-            { pattern: /\bjealous of (her|his|their)\b/gi, replacement: 'jealous of your' },
-            { pattern: /\bof (her|his|their) stuff\b/gi, replacement: 'of your stuff' },
-            { pattern: /\bof (her|his|their) things\b/gi, replacement: 'of your things' },
-            { pattern: /\b(her|his|their) comment\b/gi, replacement: 'your comment' },
-            { pattern: /\b(her|his|their) behavior\b/gi, replacement: 'your behavior' },
-            { pattern: /\b(her|his|their) actions\b/gi, replacement: 'your actions' },
-            { pattern: /\b(her|his|their) words\b/gi, replacement: 'your words' },
-            { pattern: /\b(her|his|their) side\b/gi, replacement: 'your side' },
-            { pattern: /\b(her|his|their) perspective\b/gi, replacement: 'your perspective' },
-            { pattern: /\b(her|his|their) feelings\b/gi, replacement: 'your feelings' },
-            { pattern: /\b(her|his|their) thoughts\b/gi, replacement: 'your thoughts' },
-          ];
-          
-          commonPhrases.forEach(({ pattern, replacement }) => {
-            fixed = fixed.replace(pattern, (match, offset, source) => {
-              const contextStart = Math.max(0, offset - 30);
-              const contextEnd = Math.min(source.length, offset + match.length + 30);
-              const context = source.substring(contextStart, contextEnd).toLowerCase();
-              
-              const hasThirdPartyReference = /\b(to|about|with|from|talking to|speaking to|congratulating|talking about|speaking about)\s+(her|him|them|she|he|they)\b/i.test(context);
-              
-              if (!hasThirdPartyReference) {
-                return applySentenceCaseToPhrase(replacement, offset, source);
-              }
-              return match;
-            });
-          });
-          
-          fixed = applyListenerPhraseFixes(fixed);
-        }
+          if (isOtherUser) {
+            return `when you ${verb}`;
+          }
+          return match; // Keep original if it's a third party
+        });
         
-        // ✅ STEP 4: Remove listener name (after pronoun fixes)
-        fixed = removeListenerName(fixed);
+        // ✅ Fix: "[Name]'s achievement/success/perspective" → "your achievement/success/perspective"
+        const namePossessivePattern = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)'s\s+(achievement|success|perspective|side|point|feelings|thoughts|comment|words|behavior|actions)\b/gi;
+        fixed = fixed.replace(namePossessivePattern, (match, name, noun) => {
+          const isOtherUser = conversationHistory.some((msg: any) => 
+            String(msg.sender_id) === String(otherUserId) && 
+            msg.content && 
+            msg.content.toLowerCase().includes(name.toLowerCase())
+          );
+          
+          if (isOtherUser) {
+            return `your ${noun}`;
+          }
+          return match;
+        });
+        
+        // ✅ Fix: "to [Name]" / "with [Name]" / "about [Name]" → "to you" / "with you" / "about you"
+        const namePrepositionPattern = /\b(to|with|for|about|from)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b/gi;
+        fixed = fixed.replace(namePrepositionPattern, (match, preposition, name) => {
+          const isOtherUser = conversationHistory.some((msg: any) => 
+            String(msg.sender_id) === String(otherUserId) && 
+            msg.content && 
+            msg.content.toLowerCase().includes(name.toLowerCase())
+          );
+          
+          if (isOtherUser) {
+            return `${preposition} you`;
+          }
+          return match;
+        });
+        
+        // ✅ Also fix common third-person references that should be "you"
+        // "their perspective" → "your perspective" (when addressing listener)
+        fixed = fixed.replace(/\btheir (perspective|side|point of view|feelings|thoughts|achievements|success|comment|words|behavior|actions)\b/gi, (match, noun) => {
+          return `your ${noun}`;
+        });
+        
+        // "them" → "you" when addressing listener
+        fixed = fixed.replace(/\b(to|with|for|about|from) them\b/gi, (match, preposition) => {
+          return `${preposition} you`;
+        });
+        
+        // "they" → "you" when addressing listener (but be careful - only in certain contexts)
+        fixed = fixed.replace(/\b(and|but|so|because) they\b/gi, (match, conjunction) => {
+          return `${conjunction} you`;
+        });
         
         // Capitalize first letter
         if (fixed.length > 0) {
@@ -1882,7 +1759,7 @@ Use this history to understand the conversation flow and ensure your generated t
       
       // ✅ NEW: Fix pronouns in all options before smiley enforcement
       finalOptions = finalOptions.map(opt => 
-        fixPronounMistakes(opt, recipientId, userAId, userBId, contactName)
+        fixPronounMistakes(opt, recipientId, userAId, userBId)
       );
       
       if (shouldEnforceSmiley(i, recipientId)) {

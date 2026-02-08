@@ -273,13 +273,15 @@ validContactChats.forEach((chat: any) => {
   }
 
   if (!contactId || !contactProfile) return;
+  // ✅ FIX: Use latest message from messages table if available (more accurate than chat.last_message)
+  const latestMsgForChat = latestMsgMap.get(chat.id);
   const chatData: ContactChat = {
     contact_id: contactId,
     contact_name: contactProfile?.full_name || contactProfile?.email || 'Unknown',
     contact_email: contactProfile?.email || '',
-    last_message: chat.last_message || null,
-    last_message_at: chat.last_message_at,
-    last_sender_id: latestMsg?.sender_id ?? null,
+    last_message: latestMsgForChat?.content || chat.last_message || null,
+    last_message_at: latestMsgForChat?.created_at || chat.last_message_at,
+    last_sender_id: latestMsgForChat?.sender_id ?? null,
     session_count: 1,
     ongoing_count: 0, // will set after loop from maps
     total_ongoing_count: 0, // will set after loop from maps
@@ -296,16 +298,23 @@ validContactChats.forEach((chat: any) => {
   if (!existingContact) {
     contactChatMap.set(contactId, chatData);
   } else {
-    if (
-      chat.last_message_at &&
-      (!existingContact.last_message_at ||
-        new Date(chat.last_message_at) >
-          new Date(existingContact.last_message_at))
-    ) {
-      existingContact.last_message = chat.last_message || null;
-      existingContact.last_message_at = chat.last_message_at;
-      existingContact.last_sender_id = latestMsg?.sender_id ?? existingContact.last_sender_id ?? null;
-    }
+      // ✅ FIX: Update last_message from latestMsgMap if available (more accurate than chat.last_message)
+      const latestMsgForChat = latestMsgMap.get(chat.id);
+      if (latestMsgForChat) {
+        // Use the actual latest message from messages table (more reliable)
+        existingContact.last_message = latestMsgForChat.content || chat.last_message || null;
+        existingContact.last_message_at = latestMsgForChat.created_at || chat.last_message_at;
+        existingContact.last_sender_id = latestMsgForChat.sender_id ?? existingContact.last_sender_id ?? null;
+      } else if (
+        chat.last_message_at &&
+        (!existingContact.last_message_at ||
+          new Date(chat.last_message_at) >
+            new Date(existingContact.last_message_at))
+      ) {
+        existingContact.last_message = chat.last_message || null;
+        existingContact.last_message_at = chat.last_message_at;
+        existingContact.last_sender_id = latestMsg?.sender_id ?? existingContact.last_sender_id ?? null;
+      }
     existingContact.session_count += 1;
   }
 
@@ -451,7 +460,12 @@ setContactChats(finalChats);
           table: 'messages',
         },
         (payload) => {
-          fetchAllChats();
+          // ✅ FIX: Only refresh if message is for a chat the user is part of
+          const message = payload.new;
+          if (message?.chat_id) {
+            console.log('📨 New message received on chats page, refreshing chat list');
+            fetchAllChats();
+          }
         }
       )
       .subscribe();

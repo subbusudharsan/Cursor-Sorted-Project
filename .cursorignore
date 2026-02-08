@@ -1,0 +1,11 @@
+# Cursor ignore file - files that should NOT be ignored in file explorer
+# (This file tells Cursor which files to show, opposite of .gitignore)
+
+# Allow .env files to be visible
+!.env
+!.env.example
+!.env.local
+
+# Allow other important files
+!.npmrc
+

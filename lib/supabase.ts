@@ -19,8 +19,13 @@ const supabaseUrl =
 const supabaseAnonKey =
   getEnvVariable('EXPO_PUBLIC_SUPABASE_ANON_KEY') || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '';
 
+// ✅ Better error handling with detailed logging for debugging
 if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error('❌ Missing Supabase credentials.');
+  console.error('❌ Missing Supabase credentials.');
+  console.error('URL found:', !!supabaseUrl);
+  console.error('Key found:', !!supabaseAnonKey);
+  console.error('Constants.expoConfig?.extra:', Constants.expoConfig?.extra);
+  throw new Error('❌ Missing Supabase credentials. Check your .env file and app.config.js');
 }
 
 // 🧭 Detect environment
