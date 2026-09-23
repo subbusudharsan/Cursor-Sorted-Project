@@ -112,6 +112,20 @@ function ContactChatScreen() {
   const regenerationInProgressRef = useRef<boolean>(false); // ✅ Regeneration lock to prevent showing stale options
   const pendingHintRefreshRef = useRef<boolean>(false); // ✅ Marks that next INSERT for same turn_number must refresh (hint scenario)
   const awaitingTurnRef = useRef<boolean>(false); // ✅ Gate: only show options after real conversation event
+  // ✅ Options load dedupe: prevent realtime + poll (or focus) from double-running the same load
+  const optionsLoadHandledMessageIdsRef = useRef<Set<string>>(new Set());
+  const optionsLoadInFlightRef = useRef<boolean>(false);
+  // ✅ When true, showOptionsWithDelay skips the "last message >5s" block (explicit turn recovery)
+  const explicitTurnLoadRef = useRef<boolean>(false);
+  // ✅ Ref so useFocusEffect (declared earlier) can call the shared loader safely
+  const loadOptionsForCurrentUserTurnRef = useRef<
+    ((opts: {
+      chatId: string;
+      currentUserId: string;
+      messageId?: string | null;
+      reason: 'realtime' | 'poll' | 'focus';
+    }) => Promise<void>) | null
+  >(null);
   
   // ✅ STEP 1: State tracking infrastructure for gating rule
   const lastPregenerationCompletedAtRef = useRef<Record<string, number | null>>({}); // Track when pregeneration completed per chat
@@ -860,7 +874,13 @@ function ContactChatScreen() {
     // ✅ FIX: Only block if there are messages AND no conversation event AND not from subscription
     // Allow display from subscription handlers (they're triggered by real events)
     // Also allow if messages.length === 0 (initial display) OR awaitingTurnRef.current === true (normal turn flow)
-    if (source === 'pregenerated_turns' && !awaitingTurnRef.current && messagesRef.current.length > 0) {
+    // ✅ Explicit turn loads (realtime/poll/focus recovery) bypass the 5s freshness gate
+    if (
+      source === 'pregenerated_turns' &&
+      !awaitingTurnRef.current &&
+      !explicitTurnLoadRef.current &&
+      messagesRef.current.length > 0
+    ) {
       // ✅ CRITICAL FIX: Don't block if messages exist - they might be from real-time subscription
       // Real-time messages should always allow options to display
       const hasRecentMessage = messagesRef.current.length > 0 && 
@@ -874,6 +894,10 @@ function ContactChatScreen() {
         console.log(`✅ Allowing UI display: recent message detected (real-time)`);
         awaitingTurnRef.current = true; // Set it for real-time messages
       }
+    }
+    if (explicitTurnLoadRef.current && !awaitingTurnRef.current) {
+      awaitingTurnRef.current = true;
+      console.log(`✅ Allowing UI display: explicit turn load (poll/focus/realtime recovery)`);
     }
     // ✅ FIX: For initial display (no messages), set awaitingTurnRef if not already set
     if (source === 'pregenerated_turns' && messagesRef.current.length === 0 && !awaitingTurnRef.current) {
@@ -1182,12 +1206,12 @@ const enterWaitingForOptions = useCallback(
       return;
     }
     
-    fadeOutCurrentOptions();
+    // ✅ Anti-flicker: hide chips via waitingForOptions / showSuggestedOptions only.
+    // Do NOT wipe suggestedOptions or fade-out to empty — that caused a blank gap until
+    // the next pregen batch loaded. New options replace atomically in showOptionsWithDelay.
     stopOptionShimmer();
     setActiveOptionIndex(null);
-    optionAnimationsRef.current = [];
     setShowSuggestedOptions(false);
-    setSuggestedOptions([]);
     setManualInputMode(false);
     pendingOptionsRecipientRef.current = targetRecipientId;
     pendingOptionsSinceRef.current = Date.now();
@@ -1196,7 +1220,7 @@ const enterWaitingForOptions = useCallback(
     }
     lastOptionsSignatureRef.current = null;
   },
-  [fadeOutCurrentOptions, stopOptionShimmer, waitingForOptions, user?.id]
+  [stopOptionShimmer, waitingForOptions, user?.id, showSuggestedOptions, suggestedOptions.length]
 );
 
 const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
@@ -1373,6 +1397,10 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       
       // ✅ FIX: Reset initialization flag when chatId changes
       hasInitializedOptionsRef.current = false;
+      // ✅ Reset options-load dedupe when switching chats
+      optionsLoadHandledMessageIdsRef.current.clear();
+      optionsLoadInFlightRef.current = false;
+      explicitTurnLoadRef.current = false;
       
       // ✅ CRITICAL: Clear messagesRef when chatId changes to prevent stale data
       // This fixes the issue where messagesSentByUser is calculated incorrectly for new chats
@@ -1745,8 +1773,27 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         fetchChatContext(currentChatId).catch(err => 
           console.error('⚠️ fetchChatContext error on focus:', err)
         );
+        
+        // ✅ Recover missing options once per focus entry (do NOT depend on options state —
+        // those deps re-fired this effect and caused clear→show flicker)
+        if (!isChatClosed && user.id) {
+          const alreadyShowing =
+            showSuggestedOptions &&
+            suggestedOptions.length > 0 &&
+            !waitingForOptions;
+          if (!alreadyShowing) {
+            loadOptionsForCurrentUserTurnRef.current?.({
+              chatId: currentChatId,
+              currentUserId: String(user.id),
+              reason: 'focus',
+            })?.catch((err) =>
+              console.warn('⚠️ Focus options load failed:', err)
+            );
+          }
+        }
       }
-    }, [isResolved, user, currentChatId])
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- options state intentionally omitted to prevent flicker loops
+    }, [isResolved, user, currentChatId, isChatClosed])
   );
 
   // ✅ NEW: Initialize options waiting state when stored session opens
@@ -3338,10 +3385,135 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           }
         }
       )
+      .subscribe((status) => {
+        console.log("📡 Closure subscription status:", status);
+      });
     return () => {
       supabase.removeChannel(channel);
     };
   };
+  // ---- shared: load options for current user's turn (realtime / poll / focus) ----
+  // Message-id lock + in-flight guard prevent double loads when realtime and poll both fire.
+  const loadOptionsForCurrentUserTurn = async (opts: {
+    chatId: string;
+    currentUserId: string;
+    messageId?: string | null;
+    reason: 'realtime' | 'poll' | 'focus';
+  }) => {
+    const { chatId, currentUserId, messageId, reason } = opts;
+    if (!chatId || !currentUserId || isChatClosed) return;
+
+    // Layer 1: message-id lock (realtime + poll) — only keep if load succeeds
+    let claimedMessageId: string | null = null;
+    if (messageId) {
+      if (optionsLoadHandledMessageIdsRef.current.has(messageId)) {
+        console.log(`⏸️ Options load already handled for message ${messageId} (${reason})`);
+        return;
+      }
+      optionsLoadHandledMessageIdsRef.current.add(messageId);
+      claimedMessageId = messageId;
+      if (optionsLoadHandledMessageIdsRef.current.size > 40) {
+        const oldest = optionsLoadHandledMessageIdsRef.current.values().next().value;
+        if (oldest) optionsLoadHandledMessageIdsRef.current.delete(oldest);
+      }
+    }
+
+    // Layer 2: in-flight guard
+    if (optionsLoadInFlightRef.current) {
+      console.log(`⏸️ Options load already in flight — skipping (${reason})`);
+      // Allow poll/realtime retry later for this message
+      if (claimedMessageId) {
+        optionsLoadHandledMessageIdsRef.current.delete(claimedMessageId);
+      }
+      return;
+    }
+
+    // Focus: only recover when chips are missing / waiting and it's our turn
+    if (reason === 'focus') {
+      const alreadyShowing =
+        showSuggestedOptions &&
+        suggestedOptions.length > 0 &&
+        !waitingForOptions;
+      if (alreadyShowing) {
+        console.log('ℹ️ Focus: options already visible — skip');
+        return;
+      }
+      const msgs = messagesRef.current;
+      if (msgs.length > 0 && String(msgs[msgs.length - 1].sender_id) === String(currentUserId)) {
+        console.log('ℹ️ Focus: last message is ours — not our turn, skip options load');
+        return;
+      }
+    }
+
+    optionsLoadInFlightRef.current = true;
+    explicitTurnLoadRef.current = true;
+    awaitingTurnRef.current = true;
+    let loadSucceeded = false;
+
+    try {
+      console.log(`⚡ loadOptionsForCurrentUserTurn start (${reason})`, { chatId, currentUserId, messageId });
+      // ✅ Only clear visible chips when something is actually on screen.
+      // Calling enterWaiting while empty caused focus/poll loops to flicker.
+      if (showSuggestedOptions && suggestedOptions.length > 0) {
+        enterWaitingForOptions(currentUserId);
+      } else if (!waitingForOptions) {
+        pendingOptionsRecipientRef.current = currentUserId;
+        pendingOptionsSinceRef.current = Date.now();
+        setWaitingForOptions(true);
+      }
+
+      // Fixed-window wait for pregen — do NOT abort based on local isGenerating flag
+      // (receiver's client usually did not start generation)
+      const maxWaitTime = 10000;
+      const checkInterval = 300;
+      let waited = 0;
+      let pregen = await fetchPregeneratedTurn(chatId, currentUserId);
+
+      while (waited < maxWaitTime && (!pregen || !pregen.options?.length)) {
+        await new Promise((resolve) => setTimeout(resolve, checkInterval));
+        waited += checkInterval;
+        pregen = await fetchPregeneratedTurn(chatId, currentUserId);
+        if (pregen && pregen.options?.length > 0) {
+          console.log(`✅ loadOptionsForCurrentUserTurn: found pregen after ${waited}ms (${reason})`);
+          break;
+        }
+      }
+
+      if (pregen && pregen.options?.length > 0 && String(pregen.recipient_id) === String(currentUserId)) {
+        const cleaned = cleanOptionsForDisplay(pregen.options, contact?.full_name || null);
+        await showOptionsWithDelay(
+          cleaned,
+          'pregenerated_turns',
+          pregen.turn_number,
+          pregen.recipient_id,
+          pregen.options
+        );
+        resolveWaitingForOptions(currentUserId);
+        loadSucceeded = true;
+        console.log(`✅ loadOptionsForCurrentUserTurn: showed pregen options (${reason})`);
+        return;
+      }
+
+      // Fallback: force initial/options fetch (message_options / contextual path)
+      console.log(`ℹ️ loadOptionsForCurrentUserTurn: no pregen after wait — fetchInitialOptions (${reason})`);
+      await fetchInitialOptions(chatId, currentUserId, 0, { force: true });
+      loadSucceeded = true;
+      resolveWaitingForOptions(currentUserId);
+    } catch (err) {
+      console.warn(`⚠️ loadOptionsForCurrentUserTurn error (${reason}):`, err);
+      resolveWaitingForOptions(currentUserId);
+    } finally {
+      optionsLoadInFlightRef.current = false;
+      explicitTurnLoadRef.current = false;
+      // If load failed, release message id so poll can retry while staying on screen
+      if (claimedMessageId && !loadSucceeded) {
+        optionsLoadHandledMessageIdsRef.current.delete(claimedMessageId);
+        console.log(`🔓 Released message id lock after failed load (${reason}):`, claimedMessageId);
+      }
+    }
+  };
+  loadOptionsForCurrentUserTurnRef.current = loadOptionsForCurrentUserTurn;
+
   // ---- realtime: messages ----
   const subscribeToMessages = (chatId: string, currentUserId: string) => {
     // ✅ CRITICAL: Clean up existing subscription if it exists (for different chatId)
@@ -3461,433 +3633,58 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               const messageFromOtherUser = String(newMsg.sender_id) !== String(currentUserId);
               
               if (messageFromOtherUser) {
-                // ✅ Set awaitingTurnRef for AI/option logic (preserves turn control)
-                awaitingTurnRef.current = true;
-                console.log("🧹 New message from other user → waiting for fresh options");
-                enterWaitingForOptions(currentUserId);
-                lastOptionsSignatureRef.current = null;
-                
-                // ✅ Check if conversation is closed before generating options (preserves closure logic)
-                if (isChatClosed) {
-                  console.log("🛑 Chat is closed (local state) - skipping option generation");
-                  resolveWaitingForOptions(currentUserId);
-                  return;
-                }
-                
-                const { data: closureCheck } = await supabase
-                  .from("chats")
-                  .select("is_resolved, closure_state")
-                  .eq("id", currentChatId)
-                  .single();
-
-                if (closureCheck?.is_resolved === true && closureCheck?.closure_state === 'closed') {
-                  console.log("🛑 Conversation is closed - skipping option generation");
-                  setIsChatClosed(true);
-                  resolveWaitingForOptions(currentUserId);
-                  return;
-                }
-                
-                // ✅ Fetch chat context to determine recipient (preserves ownership rules)
-                const { data: chatCtx } = await supabase
-                  .from("chats")
-                  .select("context_data, user_id, contact_id, closure_state, user_a_smiley_sent, user_b_smiley_sent, conversation_phase")
-                  .eq("id", chatId)
-                  .single();
-                
-                if (!chatCtx) {
-                  console.warn("⚠️ Could not fetch chat context for options");
-                  resolveWaitingForOptions(currentUserId);
-                  return;
-                }
-                
-                // ✅ Determine recipient based on sender (preserves turn ownership)
-                const senderId = String(newMsg.sender_id);
-                const recipientIdForOptions =
-                  senderId === String(chatCtx.contact_id)
-                    ? String(chatCtx.user_id)      // User B sent → options for User A
-                    : String(chatCtx.contact_id);  // User A sent → options for User B
-
-                console.log("🔍 Corrected Recipient:", {
-                  senderId,
-                  chatUserA: chatCtx.user_id,
-                  chatUserB: chatCtx.contact_id,
-                  recipientIdForOptions,
-                  currentUserId
-                });
-                
-                // ✅ Only proceed if current user is the recipient (preserves ownership rules)
-                if (String(recipientIdForOptions) !== String(currentUserId)) {
-                  console.log("ℹ️ Options are for different user - current user is not the recipient");
-                  resolveWaitingForOptions(currentUserId);
-                  return;
-                }
-                
-                // ✅ Check pregenerated turns FIRST (preserves pregeneration priority)
-                console.log("🔍 Checking pregenerated turns:", { chatId, userId: recipientIdForOptions });
-                let pregen = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
-                
-                // ✅ Poll for pregenerated turns if not found (preserves generation wait logic)
-                if (!pregen || !pregen.options?.length) {
-                  console.log("ℹ️ No pregenerated turn found, polling for generation (max 5 seconds)...");
-                  
-                  const maxWaitTime = 5000;
-                  const checkInterval = 300;
-                  let waited = 0;
-                  let consecutiveFailures = 0;
-                  const maxConsecutiveFailures = 3;
-                  let lastGenerationCheck = Date.now();
-                  const generationTimeout = 2000;
-                  
-                  while (waited < maxWaitTime && (!pregen || !pregen.options?.length)) {
-                    await new Promise(resolve => setTimeout(resolve, checkInterval));
-                    waited += checkInterval;
-                    
-                    const isGenerating = isGeneratingPregeneratedTurnsRef.current[chatId] === true;
-                    const timeSinceLastCheck = Date.now() - lastGenerationCheck;
-                    
-                    if (!isGenerating && timeSinceLastCheck > generationTimeout) {
-                      console.log(`⏸️ Stopping polling: No generation in progress after ${generationTimeout}ms`);
-                      break;
+                // ✅ If chat already closed (second smiley just committed), exit to history —
+                // do not start options load (waiting user used to miss this when closure channel wasn't subscribed)
+                try {
+                  const incomingContent = String(newMsg.content || "").trim();
+                  const looksLikeSmiley =
+                    incomingContent.length > 0 &&
+                    /^[\p{Emoji_Presentation}\p{Emoji}\u200d\ufe0f\s]+$/u.test(incomingContent) &&
+                    !/[a-zA-Z0-9]/.test(incomingContent);
+                  // Sender updates is_resolved after insert — retry briefly for smiley closes
+                  const maxClosureChecks = looksLikeSmiley ? 8 : 1;
+                  for (let i = 0; i < maxClosureChecks; i++) {
+                    if (i > 0) {
+                      await new Promise((r) => setTimeout(r, 300));
                     }
-                    
-                    if (isGenerating) {
-                      lastGenerationCheck = Date.now();
-                    }
-                    
-                    pregen = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
-                    
-                    if (pregen && pregen.options?.length > 0) {
-                      console.log(`✅ Found pregenerated turn after ${waited}ms`);
-                      break;
-                    } else {
-                      consecutiveFailures++;
-                      if (consecutiveFailures >= maxConsecutiveFailures) {
-                        console.log(`⏸️ Stopping polling: ${consecutiveFailures} consecutive failures detected`);
-                        break;
-                      }
-                    }
-                  }
-                  
-                  if (!pregen || !pregen.options?.length) {
-                    console.log("ℹ️ No pregenerated turn found after polling, will fall back to generate-contextual-options (hardest situation)");
-                    
-                    // ✅ Check if we need to trigger regeneration before falling back
-                    const { data: closureStateCheck } = await supabase
+                    const { data: closureRow } = await supabase
                       .from("chats")
-                      .select("closure_state, is_resolved")
+                      .select("is_resolved, closure_state")
                       .eq("id", chatId)
                       .single();
-                    
-                    const isPendingClosure = closureStateCheck?.closure_state?.startsWith('pending_');
-                    const isClosed = closureStateCheck?.is_resolved === true;
-                    
-                    if (!isClosed && !isPendingClosure) {
-                      // ✅ Check remaining turns count for the recipient
-                      const { data: chatDataForRecipient } = await supabase
-                        .from("chats")
-                        .select("user_id, contact_id")
-                        .eq("id", chatId)
-                        .single();
-                      
-                      if (chatDataForRecipient) {
-                        const messageSenderId = String(newMsg.sender_id);
-                        const isSenderUserA = messageSenderId === String(chatDataForRecipient.user_id);
-                        const recipientId = isSenderUserA 
-                          ? String(chatDataForRecipient.contact_id) 
-                          : String(chatDataForRecipient.user_id);
-                        
-                        const { data: remainingTurns } = await supabase
-                          .from("pregenerated_turns")
-                          .select("id")
-                          .eq("chat_id", chatId)
-                          .eq("recipient_id", recipientId)
-                          .is("used_at", null)
-                          .limit(4);
-                        
-                        const remainingCount = remainingTurns?.length || 0;
-                        
-                        if (remainingCount <= 1) {
-                          const { data: chatDataForPendingCheck } = await supabase
-                            .from("chats")
-                            .select("context_data, user_id")
-                            .eq("id", chatId)
-                            .single();
-                          
-                          const pendingHint = chatDataForPendingCheck?.context_data?.pendingHint === true;
-                          
-                          const { hint: hintFromB } = await resolveHintFromB(chatId, {
-                            chatDataForPendingCheckContextData: chatDataForPendingCheck?.context_data
-                          });
-                          
-                          let latestMessageFromA: string | null = null;
-                          if (pendingHint && chatDataForPendingCheck) {
-                            const { data: latestMessage } = await supabase
-                              .from("messages")
-                              .select("sender_id, content")
-                              .eq("chat_id", chatId)
-                              .order("created_at", { ascending: false })
-                              .limit(1)
-                              .single();
-                            
-                            if (latestMessage) {
-                              const isLatestMessageFromA = String(latestMessage.sender_id) === String(chatDataForPendingCheck.user_id);
-                              latestMessageFromA = isLatestMessageFromA ? latestMessage.content : null;
-                            }
-                          }
-                          
-                          if (pendingHint && !latestMessageFromA) {
-                            console.log("🛑 BLOCKING regeneration: pendingHint flag is set and User A has not selected");
-                            return;
-                          }
-                          
-                          console.log("⚡ Triggering regeneration from message subscription (turns running low)");
-                          const closureState = await fetchClosureState(chatId);
-                          const result = await invokePregenerationWithGuard(chatId, {
-                            chatId: chatId,
-                            hintFromB: hintFromB,
-                            closureState: closureState.closureState,
-                            userASmileySent: closureState.userASmileySent,
-                            userBSmileySent: closureState.userBSmileySent,
-                            ...(latestMessageFromA && { latestMessageFromA })
-                          });
-                          
-                          if (!result.skipped && result.error) {
-                            console.error("❌ Failed to trigger regeneration:", result.error);
-                          }
-                        }
+                    if (closureRow?.is_resolved === true && closureRow?.closure_state === 'closed') {
+                      console.log("🎉 Incoming message on closed chat — navigating to history");
+                      setIsChatClosed(true);
+                      setShowSuggestedOptions(false);
+                      setSuggestedOptions([]);
+                      resolveWaitingForOptions(currentUserId);
+                      if (contactId) {
+                        router.replace({
+                          pathname: '/contact-chat-details',
+                          params: { contactId: contactId, autoSwitchToHistory: 'true' }
+                        });
+                      } else {
+                        router.replace('/(tabs)/chats');
                       }
+                      return;
                     }
                   }
+                } catch (closureErr) {
+                  console.warn("⚠️ Closure check on incoming message failed:", closureErr);
                 }
-                
-                if (pregen && pregen.options?.length > 0) {
-                  // ✅ Verify recipient_id matches (preserves ownership rules)
-                  if (String(pregen.recipient_id) !== String(recipientIdForOptions)) {
-                    console.error("❌ Pregenerated turn recipient_id mismatch!");
-                    resolveWaitingForOptions(recipientIdForOptions);
-                    return;
-                  }
-                  
-                  if (String(recipientIdForOptions) !== String(currentUserId)) {
-                    console.log("ℹ️ Pregenerated options are for different user");
-                    resolveWaitingForOptions(recipientIdForOptions);
-                    return;
-                  }
-                  
-                  console.log("⚡ onMessageReceived: Using pregenerated options");
-                  const cleaned = cleanOptionsForDisplay(pregen.options, contact?.full_name || null);
-                  await showOptionsWithDelay(cleaned, 'pregenerated_turns', pregen.turn_number, pregen.recipient_id, pregen.options);
-                  resolveWaitingForOptions(recipientIdForOptions);
-                  return;
-                }
-                
-                // ✅ Double-check pregenerated turns before orchestration
-                console.log("🔍 Double-checking pregenerated turns before orchestration:", { chatId, userId: recipientIdForOptions });
-                let pregenCheck = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
-                
-                if (!pregenCheck || !pregenCheck.options?.length) {
-                  console.log("ℹ️ Double-check: No pregenerated turn found, polling for generation (max 8 seconds)...");
-                  
-                  const maxWaitTime = 8000;
-                  const checkInterval = 300;
-                  let waited = 0;
-                  
-                  while (waited < maxWaitTime && (!pregenCheck || !pregenCheck.options?.length)) {
-                    await new Promise(resolve => setTimeout(resolve, checkInterval));
-                    waited += checkInterval;
-                    
-                    const isGenerating = isGeneratingPregeneratedTurnsRef.current[chatId] === true;
-                    if (isGenerating && waited < maxWaitTime) {
-                      continue;
-                    }
-                    
-                    pregenCheck = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
-                    
-                    if (pregenCheck && pregenCheck.options?.length > 0) {
-                      console.log(`✅ Double-check: Found pregenerated turn after ${waited}ms`);
-                      break;
-                    }
-                  }
-                }
-                
-                if (pregenCheck && pregenCheck.options?.length > 0 && String(pregenCheck.recipient_id) === String(recipientIdForOptions)) {
-                  console.log("🚫 Orchestration skipped — pregenerated exists");
-                  const cleaned = cleanOptionsForDisplay(pregenCheck.options, contact?.full_name || null);
-                  await showOptionsWithDelay(cleaned, 'pregenerated_turns', pregenCheck.turn_number, pregenCheck.recipient_id, pregenCheck.options);
-                  setShowSuggestedOptions(true);
-                  resolveWaitingForOptions(recipientIdForOptions);
-                  return;
-                }
-                
-                // ✅ Final check before fallback
-                const finalPregenCheck = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
-                if (finalPregenCheck && finalPregenCheck.options?.length > 0 && String(finalPregenCheck.recipient_id) === String(recipientIdForOptions)) {
-                  console.log("🚫 Orchestration skipped — final check found pregenerated turns");
-                  const cleaned = cleanOptionsForDisplay(finalPregenCheck.options, contact?.full_name || null);
-                  await showOptionsWithDelay(cleaned, 'pregenerated_turns', finalPregenCheck.turn_number, finalPregenCheck.recipient_id, finalPregenCheck.options);
-                  setShowSuggestedOptions(true);
-                  resolveWaitingForOptions(recipientIdForOptions);
-                  return;
-                }
-                
-                // ✅ ABSOLUTE FINAL CHECK before fallback
-                console.log("🔍 ABSOLUTE FINAL CHECK: Polling for pregenerated turns one more time before fallback...");
-                let absoluteFinalCheck = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
-                if (!absoluteFinalCheck || !absoluteFinalCheck.options?.length) {
-                  const maxFinalWait = 5000;
-                  const finalCheckInterval = 300;
-                  let finalWaited = 0;
-                  
-                  while (finalWaited < maxFinalWait && (!absoluteFinalCheck || !absoluteFinalCheck.options?.length)) {
-                    await new Promise(resolve => setTimeout(resolve, finalCheckInterval));
-                    finalWaited += finalCheckInterval;
-                    absoluteFinalCheck = await fetchPregeneratedTurn(chatId, recipientIdForOptions);
-                    
-                    const isGenerating = isGeneratingPregeneratedTurnsRef.current[chatId] === true;
-                    if (isGenerating && finalWaited < maxFinalWait) {
-                      continue;
-                    }
-                    
-                    if (absoluteFinalCheck && absoluteFinalCheck.options?.length > 0) {
-                      console.log(`✅ ABSOLUTE FINAL CHECK: Found pregenerated turn after ${finalWaited}ms`);
-                      break;
-                    }
-                  }
-                }
-                
-                if (absoluteFinalCheck && absoluteFinalCheck.options?.length > 0 && String(absoluteFinalCheck.recipient_id) === String(recipientIdForOptions)) {
-                  console.log("🚫🚫🚫 ABSOLUTE FINAL CHECK: Pregenerated turns found - BLOCKING generate-contextual-options");
-                  const cleaned = cleanOptionsForDisplay(absoluteFinalCheck.options, contact?.full_name || null);
-                  await showOptionsWithDelay(cleaned, 'pregenerated_turns', absoluteFinalCheck.turn_number, absoluteFinalCheck.recipient_id, absoluteFinalCheck.options);
-                  setShowSuggestedOptions(true);
-                  resolveWaitingForOptions(recipientIdForOptions);
-                  return;
-                }
-                
-                // ✅ LAST MINUTE CHECK
-                const { data: lastMinuteCheck } = await supabase
-                  .from("pregenerated_turns")
-                  .select("turn_number, recipient_id, options")
-                  .eq("chat_id", chatId)
-                  .eq("recipient_id", recipientIdForOptions)
-                  .is("selected_message", null)
-                  .order("turn_number", { ascending: true })
-                  .limit(1)
-                  .single();
-                
-                if (lastMinuteCheck && lastMinuteCheck.options?.length > 0) {
-                  console.log("🚫🚫🚫 LAST MINUTE CHECK: Pregenerated turns found - BLOCKING generate-contextual-options");
-                  const cleaned = cleanOptionsForDisplay(lastMinuteCheck.options, contact?.full_name || null);
-                  await showOptionsWithDelay(cleaned, 'pregenerated_turns', lastMinuteCheck.turn_number, lastMinuteCheck.recipient_id, lastMinuteCheck.options);
-                  setShowSuggestedOptions(true);
-                  resolveWaitingForOptions(recipientIdForOptions);
-                  return;
-                }
-                
-                // ✅ FALLBACK: Only reach here if pregenerated turns don't exist
-                console.log("⚠️⚠️⚠️ FALLBACK MODE: No pregenerated turns found after all checks - using generate-contextual-options");
-                
-                enterWaitingForOptions(recipientIdForOptions);
-                
-                const conversationHistory = buildHistory({
-                  sender_id: String(newMsg.sender_id),
-                  content: String(newMsg.content || ""),
+
+                // ✅ Stay-on-screen fix: use the same shared loader as poll/focus.
+                // Do not claim message ids here — loadOptionsForCurrentUserTurn owns the lock
+                // and releases it if display fails so poll can retry.
+                console.log("🧹 New message from other user → loadOptionsForCurrentUserTurn");
+                awaitingTurnRef.current = true;
+                lastOptionsSignatureRef.current = null;
+                await loadOptionsForCurrentUserTurn({
+                  chatId,
+                  currentUserId,
+                  messageId: newMsg.id ? String(newMsg.id) : null,
+                  reason: "realtime",
                 });
-                
-                const isCurrentUserA = currentUserId === chatCtx?.user_id;
-                const summaryA = chatCtx?.context_data?.summary_a || chatCtx?.context_data?.summary || "";
-                const thoughtsA = chatCtx?.context_data?.thoughts_a || chatCtx?.context_data?.thoughts || "";
-                const summaryB = chatCtx?.context_data?.summary_b || "";
-                const thoughtsB = chatCtx?.context_data?.thoughts_b || "";
-                const summaryToSend = isCurrentUserA ? summaryA : (summaryB || summaryA);
-                const thoughtsToSend = isCurrentUserA ? thoughtsA : (thoughtsB || thoughtsA);
-                
-                const closureState = chatCtx?.closure_state || 'active';
-                const userASmileySent = chatCtx?.user_a_smiley_sent || false;
-                const userBSmileySent = chatCtx?.user_b_smiley_sent || false;
-                const conversationPhaseFromCtx = chatCtx?.conversation_phase || conversationPhase;
-                const closureStage = computeClosureStage(
-                  closureState,
-                  userASmileySent,
-                  userBSmileySent,
-                  conversationPhaseFromCtx,
-                  conversationHistory
-                );
-                
-                // Generate options via orchestration + contextual
-                try {
-                  const { data: orchData } = await supabase.functions.invoke("orchestrate-conversation", {
-                    body: {
-                      chatId,
-                      recipientId: recipientIdForOptions,
-                      currentUserId,
-                      currentMessage: String(newMsg.content || ""),
-                      summary: summaryToSend,
-                      thoughts: thoughtsToSend,
-                      originalIssue: { summary: summaryA, thoughts: thoughtsA },
-                      hintFromB: chatCtx?.context_data?.hint_from_b || "",
-                      hintToContact: chatCtx?.context_data?.hint_to_contact || null,
-                      summaryB,
-                      thoughtsB,
-                      conversationHistory,
-                      isInitial: false,
-                      contactCategory: contact?.category || "General",
-                      conversationPhase,
-                      resolutionDetected: false,
-                      lastMessageTimestamp: newMsg.created_at,
-                      wordLimit: 15,
-                    },
-                  });
-                  
-                  const orchestrationGuidance = orchData?.guidance ?? null;
-                  
-                  const { error } = await supabase.functions.invoke("generate-contextual-options", {
-                    body: {
-                      chatId,
-                      recipientId: recipientIdForOptions,
-                      currentUserId,
-                      summary: summaryToSend,
-                      thoughts: thoughtsToSend,
-                      summary_shared_neutral: chatCtx?.context_data?.summary_shared_neutral || "",
-                      summaryB,
-                      thoughtsB,
-                      conversationHistory,
-                      contactCategory: contact?.category || "General",
-                      orchestrationGuidance,
-                      hintFromB: chatCtx?.context_data?.hint_from_b || "",
-                      hintToContact: chatCtx?.context_data?.hint_to_contact || null,
-                      conversationPhase,
-                      lastMessage: newMsg.content || "",
-                      isVeryFirstMessage: false,
-                      closureState,
-                      userASmileySent,
-                      userBSmileySent,
-                      closureStage,
-                    },
-                  });
-                  
-                  if (error) {
-                    const isRoleMismatchError = error?.context?.status === 500 && 
-                      (error?.message?.includes('Role mismatch') || 
-                       error?.context?.bodyUsed === false ||
-                       error?.context?.statusText === '');
-                    
-                    if (!isRoleMismatchError) {
-                      console.error("❌ Failed to generate options:", error);
-                      showNotification('error', 'Options Failed', 'Could not generate response options. You can type manually.');
-                    }
-                    resolveWaitingForOptions(recipientIdForOptions);
-                  } else {
-                    console.log("✅ Options generation request sent");
-                  }
-                } catch (generationError) {
-                  const isRoleMismatchError = (generationError as any)?.context?.status === 500;
-                  if (!isRoleMismatchError) {
-                    console.error("💥 ERROR generating options:", generationError);
-                    showNotification('error', 'Options Failed', 'Could not generate response options. Please try again.');
-                  }
-                  resolveWaitingForOptions(recipientIdForOptions);
-                }
               } else {
                 // ✅ Message from current user - no options needed (preserves self-message logic)
                 console.log("ℹ️ Message from current user - no options to generate");
@@ -3984,40 +3781,78 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                   lastMessageCount = allMessages.length;
                   lastMessageCheck = Date.now();
                   
-                  setMessages((prev) => {
-                    const existingIds = new Set(prev.map(m => m.id));
-                    const newMessages = allMessages.filter(msg => !existingIds.has(msg.id));
+                  const existingIds = new Set(messagesRef.current.map(m => m.id));
+                  const newMessages = allMessages.filter(msg => !existingIds.has(msg.id));
+                  
+                  if (newMessages.length > 0) {
+                    setMessages((prev) => {
+                      const prevIds = new Set(prev.map(m => m.id));
+                      const trulyNew = newMessages.filter(msg => !prevIds.has(msg.id));
+                      if (trulyNew.length === 0) return prev;
+                      
+                      console.log(`📨 POLLING: Adding ${trulyNew.length} new message(s) via polling fallback`);
+                      
+                      const formattedNewMessages: Message[] = trulyNew.map((msg: any) => ({
+                        id: msg.id,
+                        content: msg.content,
+                        sender_type: (msg.sender_id === subscribedUserId ? "user" : "contact") as "user" | "contact",
+                        sender_id: msg.sender_id,
+                        created_at: msg.created_at,
+                      }));
+                      
+                      const updatedMessages = [...prev, ...formattedNewMessages].sort((a, b) => 
+                        new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+                      );
+                      messagesRef.current = updatedMessages;
+                      
+                      setTimeout(() => {
+                        scrollToBottom();
+                      }, 100);
+                      
+                      return updatedMessages;
+                    });
                     
-                    if (newMessages.length === 0) return prev;
-                    
-                    console.log(`📨 POLLING: Adding ${newMessages.length} new message(s) via polling fallback`);
-                    
-                    const formattedNewMessages: Message[] = newMessages.map((msg: any) => ({
-                      id: msg.id,
-                      content: msg.content,
-                      sender_type: (msg.sender_id === subscribedUserId ? "user" : "contact") as "user" | "contact",
-                      sender_id: msg.sender_id,
-                      created_at: msg.created_at,
-                    }));
-                    
-                    const updatedMessages = [...prev, ...formattedNewMessages].sort((a, b) => 
-                      new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+                    // ✅ Load options when poll finds messages from the other user
+                    // (realtime INSERT may have been missed — this is the stay-on-screen fix)
+                    const otherUserMessages = newMessages.filter(
+                      (msg) => String(msg.sender_id) !== String(subscribedUserId)
                     );
-                    messagesRef.current = updatedMessages;
-                    
-                    // Scroll to bottom when new messages arrive
-                    setTimeout(() => {
-                      scrollToBottom();
-                    }, 100);
-                    
-                    // ✅ Only set awaitingTurnRef for messages from other users (preserves turn control)
-                    const hasMessageFromOtherUser = newMessages.some(msg => msg.sender_id !== subscribedUserId);
-                    if (hasMessageFromOtherUser) {
+                    if (otherUserMessages.length > 0) {
                       awaitingTurnRef.current = true;
+                      const latestOther = otherUserMessages[otherUserMessages.length - 1];
+                      // ✅ If chat closed while we were on screen, go to history instead of loading options
+                      try {
+                        const { data: closureRow } = await supabase
+                          .from("chats")
+                          .select("is_resolved, closure_state")
+                          .eq("id", subscribedChatId)
+                          .single();
+                        if (closureRow?.is_resolved === true && closureRow?.closure_state === 'closed') {
+                          console.log("🎉 POLLING: chat closed — navigating to history");
+                          setIsChatClosed(true);
+                          setShowSuggestedOptions(false);
+                          setSuggestedOptions([]);
+                          if (contactId) {
+                            router.replace({
+                              pathname: '/contact-chat-details',
+                              params: { contactId: contactId, autoSwitchToHistory: 'true' }
+                            });
+                          } else {
+                            router.replace('/(tabs)/chats');
+                          }
+                          return;
+                        }
+                      } catch (_) {}
+                      loadOptionsForCurrentUserTurn({
+                        chatId: subscribedChatId,
+                        currentUserId: subscribedUserId,
+                        messageId: String(latestOther.id),
+                        reason: 'poll',
+                      }).catch((err) =>
+                        console.warn('⚠️ Poll options load failed:', err)
+                      );
                     }
-                    
-                    return updatedMessages;
-                  });
+                  }
                 }
               } catch (err) {
                 console.warn("⚠️ Polling error:", err);
@@ -4470,6 +4305,10 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             } catch (closureLogError) {
               console.warn('⚠️ Failed to log closure in Soulroom:', closureLogError);
             }
+            // ✅ Stop sendMessage here — do not generate options after chat is closed
+            setLoading(false);
+            console.log('🛑 Chat closed — skipping recipient option generation');
+            return;
           }
         }
       } else if (chatCheck) {
