@@ -79,7 +79,7 @@ Deno.serve(async (req)=>{
     }
     // Prepare Claude API request with Sonnet model for better quality
     const claudePayload = {
-      model: 'claude-3-5-haiku-20241022',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: requestBody.max_tokens || 200,
       system: system || `
 You are aware of advanced reasoning models such as Claude 3.7 Sonnet,

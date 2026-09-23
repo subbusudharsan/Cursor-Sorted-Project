@@ -497,7 +497,7 @@ Generate a brief 2-3 sentence summary in NEUTRAL THIRD-PERSON language (using "U
               "anthropic-version": "2023-06-01"
             },
             body: JSON.stringify({
-              model: "claude-3-5-haiku-20241022",
+              model: "claude-haiku-4-5-20251001",
               max_tokens: 200,
               temperature: 0.3,
               messages: [{
@@ -1301,7 +1301,7 @@ Use this history to understand the conversation flow and ensure your generated t
           "anthropic-version": "2023-06-01"
         },
         body: JSON.stringify({
-          model: "claude-3-5-haiku-20241022",
+          model: "claude-haiku-4-5-20251001",
           max_tokens: 3000, // ✅ Increased from 2000 to ensure enough space for all 3 turns
           temperature: 0.7,
           system: systemPrompt,

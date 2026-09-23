@@ -20,7 +20,7 @@
 
 // NOTE: This project can be upgraded to premium models such as Claude 3.7 Sonnet,
 // Claude 3.5 Sonnet, or OpenAI GPT-4.1 / o1 models in the future.
-// Current model intentionally remains claude-3-5-haiku-20241022 for cost control.
+// Current model intentionally remains claude-haiku-4-5-20251001 for cost control.
 
 
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
@@ -939,7 +939,7 @@ Generate a brief 2-3 sentence summary in NEUTRAL THIRD-PERSON language (using "U
         "anthropic-version": "2023-06-01"
       },
       body: JSON.stringify({
-        model: "claude-3-5-haiku-20241022",
+        model: "claude-haiku-4-5-20251001",
         max_tokens: 200,
         temperature: 0.3,
         messages: [{
@@ -3438,7 +3438,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
 
     // ✅ Use retry helper function
     const anthropicResponse = await callAnthropicAPI({
-        model: "claude-3-5-haiku-20241022",
+        model: "claude-haiku-4-5-20251001",
         max_tokens: 2500,  // ✅ Increased from 200 to allow complete responses
         temperature: 0.7,  // ✅ Increased from 0.5 for more natural responses
       system: systemPromptText,

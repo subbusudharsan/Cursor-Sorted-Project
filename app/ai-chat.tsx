@@ -2450,7 +2450,7 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
           Authorization: `Bearer ${process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY}`,
         },
         body: JSON.stringify({
-          model: "claude-3-5-haiku-20241022",
+          model: "claude-haiku-4-5-20251001",
           max_tokens: 300,
           system: systemPrompt,
           messages: [
@@ -2462,7 +2462,8 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
       const result = await response.json();
       
       if (!result?.content) {
-        throw new Error("No content in response");
+        const detail = result?.error || `HTTP ${response.status}`;
+        throw new Error(`No content in response: ${detail}`);
       }
 
       // Parse the response to extract questions
@@ -3197,7 +3198,7 @@ Minimum 2 questions answered. Consider sufficient if we understand: what happene
           Authorization: `Bearer ${process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY}`,
         },
         body: JSON.stringify({
-          model: "claude-3-5-haiku-20241022",
+          model: "claude-haiku-4-5-20251001",
           max_tokens: 100,
           system: systemPrompt,
           messages: [
@@ -3395,7 +3396,7 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
             Authorization: `Bearer ${process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY}`,
           },
           body: JSON.stringify({
-            model: "claude-3-haiku-20240307",
+            model: "claude-haiku-4-5-20251001",
             max_tokens: 80,
             system: systemPrompt,
             messages: [
@@ -3500,7 +3501,7 @@ const validateMeaningfulness = async (text: string): Promise<boolean> => {
         Authorization: `Bearer ${process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY}`,
       },
       body: JSON.stringify({
-        model: "claude-3-haiku-20240307",
+        model: "claude-haiku-4-5-20251001",
         max_tokens: 30,
         system:
           "You are a strict evaluator. Reply only 'true' or 'false' to indicate if the text is meaningful for a real emotional or interpersonal issue.",
@@ -4579,7 +4580,7 @@ CRITICAL:
           Authorization: `Bearer ${process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY}`,
         },
         body: JSON.stringify({
-          model: "claude-3-haiku-20240307",
+          model: "claude-haiku-4-5-20251001",
           max_tokens: 300,
           system: systemPrompt,
           messages: [
@@ -4937,7 +4938,7 @@ Respond ONLY with valid JSON:
           Authorization: `Bearer ${process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY}`,
         },
         body: JSON.stringify({
-          model: "claude-3-haiku-20240307",
+          model: "claude-haiku-4-5-20251001",
           system: "Extract key information and respond only with JSON.",
           messages: [{ role: "user", content: hintPrompt }],
         }),
