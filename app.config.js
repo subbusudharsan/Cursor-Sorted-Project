@@ -31,10 +31,10 @@ module.exports = {
       adaptiveIcon: {
         foregroundImage: "./assets/images/icon_foreground.png",
         backgroundImage: "./assets/images/icon_background.png",
-        monochromeImage: null
+        //monochromeImage: null - // monochromeImage intentionally omitted
       },
       package: "com.sorted.app",
-      versionCode: 3,
+      versionCode: 5,
       permissions: [
         "android.permission.CAMERA",
         "android.permission.READ_EXTERNAL_STORAGE",

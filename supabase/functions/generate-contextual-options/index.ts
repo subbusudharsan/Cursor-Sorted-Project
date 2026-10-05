@@ -1858,8 +1858,8 @@ Example: ${isRecipientUserA ? `User A to User B: "I felt hurt when you ignored m
 - If multiple entities share pronouns, use names instead
 
 Your task is to generate ${isVeryFirstMessage ? '5' : '3'} options of what the person would ACTUALLY say:
-1. EACH OPTION = ONE sentence (no additional sentences or fragments)
-2. Keep options short and natural – concise, purposeful, complete (single sentence only)
+1. EACH OPTION = ONE complete line: a statement (.), a question (?), or an exclamation (!). No second sentence, and do not stop halfway.
+2. Finish the thought. Length can be whatever that one line needs. Share only ONE small piece in it: one feeling, one reason, or one specific question. Do not pack the whole story, the apology, and the fix into the same line. Later turns can bring the next piece.
 3. DIRECTLY respond to what was just said
 4. Sound like a real human talking to someone they know
 5. Match the relationship type (casual with friends, respectful with family, professional with coworkers)
@@ -1957,17 +1957,18 @@ CRITICAL: Generate 5 TRULY DISTINCT options that:
 - Vary in directness (subtle hint vs explicit mention)
 - Vary in formality (casual vs respectful)
 - Vary in emotional tone (calm vs worried vs warm)
-- Vary in length (short vs fuller, but all 8-20 words)
-- Vary in approach (question vs statement)
+- Finish each line. Do not cut it off, and do not aim for a word count.
+- Mix the kinds of line: a statement, a question, and an exclamation. Each line carries only one small piece.
 - Are COMPLETE and MEANINGFUL - users should be confused which to pick because all are good
 ` : ''}
 
 SPEECH STYLE PRINCIPLES (use naturally, never label):
 - Use warm, friendly, natural everyday English that fits any relationship - partners, friends, family, coworkers, elders, or younger people
 - Sound like a real person talking to someone they care about - conversational, genuine, human
-- Show understanding naturally: "I get what you mean" or "That makes sense" or "Oh okay, I understand" (NEVER "I hear you" or "I acknowledge your perspective" or "I appreciate your perspective")
-- Admit mistakes simply: "I didn't realize that" or "You're right, I made a mistake" (not "I apologize for my actions" or "I would like to apologize")
-- Keep it genuine and warm: "I don't want us to fight over this" or "Let's figure this out" (not "We should resolve our conflict" or "I would like to discuss this matter")
+- When a line does show understanding, say it simply: "I get what you mean" or "That makes sense" (NEVER "I hear you" or "I acknowledge your perspective" or "I appreciate your perspective"). Do not put that into every option.
+- Admit a mistake in one line when that is the piece: "I didn't realize that" (not "I apologize for my actions" or "I would like to apologize")
+- Keep it genuine and warm when that is the piece: "I don't want us to fight over this" (not "We should resolve our conflict" or "I would like to discuss this matter")
+- One line, one piece. Do not use the line to wrap the whole talk up.
 - Match their energy: warm when they're open, honest when there's tension
 - Use natural, approachable language - avoid Gen-Z slang ("fr", "ngl", "no cap", "bet", "slay", "sus", "lowkey", "highkey", "tbh", "ngl", etc.)
 - Avoid overly formal phrasing ("I appreciate your perspective", "I would like to hear your side", "I would appreciate if", "I am committed to", "I am ready to")
@@ -2797,23 +2798,23 @@ Every option:
 
 **Each option must be:**
 
-- One single complete sentence  
+- One single complete line: a statement, a question, or an exclamation
 
-- 8–20 words (flexible if meaningful)  
+- Finish the thought. Do not cut it off, and do not aim for a word count.
 
-- Same meaning, different tone/style  
+- In a set, mix those kinds of line. Do not make them all statements.
 
-- Warm, friendly, human  
+- One small piece only: one feeling, one reason, or one specific question. Later turns bring the next piece.
 
-- Acknowledgement → response  
+- Warm, friendly, human
 
-- Always address the latest message  
+- Always address the latest message
 
-- No re-explaining  
+- No re-explaining
 
-- No asking for re-explanation  
+- No asking for re-explanation
 
-- No repeating core issues  
+- No repeating core issues
 
 - No off-topic content  
 
@@ -2825,7 +2826,7 @@ CRITICAL: Every option must pass this test: "Would a caring friend/partner say t
       🌱 FIRST MESSAGE - SUMMARY-AWARE OPENINGS:
       - Generate 5 warm, meaningful openings that incorporate the summary topic naturally
       - Reference the core issue in different styles (direct mention, subtle hint, or implied purpose)
-      - Each option should be COMPLETE and MEANINGFUL (8-20 words) - not just "hey, how are you?"
+      - Each option should be one COMPLETE line (a statement, a question, or an exclamation) - not just "hey, how are you?" and not cut off halfway
       - Vary in approach (direct, warm, gentle, casual, friendly) but ALL should hint at or mention the purpose
       - Use natural texting style appropriate for ${contactCategory === 'family'
           ? 'a family member'
@@ -3043,18 +3044,18 @@ ${conversationProgressSummary && !isVeryFirstMessage ? `- Conversation context: 
   * "I hear what you're saying" (too simple, no substance)
   * "hey, how are you?" (no reference to issue - for first message)
 - ✅ INSTEAD: Each option must be:
-  * COMPLETE and MEANINGFUL (8-20 words preferred, but prioritize meaning)
+  * ONE complete line (a statement, a question, or an exclamation). Finish the thought. Do not cut it off, and do not chase a word count.
   * SPECIFIC to the conversation context (summary topic or latest message)
-  * Show engagement and understanding
+  * ONE small piece only: a feeling, a reason, or one specific question. Leave the rest for later turns.
   * Make sense as a choice - users should want to pick it
-- They should express the SAME response in different styles:
-  * Different formality levels (casual → formal)
-  * Different directness (subtle → straightforward)  
-  * Different emotional tones (reserved → warm)
+- They should offer different ways to say that one piece:
+  * One statement
+  * One question tied to what was just said
+  * One exclamation or reaction
 - ✅ ALL ${isVeryFirstMessage ? '5' : '3'} OPTIONS IN A SET MUST BE:
   * EQUALLY GOOD - users should be confused which to pick
   * RELATED to the same core message/topic
-  * DIFFERENT only in style/tone/approach
+  * DIFFERENT in kind of line (statement, question, or exclamation), not three copies of the same sentence
   * NOT a mix of 1-2 good options and 1 weak option
 - They should NOT address different topics or concerns
 - They should NOT repeat old conversation points
@@ -3064,12 +3065,12 @@ ${conversationProgressSummary && !isVeryFirstMessage ? `- Conversation context: 
 - ✅ QUALITY CHECK: If you generate 1 weak option, regenerate ALL options until ALL are strong
 
 OPTION STRUCTURE (all address "${cleanCurrentMessage}"):
-- Option 1: Direct response style
-- Option 2: Empathetic response style  
-- Option 3: Casual response style
+- Option 1: A complete statement ending in a period. One feeling or one reason.
+- Option 2: A complete question ending in a question mark. One specific question about what was just said.
+- Option 3: A complete exclamation or reaction ending in an exclamation mark. One reaction, still calm and respectful.
 ${isVeryFirstMessage ? `
-- Option 4: Gentle response style
-- Option 5: Friendly response style
+- Option 4: Another complete statement. One small piece only.
+- Option 5: Another complete question. One specific question only.
 ` : ''}
 
 Each option must:
@@ -3084,10 +3085,11 @@ Each option must:
    - ✅ ALWAYS write as direct speech: "I was..." or "You were..." or address them directly
    - ✅ Example: "I was congratulating Subbulakshmi at the office party" NOT "During an office party where User A was congratulating..."
    - ✅ Write like a real person messaging - natural, direct, human, NOT like describing to an AI
-2. Be COMPLETE and MEANINGFUL - Natural length (8-20 words preferred, but prioritize meaning over strict word count)
-   - Avoid lengthy/verbose sentences that lose impact
-   - Single sentence only - complete thoughts that make sense on their own
-   - NO TRUNCATION or "..." needed - each option should feel natural and complete
+2. Be COMPLETE and MEANINGFUL - one finished line, as long as that thought needs
+   - It can be a statement, a question, or an exclamation
+   - Single line only - a complete thought that makes sense on its own
+   - NO TRUNCATION or "..." - never stop halfway through the line
+   - Only ONE small piece in the line (a feeling, a reason, or one question). Do not also apologize and resolve it in the same line.
 ${isRecipientUserB ? `
 3. ✅ CRITICAL: Respond DIRECTLY to User A's latest message: "${cleanCurrentMessage}"
    - Use words/phrases from their message to show you heard them
@@ -3096,13 +3098,14 @@ ${isRecipientUserB ? `
      * "can you tell me more"
      * "what do you want to talk about"
      * "what's on your mind"
-   - ✅ INSTEAD, respond to what they said:
-     * If they said "I felt hurt" → "I'm sorry you felt that way, can we talk about what happened?"
-     * If they said "you ignored me" → "I didn't realize I was ignoring you, I want to understand"
-     * If they mentioned a specific event → acknowledge that event specifically
-   - Show empathy and your perspective, don't ask for more information
+   - ✅ INSTEAD, respond to what they said with ONE piece, in different kinds of lines:
+     * Statement: "I didn't realize you felt hurt."
+     * Question: "Can I tell you what was going on for me?"
+     * Exclamation: "I didn't mean for it to land like that!"
+     * If they mentioned a specific event → mention that event, still only one piece
+   - A question is fine when it asks about this moment. Do not ask a generic question.
    - ✅ STAY ON-TOPIC: Options must relate to the conversation above (${formattedHistory ? 'last 5 messages' : 'conversation start'}), not ask generic questions
-   - ✅ ALL 3 OPTIONS must address the SAME latest message, only differ in style/tone
+   - ✅ ALL 3 OPTIONS must address the SAME latest message, as a statement, a question, and an exclamation
 ` : `
 3. ✅ CRITICAL: Respond DIRECTLY to: "${cleanCurrentMessage}"
    - USE WORDS/PHRASES from their message to show you heard them
@@ -3114,8 +3117,8 @@ ${isRecipientUserB ? `
    ` : ''}
    - Address what they just said in the conversation above
    - ✅ STAY ON-TOPIC: All options must relate to the recent conversation flow (${formattedHistory ? 'last 5 messages' : 'conversation start'}), not deviate or introduce unrelated topics
-   - ${shouldFocusOnProgress ? 'Focus on progressing/solving, not restating your issue' : 'If needed, briefly reference core issue but prioritize their latest message'}
-   - ✅ ALL ${isVeryFirstMessage ? '5' : '3'} OPTIONS must address the SAME latest message, only differ in style/tone
+   - ${shouldFocusOnProgress ? 'Add one new piece from your side. Do not restate the whole issue, and do not wrap the talk up in this line.' : 'If needed, briefly reference the core issue, but share only one new piece and prioritize their latest message.'}
+   - ✅ ALL ${isVeryFirstMessage ? '5' : '3'} OPTIONS must address the SAME latest message, as a mix of a statement, a question, and an exclamation
 `}
 4. Sound like natural speech for a ${contactCategory} relationship
 5. Use contractions and casual language where appropriate ("you're" not "you are", "I'm" not "I am")
@@ -3152,9 +3155,9 @@ ${canUserBAskToShareAfterHint ? `
 - ✅ DO generate actual explanation from hint context
 ` : ''}` : ''}
 
-CRITICAL: Each option must be a FULL, COMPLETE sentence that makes sense on its own. 
-Keep options natural and meaningful - not lengthy or verbose, but complete enough to convey your message clearly. 
-Each option must be a single sentence.
+CRITICAL: Each option must be a FULL, COMPLETE line that makes sense on its own.
+It can be a statement, a question, or an exclamation. Finish the thought. Do not cut it off.
+Each option is still a single line, and it carries only one small piece.
 
 ${isRecipientUserB ? `
 ✅ DIFFERENTIATION RULE FOR USER B - CRITICAL (ROLE SAFETY):
@@ -3163,10 +3166,10 @@ ${isRecipientUserB ? `
 - User B's options MUST sound different from User A's options (different viewpoints)
 - User B uses "I/me/my" for themselves and "you/your" for User A
 - Third parties: Use EXACT names from summary - do NOT change names
-- If User A said "I felt hurt", User B should respond with:
-  ✅ "I'm sorry you felt that way, I didn't mean to hurt you"
-  ✅ "I get what you mean, can we talk about what happened?"
-  ✅ "I understand, I should have been more considerate"
+- If User A said "I felt hurt", User B should respond with one piece, in different kinds of lines:
+  ✅ "I didn't realize you felt hurt."
+  ✅ "Can I tell you what was going on for me?"
+  ✅ "I didn't mean for it to land like that!"
   ❌ NOT: "I felt hurt when you ignored me" (this is User A's issue, not User B's response)
 - 🔒 ROLE SAFETY: These are User B options ONLY - do NOT reuse User A's options
 - Example: If User A said "Vikram and Sneha supported me", User B MUST NOT say "I felt hurt when Vikram and Sneha..."
@@ -3236,13 +3239,13 @@ RELATIONSHIP-SPECIFIC TONE:
 - Coworker: professional but friendly, no overly casual slang
 - General: balanced, friendly but not too informal
 
-STRICT RULES - NATURAL LENGTH, NO CROPPING ALLOWED:
-- Keep each option natural and meaningful (single sentence only)
-- Each option MUST be a COMPLETE, MEANINGFUL sentence that makes sense on its own
-- NEVER generate incomplete sentences, truncated thoughts, or sentences that need "..." at the end
-- Natural length: 8-20 words preferred, but meaning matters more than strict word count
-- Avoid lengthy/verbose sentences - keep it natural and impactful
-- CRITICAL: Generate options that are COMPLETE and MEANINGFUL - single sentence only
+STRICT RULES - FINISH THE LINE, NO CROPPING:
+- Keep each option natural and meaningful (one complete line only)
+- Each option MUST be a COMPLETE line that makes sense on its own: a statement, a question, or an exclamation
+- NEVER generate incomplete lines, truncated thoughts, or lines that need "..." at the end
+- Length follows the thought. Do not stop early to hit a word count, and do not ramble past the one piece.
+- One piece only: one feeling, one reason, or one specific question. The next piece waits for a later turn.
+- CRITICAL: Generate options that are COMPLETE - one line only, never cut off
 - Use natural contractions ("you're" not "you are", "didn't" not "did not") 
 - Remove unnecessary filler words ("like", "just", "really") but keep emotional words if they add meaning
 - NO AI/counselor language ("I acknowledge", "Let's work together", "I understand your perspective")
@@ -3251,12 +3254,12 @@ STRICT RULES - NATURAL LENGTH, NO CROPPING ALLOWED:
 - Use lowercase for casual relationships if natural
 - TONE: Calm, clear, and respectful - not too formal, not Gen-Z slang
 - Use simple, friendly language that's polite, empathetic, and understanding
-- Always acknowledge the other person's feelings and perspective
+- Show you heard them by referring to what they just said, then add only one new piece
 - Avoid sharp, blaming, or accusatory wording - keep it steady and supportive
 - Use "I" statements and gentle phrasing throughout
-- Focus on RESOLVING and UNDERSTANDING together, not blaming or attacking
+- Do not blame, and do not wrap the whole talk up in this one line
 - ${isVeryFirstMessage ? 'Generate 5 DISTINCT options' : 'Generate 3 DISTINCT options'}
-- Each option must have DIFFERENT tone, approach, or directness level
+- The set must mix a statement, a question, and an exclamation. Do not make all three the same kind of line.
 
 🎯 PRONOUN VALIDATION - CHECK EACH OPTION:
 Before finalizing each option, verify:
@@ -3265,32 +3268,29 @@ Before finalizing each option, verify:
 3. No names of User A or User B present ✅
 4. No "her/his/their" when referring to listener ✅
 
-🎯 EXAMPLES OF GOOD NATURAL LENGTH (meaningful, complete, NOT lengthy):
+🎯 EXAMPLES OF GOOD LINES (one complete piece, mixed kinds, not cut off):
 ${isRecipientUserA ? `
 USER A EXAMPLES (speaking TO User B):
-- "hey, can we talk about what happened yesterday?" (8 words) ✅
-- "I felt hurt when you didn't invite me to the party" (10 words) ✅
-- "I'm not jealous about your life - I'm genuinely happy for you, but that accusation hurt my feelings" (18 words) ✅
-- "I understand why you might think I'm jealous, but I'd like to explain my actual feelings if you're open to hearing them" (19 words) ✅
-- "Sarah said something that really bothered me at work" (9 words) ✅ [third party - no # prefix]
-- "want to clear this up between us? I miss you" (10 words) ✅
-- "I appreciate you sharing that with me, and I'd like to clear up any misunderstanding about how I feel" (17 words) ✅
-- "can we find a time to discuss this? I value our friendship and want to make sure we understand each other" (17 words) ✅
-Note: Natural length varies (8-20 words) - what matters is the message is complete and meaningful
+- Statement: "I felt hurt when you didn't invite me to the party." ✅
+- Question: "Can I tell you why that party bothered me?" ✅
+- Exclamation: "That party really caught me off guard!" ✅
+- Statement: "Sarah said something that really bothered me at work." ✅ [third party - no # prefix]
+- Question: "Were you upset with me before the party?" ✅
+Note: Finish the thought. One piece only. A statement, a question, or an exclamation. Do not cut the line off.
 ` : `
 USER B EXAMPLES (responding TO User A):
-- "I'm sorry you felt that way, I didn't mean to hurt you" (12 words) ✅
-- "I hear what you're saying about feeling left out, and I want to understand your perspective better" (16 words) ✅
-- "I understand, I should have been more considerate" (8 words) ✅
-- "I didn't realize it bothered you that much - can we talk about what happened so I can make it right?" (18 words) ✅
-- "I want to make this right between us" (8 words) ✅
-- "I see your point, and I appreciate you bringing this up. Let's work through this together" (16 words) ✅
-- "Sarah mentioned you were upset, I should have reached out" (10 words) ✅ [third party - no # prefix]
-Note: Natural length varies (8-20 words) - what matters is the message is complete and meaningful
+- Statement: "I didn't realize you felt left out." ✅
+- Question: "Can I tell you what was going on for me?" ✅
+- Exclamation: "I didn't mean for it to land like that!" ✅
+- Statement: "Sarah mentioned you were upset, and I should have reached out." ✅ [third party - no # prefix]
+- Question: "Do you want to hear why I didn't reply?" ✅
+Note: Finish the thought. One piece only. A statement, a question, or an exclamation. Do not cut the line off.
 `}
 
-❌ BAD EXAMPLES (too long, would be rejected):
-- "I wanted to talk to you about what happened yesterday because I felt really hurt and I think we need to discuss this" (22 words - TOO LONG) ❌
+❌ BAD EXAMPLES:
+- A line that stops halfway, or ends with "..." ❌
+- Packing the feeling, the reason, and the fix into one line: "I felt hurt and I think we need to discuss this so we can fix it and move on." ❌
+- Three options that are all statements ❌
 
 TONE REQUIREMENTS (MANDATORY):
 - Be calm, clear, and respectful - simple and friendly, not overly formal or Gen-Z slang

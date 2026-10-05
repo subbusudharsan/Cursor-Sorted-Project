@@ -23,10 +23,8 @@ import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/
 import { getLastTypingTag, replaceTypingTag, parseTaggedEntities, getCommonHashTags, type TaggedEntity } from '@/lib/tagParser';
 import LoadingSpinner from '@/components/ui/LoadingSpinner';
 import NotificationBanner from '@/components/ui/NotificationBanner';
-import { useFocusEffect } from "@react-navigation/native";
+import { useFocusEffect, useNavigation } from "expo-router/react-navigation";
 import type { RealtimeChannel } from "@supabase/supabase-js";
-// ADD THIS LINE HERE
-import { useNavigation } from '@react-navigation/native';
 import KeyboardSafeView from '@/components/KeyboardSafeView';
 
 type MessageAnimationState = {

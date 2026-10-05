@@ -13,7 +13,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import KeyboardSafeView from '@/components/KeyboardSafeView';
 import { useAuth } from '@/contexts/AuthContext';
 import { router } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "expo-router/react-navigation";
 import { supabase } from '@/lib/supabase';
 import * as ImagePicker from 'expo-image-picker';
 import {

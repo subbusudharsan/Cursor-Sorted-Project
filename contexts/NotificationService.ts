@@ -1,10 +1,12 @@
 import { Platform } from 'react-native';
+import { isRunningInExpoGo } from 'expo';
 import { supabase } from '@/lib/supabase';
 
-// 👇 Prevent Expo Go crash by lazy-requiring only when actually needed
+// Remote push was removed from Expo Go in SDK 53. Importing expo-notifications
+// on Android Expo Go throws, and that throw shows as a red error on the phone.
 let Notifications: any;
 function getNotifications() {
-  if (Platform.OS === 'web') return null;
+  if (Platform.OS === 'web' || isRunningInExpoGo()) return null;
   if (!Notifications) {
     try {
       Notifications = require('expo-notifications');
@@ -17,8 +19,8 @@ function getNotifications() {
           }),
         });
       }
-    } catch (err) {
-      console.log('⚠️ Expo Notifications not available, skipping setup.', err);
+    } catch {
+      console.log('⚠️ Expo Notifications not available, skipping setup.');
       return null;
     }
   }
@@ -53,14 +55,18 @@ export class NotificationService {
   async initialize(userId: string) {
   if (Platform.OS === 'web') return;
 
+  if (isRunningInExpoGo()) {
+    console.log('⚠️ Skipping push notification setup in Expo Go.');
+    return true;
+  }
+
   try {
-    // ✅ 1. Detect Expo Go and skip push token setup
     const Constants = require('expo-constants').default;
     const projectId = Constants?.expoConfig?.extra?.eas?.projectId;
 
     if (!projectId) {
-      console.log("⚠️ Skipping push notification setup (Expo Go detected, no projectId).");
-      return true; // Exit silently — no crash
+      console.log('⚠️ Skipping push notification setup (no EAS projectId).');
+      return true;
     }
 
     // ✅ 2. Load notifications module
