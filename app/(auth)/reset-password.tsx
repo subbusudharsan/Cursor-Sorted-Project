@@ -368,7 +368,7 @@ export default function ResetPasswordScreen() {
           </View>
           <View style={styles.form}>
             <View style={styles.inputContainer}>
-              <Text style={styles.label}>New Password</Text>
+              <Text style={styles.label}>New Password <Text style={styles.requiredMark}>*</Text></Text>
               <View style={[styles.inputWrapper, styles.passwordContainer]}>
                 <TextInput
                   style={styles.passwordInput}
@@ -381,7 +381,7 @@ export default function ResetPasswordScreen() {
               </View>
             </View>
             <View style={styles.inputContainer}>
-              <Text style={styles.label}>Confirm Password</Text>
+              <Text style={styles.label}>Confirm Password <Text style={styles.requiredMark}>*</Text></Text>
               <View style={[styles.inputWrapper, styles.passwordContainer]}>
                 <TextInput
                   style={styles.passwordInput}
@@ -419,7 +419,7 @@ export default function ResetPasswordScreen() {
 
           <View style={styles.form}>
           <View style={styles.inputContainer}>
-            <Text style={styles.label}>New Password</Text>
+            <Text style={styles.label}>New Password <Text style={styles.requiredMark}>*</Text></Text>
             <View style={[styles.inputWrapper, styles.passwordContainer]}>
               <TextInput
                 key="new-password-input"
@@ -448,21 +448,21 @@ export default function ResetPasswordScreen() {
               </TouchableOpacity>
             </View>
           </View>
-          {!passwordValid && newPassword.length > 0 && (
+          {!passwordValid && (
             <View style={styles.validationContainer}>
-              {passwordValidation.map((error) => (
+              {(newPassword.length === 0
+                ? ['At least 8 characters', 'One uppercase letter', 'One number', 'One special symbol (@ $ ! % * ? &)']
+                : passwordValidation
+              ).map((error) => (
                 <Text key={error} style={styles.validationText}>
                   • {error}
                 </Text>
               ))}
             </View>
           )}
-          {newPassword.length === 0 && (
-            <Text style={styles.policyHint}>{PASSWORD_RULE_DESCRIPTION}</Text>
-          )}
 
           <View style={styles.inputContainer}>
-            <Text style={styles.label}>Confirm Password</Text>
+            <Text style={styles.label}>Confirm Password <Text style={styles.requiredMark}>*</Text></Text>
             <View style={[styles.inputWrapper, styles.passwordContainer]}>
               <TextInput
                 key="confirm-password-input"
@@ -585,6 +585,9 @@ const styles = StyleSheet.create({
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.text.primary,
     marginBottom: Spacing.sm,
+  },
+  requiredMark: {
+    color: Colors.error[500],
   },
   inputWrapper: {
     borderWidth: 1,

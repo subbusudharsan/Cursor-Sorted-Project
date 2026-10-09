@@ -57,7 +57,11 @@ function TabLayout() {
           fontSize: 12,
           fontWeight: '600',
           marginTop: 4,
+          color: '#01579B',
         },
+        tabBarLabel: ({ children }) => (
+          <Text style={[styles.tabLabel, { color: '#01579B' }]}>{children}</Text>
+        ),
       }}
     >
       <Tabs.Screen
@@ -110,6 +114,12 @@ function TabLayout() {
 }
 
 const styles = StyleSheet.create({
+  tabLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 4,
+    color: '#01579B',
+  },
   iconContainer: {
     position: 'relative',
   },

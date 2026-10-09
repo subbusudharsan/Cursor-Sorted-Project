@@ -2720,7 +2720,7 @@ const styles = StyleSheet.create({
   title: {
     fontSize: Typography.fontSize['2xl'] + 4,
     fontWeight: Typography.fontWeight.bold,
-    color: '#FFACC4', // coral
+    color: '#01579B',
     letterSpacing: 0.5,
     textShadowColor: 'rgba(110, 200, 245, 0.8)', // sky blue
     textShadowOffset: { width: 1, height: 1 },

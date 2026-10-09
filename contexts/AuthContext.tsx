@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { View, Text, ActivityIndicator, Platform, InteractionManager } from 'react-native';
+import { View, Text, ActivityIndicator, Platform } from 'react-native';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 
@@ -37,7 +37,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    let interactionHandle: ReturnType<typeof InteractionManager.runAfterInteractions> | null = null;
+    let restoreTimer: ReturnType<typeof setTimeout> | null = null;
 
     // Track if this is the initial session restore (app startup)
     let isInitialRestore = true;
@@ -130,10 +130,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         runRestoreSession(isInitial);
         return;
       }
-      interactionHandle?.cancel?.();
-      interactionHandle = InteractionManager.runAfterInteractions(() => {
+      if (restoreTimer) clearTimeout(restoreTimer);
+      restoreTimer = setTimeout(() => {
+        restoreTimer = null;
         runRestoreSession(isInitial);
-      });
+      }, 0);
     };
 
     // ✅ Focus/visibility handlers: Only refresh session silently, don't set isRestoringSession
@@ -283,7 +284,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     return () => {
       cancelled = true;
-      interactionHandle?.cancel?.();
+      if (restoreTimer) clearTimeout(restoreTimer);
       listener.subscription.unsubscribe();
       if (
         Platform.OS === "web" &&

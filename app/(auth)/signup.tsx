@@ -232,7 +232,7 @@ export default function SignUpScreen() {
               <View style={styles.inputContainer}>
                 <View style={styles.labelContainer}>
                   <User size={16} color={Colors.primary[500]} style={styles.labelIcon} />
-                  <Text style={styles.label}>First Name</Text>
+                  <Text style={styles.label}>First Name <Text style={styles.requiredMark}>*</Text></Text>
                 </View>
                 <View style={[styles.inputWrapper, styles.nameInputWrapper]}>
                   <TextInput
@@ -250,7 +250,7 @@ export default function SignUpScreen() {
               <View style={styles.inputContainer}>
                 <View style={styles.labelContainer}>
                   <User size={16} color={Colors.primary[500]} style={styles.labelIcon} />
-                  <Text style={styles.label}>Last Name</Text>
+                  <Text style={styles.label}>Last Name <Text style={styles.requiredMark}>*</Text></Text>
                 </View>
                 <View style={[styles.inputWrapper, styles.nameInputWrapper]}>
                   <TextInput
@@ -268,7 +268,7 @@ export default function SignUpScreen() {
               <View style={styles.inputContainer}>
                 <View style={styles.labelContainer}>
                   <User size={16} color={Colors.text.secondary} style={styles.labelIcon} />
-                  <Text style={styles.label}>Nickname (Optional)</Text>
+                  <Text style={styles.label}>Nickname <Text style={styles.optionalMark}>(Optional)</Text></Text>
                 </View>
                 <View style={styles.inputWrapper}>
                   <TextInput
@@ -286,7 +286,7 @@ export default function SignUpScreen() {
               <View style={styles.inputContainer}>
                 <View style={styles.labelContainer}>
                   <Phone size={16} color={Colors.secondary[500]} style={styles.labelIcon} />
-                  <Text style={styles.label}>Phone Number</Text>
+                  <Text style={styles.label}>Phone Number <Text style={styles.optionalMark}>(Optional)</Text></Text>
                 </View>
                 <View style={styles.phoneContainer}>
                   <TouchableOpacity
@@ -340,7 +340,7 @@ export default function SignUpScreen() {
               <View style={styles.inputContainer}>
                 <View style={styles.labelContainer}>
                   <Mail size={16} color={Colors.primary[500]} style={styles.labelIcon} />
-                  <Text style={styles.label}>Email</Text>
+                  <Text style={styles.label}>Email <Text style={styles.requiredMark}>*</Text></Text>
                 </View>
                 <View style={[styles.inputWrapper, styles.emailInputWrapper]}>
                   <TextInput
@@ -359,7 +359,7 @@ export default function SignUpScreen() {
               <View style={styles.inputContainer}>
                 <View style={styles.labelContainer}>
                   <Lock size={16} color={Colors.secondary[500]} style={styles.labelIcon} />
-                  <Text style={styles.label}>Password</Text>
+                  <Text style={styles.label}>Password <Text style={styles.requiredMark}>*</Text></Text>
                 </View>
                 <View style={[styles.inputWrapper, styles.passwordContainer, styles.passwordInputWrapper]}>
                   <TextInput
@@ -424,7 +424,7 @@ export default function SignUpScreen() {
               <View style={styles.inputContainer}>
                 <View style={styles.labelContainer}>
                   <Lock size={16} color={Colors.secondary[500]} style={styles.labelIcon} />
-                  <Text style={styles.label}>Confirm Password</Text>
+                  <Text style={styles.label}>Confirm Password <Text style={styles.requiredMark}>*</Text></Text>
                 </View>
                 <View style={[styles.inputWrapper, styles.passwordContainer, styles.passwordInputWrapper]}>
                   <TextInput
@@ -465,7 +465,7 @@ export default function SignUpScreen() {
               <View style={styles.inputContainer}>
                 <View style={styles.labelContainer}>
                   <CalendarIcon size={16} color={Colors.text.secondary} style={styles.labelIcon} />
-                  <Text style={styles.label}>Date of Birth (Optional)</Text>
+                  <Text style={styles.label}>Date of Birth <Text style={styles.optionalMark}>(Optional)</Text></Text>
                 </View>
                 <View style={styles.inputWrapper}>
                   <TextInput
@@ -612,6 +612,13 @@ const styles = StyleSheet.create({
     fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.text.primary,
+  },
+  requiredMark: {
+    color: Colors.error[500],
+  },
+  optionalMark: {
+    color: Colors.text.tertiary,
+    fontWeight: Typography.fontWeight.medium,
   },
   inputWrapper: {
     borderWidth: 1.5,

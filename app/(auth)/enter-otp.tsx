@@ -388,7 +388,7 @@ export default function EnterOTPScreen() {
           <View style={styles.inputGroup}>
             <View style={styles.labelContainer}>
               <Mail size={16} color={Colors.primary[500]} style={styles.labelIcon} />
-              <Text style={styles.label}>Email</Text>
+              <Text style={styles.label}>Email <Text style={styles.requiredMark}>*</Text></Text>
             </View>
             <View style={[styles.inputWrapper, styles.emailInputWrapper]}>
               <TextInput
@@ -408,7 +408,7 @@ export default function EnterOTPScreen() {
           <View style={styles.inputGroup}>
             <View style={styles.labelContainer}>
               <KeyRound size={16} color={Colors.secondary[500]} style={styles.labelIcon} />
-              <Text style={styles.label}>Verification Code</Text>
+              <Text style={styles.label}>Verification Code <Text style={styles.requiredMark}>*</Text></Text>
             </View>
             <View style={[styles.inputWrapper, styles.otpInputWrapper]}>
               <TextInput
@@ -430,7 +430,7 @@ export default function EnterOTPScreen() {
           <View style={styles.inputGroup}>
             <View style={styles.labelContainer}>
               <Lock size={16} color={Colors.success[500]} style={styles.labelIcon} />
-              <Text style={styles.label}>New Password</Text>
+              <Text style={styles.label}>New Password <Text style={styles.requiredMark}>*</Text></Text>
             </View>
             <View style={[styles.inputWrapper, styles.passwordContainer, styles.passwordInputWrapper]}>
               <TextInput
@@ -456,46 +456,28 @@ export default function EnterOTPScreen() {
           </View>
 
           {/* PASSWORD RULE INDICATORS - Hide when all rules pass */}
-          <View style={[styles.validationContainer, (newPassword.length === 0 || allPasswordRulesPass) && styles.validationContainerHidden]}>
-            <View style={styles.ruleRow}>
-              <Text style={[styles.ruleIcon, passwordRules.length ? styles.rulePass : styles.ruleFail]}>
-                {passwordRules.length ? '✔️' : '❌'}
-              </Text>
-              <Text style={[styles.ruleText, passwordRules.length ? styles.rulePassText : styles.ruleFailText]}>
-                At least 8 characters
-              </Text>
+          {!allPasswordRulesPass && (
+            <View style={styles.validationContainer}>
+              {!passwordRules.length && (
+                <Text style={[styles.ruleText, styles.ruleFailText]}>At least 8 characters</Text>
+              )}
+              {!passwordRules.uppercase && (
+                <Text style={[styles.ruleText, styles.ruleFailText]}>One uppercase letter</Text>
+              )}
+              {!passwordRules.number && (
+                <Text style={[styles.ruleText, styles.ruleFailText]}>One number</Text>
+              )}
+              {!passwordRules.special && (
+                <Text style={[styles.ruleText, styles.ruleFailText]}>One special symbol (@ $ ! % * ? &)</Text>
+              )}
             </View>
-            <View style={styles.ruleRow}>
-              <Text style={[styles.ruleIcon, passwordRules.uppercase ? styles.rulePass : styles.ruleFail]}>
-                {passwordRules.uppercase ? '✔️' : '❌'}
-              </Text>
-              <Text style={[styles.ruleText, passwordRules.uppercase ? styles.rulePassText : styles.ruleFailText]}>
-                One uppercase letter
-              </Text>
-            </View>
-            <View style={styles.ruleRow}>
-              <Text style={[styles.ruleIcon, passwordRules.number ? styles.rulePass : styles.ruleFail]}>
-                {passwordRules.number ? '✔️' : '❌'}
-              </Text>
-              <Text style={[styles.ruleText, passwordRules.number ? styles.rulePassText : styles.ruleFailText]}>
-                One number
-              </Text>
-            </View>
-            <View style={styles.ruleRow}>
-              <Text style={[styles.ruleIcon, passwordRules.special ? styles.rulePass : styles.ruleFail]}>
-                {passwordRules.special ? '✔️' : '❌'}
-              </Text>
-              <Text style={[styles.ruleText, passwordRules.special ? styles.rulePassText : styles.ruleFailText]}>
-                One special symbol (@ $ ! % * ? &)
-              </Text>
-            </View>
-          </View>
+          )}
 
           {/* CONFIRM PASSWORD */}
           <View style={styles.inputGroup}>
             <View style={styles.labelContainer}>
               <Lock size={16} color={Colors.success[500]} style={styles.labelIcon} />
-              <Text style={styles.label}>Confirm Password</Text>
+              <Text style={styles.label}>Confirm Password <Text style={styles.requiredMark}>*</Text></Text>
             </View>
             <View style={[styles.inputWrapper, styles.passwordContainer, styles.passwordInputWrapper]}>
               <TextInput
@@ -644,6 +626,9 @@ const styles = StyleSheet.create({
     fontSize: Typography.fontSize.sm,
     fontWeight: Typography.fontWeight.semibold,
     color: Colors.text.primary,
+  },
+  requiredMark: {
+    color: Colors.error[500],
   },
   inputWrapper: {
     borderWidth: 1.5,

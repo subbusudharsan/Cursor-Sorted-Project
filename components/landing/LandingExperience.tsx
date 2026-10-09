@@ -6,8 +6,6 @@ import { useAuth } from '@/contexts/AuthContext';
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/Colors';
 import Button from '@/components/ui/Button';
 import LoadingSpinner from '@/components/ui/LoadingSpinner';
-import { InteractionManager } from 'react-native';
-
 const isWebPlatform = Platform.OS === 'web';
 const webShadows = {
   small: { boxShadow: '0px 2px 6px rgba(13, 27, 42, 0.08)' },
@@ -207,8 +205,8 @@ export default function LandingExperience() {
       return () => undefined;
     }
 
-    const task = InteractionManager.runAfterInteractions(startAnimations);
-    return () => task?.cancel?.();
+    const timer = setTimeout(startAnimations, 0);
+    return () => clearTimeout(timer);
   }, []);
   
 

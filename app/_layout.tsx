@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { InteractionManager, Platform, View } from 'react-native';
+import { Platform, View } from 'react-native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -22,49 +22,6 @@ let appHasInitialized = false;
 if (Platform.OS !== 'web') {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   require('react-native-reanimated');
-}
-
-/**
- * 🧠 WebFocusRefresher
- * Remounts navigation when the browser tab regains focus.
- */
-function WebFocusRefresher() {
-  const [tick, setTick] = useState(0);
-
-  useEffect(() => {
-    if (Platform.OS !== 'web' || typeof document === 'undefined') return;
-
-    const onWake = () => {
-      if (document.visibilityState === 'visible') {
-        Promise.resolve().then(() => {
-          requestAnimationFrame(() => setTick((t) => t + 1));
-        });
-      }
-    };
-
-    window.addEventListener('focus', onWake);
-    document.addEventListener('visibilitychange', onWake);
-    window.addEventListener('pageshow', onWake);
-
-    return () => {
-      window.removeEventListener('focus', onWake);
-      document.removeEventListener('visibilitychange', onWake);
-      window.removeEventListener('pageshow', onWake);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
-    const evt = new CustomEvent('app:resume', { detail: { tick } });
-    window.dispatchEvent(evt);
-  }, [tick]);
-
-  // ✅ Render only on web — RN ignores <div> tags safely
-  return Platform.OS === 'web' ? (
-    <div data-web-focus-refresher={tick} style={{ display: 'none' }} />
-  ) : (
-    <View />
-  );
 }
 
 /**
@@ -124,7 +81,6 @@ function ColdStartNavigator() {
 
 function RootLayout() {
   useFrameworkReady();
-  const [stackKey, setStackKey] = useState(0);
   const [appReady, setAppReady] = useState(false);
 
   useEffect(() => {
@@ -136,14 +92,14 @@ function RootLayout() {
       };
     }
 
-    const task = InteractionManager.runAfterInteractions(() => {
+    const timer = setTimeout(() => {
       if (!cancelled) {
         setAppReady(true);
       }
-    });
+    }, 0);
     return () => {
       cancelled = true;
-      task?.cancel?.();
+      clearTimeout(timer);
     };
   }, []);
 
@@ -154,13 +110,6 @@ function RootLayout() {
     }
   }, []);
   
-
-  useEffect(() => {
-    if (Platform.OS !== 'web' || typeof window === 'undefined') return;
-    const handler = () => setStackKey((k) => k + 1);
-    window.addEventListener('app:resume', handler as EventListener);
-    return () => window.removeEventListener('app:resume', handler as EventListener);
-  }, []);
 
   // ✅ Only add document listeners after mount (web only)
   useEffect(() => {
@@ -190,9 +139,8 @@ function RootLayout() {
         <AuthProvider>
           <NotificationProvider>
             <ChatBadgeProvider>
-              <WebFocusRefresher />
               <ColdStartNavigator />
-              <Stack key={`stack-${stackKey}`} screenOptions={{ headerShown: false }}>
+              <Stack screenOptions={{ headerShown: false }}>
                 <Stack.Screen name="index" />
                 <Stack.Screen name="(auth)" options={{ headerShown: false }} />
                 <Stack.Screen name="(tabs)" options={{ headerShown: false }} />

@@ -2427,19 +2427,14 @@ You already know the following from what they said:
 "${initialDescription}"${tagContext}${thirdPersonContext}
 
 📌 CRITICAL INSTRUCTIONS:
-- Generate EXACTLY 5 questions that explore DIFFERENT aspects of the issue
-- Each question must be COMPLETELY different from the others - not just name variations or slight rewordings
-- Questions should explore different dimensions:
-  * Question 1: Emotions/Feelings (how they feel about it)
-  * Question 2: Facts/Details (specific information not yet mentioned)
-  * Question 3: Intentions/Goals (what they want to achieve)
-  * Question 4: Outcomes/Desired Results (how they want it to end)
-  * Question 5: Relationships/Context (involvement of others or background)
-${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${thirdPersonEntities.map((e: any) => e.entity_name || e.name).join(', ')}). Include questions about their role, relationship, or involvement, but make each question explore a DIFFERENT aspect.` : ''}
-- Do NOT ask about things already mentioned (who, where, when, event type, relationship, etc.)
-- Each question must be a SINGLE sentence, 6-10 words, medium length
-- Do NOT generate questions like "What does X say?" and "What does Y say?" - these are too similar
-- Ensure questions ask about DIFFERENT topics, not just different people
+- Generate EXACTLY 5 questions, all in this one reply
+- Read what they already said. Ask only what is still missing so this situation can be understood and the conversation prepared
+- Useful gaps are: what happened, who did what, what they felt, what they want the other person to understand, and what is still unclear. Skip any gap they already answered
+- Each question must fit THIS story. Do not use a general script that would fit every person
+- Each question must be COMPLETELY different from the others
+${thirdPersonEntities.length > 0 ? `- Third parties are mentioned (${thirdPersonEntities.map((e: any) => e.entity_name || e.name).join(', ')}). Ask about one of them only if their part in this story is still missing.` : ''}
+- Do NOT ask about things already mentioned (who, where, when, event type, relationship, feelings already stated)
+- Each question must be a SINGLE sentence, 6-10 words
 - Keep tone caring and human, not robotic
 - Return ONLY the 5 questions, one per line, numbered 1-5`;
 
@@ -2454,7 +2449,7 @@ ${thirdPersonEntities.length > 0 ? `- CRITICAL: Third parties are mentioned (${t
           max_tokens: 300,
           system: systemPrompt,
           messages: [
-            { role: "user", content: "Generate 5 completely different questions, one per line, numbered 1-5." },
+            { role: "user", content: "Generate the 5 questions for this situation, one per line, numbered 1-5." },
           ],
         }),
       });
@@ -6118,10 +6113,10 @@ Respond ONLY with valid JSON:
       <View style={styles.summaryCard}>
         <Text style={styles.summaryLabel}>📌 Discussion Summary</Text>
         {/* ✅ CRITICAL: This is ALWAYS summary_a_perspective (emotional, first-person, User A talking to AI) */}
-        <Text style={styles.summaryTextWithSpacing}>{finalSummaryForDisplay}</Text>
+        <Text style={styles.summaryTextWithSpacing}>{finalSummaryForDisplay.replace(/@(?=[A-Za-z])/g, '')}</Text>
   
         <Text style={styles.summaryLabel}>💡 My Thoughts</Text>
-        <Text style={styles.summaryText}>{thoughts}</Text>
+        <Text style={styles.summaryText}>{(thoughts || '').replace(/@(?=[A-Za-z])/g, '')}</Text>
       </View>
     );
   

@@ -43,7 +43,7 @@ export default function ForgotPasswordScreen() {
           <Text style={styles.subtitle}>Enter your email and we’ll send you a reset link.</Text>
 
           <View style={styles.inputGroup}>
-            <Text style={styles.label}>Email</Text>
+            <Text style={styles.label}>Email <Text style={styles.requiredMark}>*</Text></Text>
             <View style={styles.inputWrapper}>
               <TextInput
                 value={email}
@@ -79,6 +79,7 @@ const styles = StyleSheet.create({
   subtitle: { fontSize: Typography.fontSize.base, color: Colors.text.secondary, marginBottom: Spacing.lg },
   inputGroup: { marginBottom: Spacing.xl },
   label: { fontSize: Typography.fontSize.base, fontWeight: Typography.fontWeight.semibold, color: Colors.text.primary, marginBottom: Spacing.sm },
+  requiredMark: { color: Colors.error[500] },
   inputWrapper: { borderWidth: 1, borderColor: Colors.borderLight, borderRadius: BorderRadius.lg, backgroundColor: Colors.surface, ...Shadows.small },
   input: { paddingHorizontal: Spacing.lg, paddingVertical: Spacing.lg, fontSize: Typography.fontSize.base, color: Colors.text.primary },
   primaryBtn: { backgroundColor: Colors.primary[500], paddingVertical: Spacing.md, borderRadius: 999, alignItems: 'center', marginBottom: Spacing.md },

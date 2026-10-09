@@ -66,6 +66,7 @@ function ChatsScreen() {
   const [multiSelectMode, setMultiSelectMode] = useState(false);
   const [selectedContactIds, setSelectedContactIds] = useState<string[]>([]);
   const profileRetryCount = React.useRef(0);
+  const lastChatListFetchAt = React.useRef(0);
   const MAX_PROFILE_RETRIES = 3;
 
   const welcomeName = userProfile?.nickname
@@ -143,6 +144,7 @@ function ChatsScreen() {
   }, [user?.id]);
 
   const fetchAllChats = useCallback(async () => {
+    lastChatListFetchAt.current = Date.now();
     console.log('📥 Fetching all chats for user:', user?.id);
     try {
       // Get all contact chats where user is involved
@@ -396,7 +398,7 @@ setContactChats(finalChats);
   }, [user?.id, setUnreadContactCount]);
 
   useEffect(() => {
-    if (!user) {
+    if (!user?.id) {
       return;
     }
 
@@ -414,15 +416,18 @@ setContactChats(finalChats);
         unsubscribeProfile();
       }
     };
-  }, [user, fetchUserProfile, fetchAllChats]);
+  }, [user?.id, fetchUserProfile, fetchAllChats]);
 
-  // ✅ FIX: Improved useFocusEffect to refresh faster when navigating back and forth
+  // Refresh when the list is shown again. Skip a second full load that lands within a second of the last one.
   useFocusEffect(
     useCallback(() => {
       if (!user?.id) {
         return;
       }
-      // ✅ Immediately refresh when screen comes into focus (no delay)
+      if (Date.now() - lastChatListFetchAt.current < 1000) {
+        console.log('🔄 Screen focused — list already loaded, skipping another reload');
+        return;
+      }
       console.log('🔄 Screen focused - refreshing chats immediately');
       fetchAllChats();
       fetchUserProfile();
@@ -431,6 +436,15 @@ setContactChats(finalChats);
 
   const setupRealtimeSubscription = () => {
     if (!user?.id) return () => {};
+
+    let listRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleListRefresh = () => {
+      if (listRefreshTimer) clearTimeout(listRefreshTimer);
+      listRefreshTimer = setTimeout(() => {
+        listRefreshTimer = null;
+        fetchAllChats();
+      }, 800);
+    };
 
     const subscription = supabase
       .channel(`user-chats-${user?.id}`)
@@ -448,7 +462,7 @@ setContactChats(finalChats);
             chatData.contact_id === user?.id ||
             (chatData.participants && chatData.participants.includes(user?.id))
           )) {
-            fetchAllChats();
+            scheduleListRefresh();
           }
         }
       )
@@ -464,13 +478,14 @@ setContactChats(finalChats);
           const message = payload.new;
           if (message?.chat_id) {
             console.log('📨 New message received on chats page, refreshing chat list');
-            fetchAllChats();
+            scheduleListRefresh();
           }
         }
       )
       .subscribe();
 
     return () => {
+      if (listRefreshTimer) clearTimeout(listRefreshTimer);
       try {
         supabase.removeChannel(subscription);
       } catch (error) {
@@ -836,7 +851,7 @@ const styles = StyleSheet.create({
   title: {
     fontSize: Typography.fontSize['2xl'] + 4,
     fontWeight: Typography.fontWeight.bold,
-    color: '#FFACC4', // coral
+    color: '#01579B',
     letterSpacing: 0.5,
   
     textShadowColor: 'rgba(110, 200, 245, 0.8)', // sky blue

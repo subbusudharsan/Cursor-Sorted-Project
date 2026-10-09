@@ -218,7 +218,7 @@ Respond ONLY with valid JSON:
       },
       body: JSON.stringify({
         model: "claude-haiku-4-5-20251001",
-        max_tokens: 200,
+        max_tokens: 600,
         temperature: 0.7,
         system: "You are an emotional intelligence expert. Analyze conversations and respond only with valid JSON.",
         messages: [
@@ -240,6 +240,8 @@ Respond ONLY with valid JSON:
       throw new Error("Failed to extract JSON from Claude response");
     }
     const analysis = JSON.parse(jsonMatch[0]);
+    const readiness = Number(analysis.closureReadiness);
+    analysis.closureReadiness = Number.isFinite(readiness) ? readiness : 0;
     console.log("✅ Conversation analysis completed:", {
       sentiment: analysis.sentiment,
       emotionIntent: analysis.emotionIntent,
@@ -305,6 +307,7 @@ Respond ONLY with valid JSON:
     // ========================================
     // STEP 4: Log Agent Decision (Simplified)
     // ========================================
+    try {
     await fetch(`${SUPABASE_URL}/rest/v1/agent_decisions`, {
       method: "POST",
       headers: buildServiceHeaders({ "Content-Type": "application/json", Prefer: "return=minimal" }),
@@ -374,6 +377,9 @@ Respond ONLY with valid JSON:
         hint_text: hintFromB?.substring(0, 200)
       })
     });
+    } catch (logErr) {
+      console.error("⚠️ Orchestration log write failed (non-blocking):", logErr);
+    }
     const executionTime = Date.now() - startTime;
     console.log("✅ ORCHESTRATION COMPLETE:", {
       emotionIntent: analysis.emotionIntent,

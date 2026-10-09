@@ -905,17 +905,17 @@ MANDATORY OUTPUT STRUCTURE:
 
 RULES:
 - No names or leaks (replace names with 'you', 'I', 'they' correctly).
-- Each message must be exactly 1 sentence (1 line max).
+- Each message must be exactly 1 complete line: a statement, a question, or an exclamation. Finish the thought. Do not cut it off. One small piece only.
 - Tone: calm, kind, emotionally aware.
 - Never judge either person.
 - No emojis unless user uses them.
 - Maintain continuity across all 3 turns.
+- REAL CONVERSATION: All 3 choices answer the line just received and make the SAME point. Only the wording changes: one straight answer, one short reaction, one small question. Use the words they just used. Do not say "I didn't mean to hurt you" or "I understand why you'd feel that way" unless they just said they were hurt. The original problem stays in the background. Do not start a new subject, and do not repeat what was already said. If that line was already answered, the next choices may bring back one small piece of that person's own feeling, still as a reply. The line is what that person feels inside about what was just said. All 3 say that same feeling. Do not say "I'd like to talk about what happened earlier" once the chat has already begun. What belongs to that person stays in their mouth. What belongs to the other person stays in theirs.
+- The other person in this chat is "you". You are "I". The story may use their name, or "she", or "he". That is still the person you are texting. Do not say that name. Do not say she or he for them. Say only your own side. Do not put their story in your mouth.
+- On a User B turn only: all 3 choices are one answer to the line just received. Same meaning. One straight, one shorter, one small question. Do not give three different subjects. The saved story is User A's side. User B does not claim those actions. If User A was the one who congratulated, User B does not say "I was being nice about your car" and does not apologize as that person. Do not say "I'd like to talk about what happened earlier."
 ${hintFromB ? `
-- 🔐 CRITICAL: User B has provided a private hint that MUST deeply influence ALL User B options.
-- The hint represents User B's true perspective and emotional context.
-- When generating options for User B, the hint is MANDATORY foundational context.
-- The hint should shape the tone, content, and authenticity of User B's voice throughout all turns.
-- User B's options must reflect their genuine feelings and reasons from the hint.
+- 🔐 User B's turns only: all 3 choices are one answer to the line just received. Same meaning. One straight answer, that same answer shorter, that same answer as a small question. Do not give three different subjects. If a hint exists, that shared point is the hint. "@Name said I am lucky" becomes "You said I was lucky." Never "I am lucky" and never "People said I'm lucky" when the hint is about the other person. If they do not remember that word, all 3 choices bring it back. Hear that line, then keep the leftover feeling in the same casual text. Shape: "I hear you, but I'm still upset you called me jealous." Not only thanks. Not a goodbye.
+- Do not contradict the hint. Do not show the hint to User A. Do not put the hint into User A's choices.
 ` : `
 - If hint_from_b is provided, respect it as User B's private perspective.
 `}
@@ -976,24 +976,16 @@ ${hintFromB ? `
 
 ⚠️ CRITICAL: This hint is PRIVATE to User B and MUST NEVER be shown to User A.
 
-⚡ ABSOLUTELY CRITICAL - MANDATORY HINT INTEGRATION:
-This hint is User B's TRUE PERSPECTIVE and MUST DEEPLY INFLUENCE EVERY SINGLE OPTION generated for User B throughout THE ENTIRE CONVERSATION.
-
-This is NOT optional context - this is REQUIRED FOUNDATIONAL CONTEXT that shapes User B's authentic voice.
-
-🎯 MANDATORY REQUIREMENT - USE EXACT WORDS AND REASONING:
-User B's options MUST incorporate the SPECIFIC words, phrases, and reasoning from the hint above:
-- If the hint mentions specific people, events, or feelings, User B's options MUST reference them naturally
-- User B's options should help them express the EXACT perspective and reasons stated in the hint
-- Use the hint's language and tone to make User B's voice authentic and consistent
-- The hint's key points, concerns, and emotional context MUST be reflected in User B's options
-- Help User B communicate their perspective using similar language and reasoning as the hint, but in a polite, respectful way
-
-EXAMPLE: If hint says "I felt hurt when they said X because Y", User B's options should help them express:
-- That they felt hurt (using similar emotional language)
-- What specifically hurt them (referencing X)
-- Why it hurt (referencing Y)
-- In a way that helps User A understand their perspective
+On every User B turn, all 3 choices carry this same point. Only the wording changes: one statement, one short reaction, one question.
+User B is "I". The other person is "you". Do not say their name.
+If the hint says the other person said something ("@Name said I am lucky", "she said I am lucky"), User B says "You said I was lucky."
+Never "I am lucky" as a new claim. Never "People have said I'm lucky" when the hint is about the other person.
+If the other person does not remember that word, all 3 choices bring the word back.
+Do not contradict the hint. Do not show the hint to User A. Do not put it in User A's choices.
+Answer the line just received. The hint is what User B answers with.
+Hear that line, then keep going in the same text. Casual, like a real text. The leftover feeling stays in the line.
+Shape: "I hear you, but I'm still upset you called me jealous."
+All 3 say that same leftover feeling. Not only thanks. Not a goodbye.
 
 The hint reveals:
 - What User B is GENUINELY feeling about the situation (emotional truth)
@@ -1007,29 +999,13 @@ The hint reveals:
 Topic context (neutral, factual): "${summarySharedNeutral || '(none provided)'}"
 User B's Hint (User B's perspective): "${hintFromB}"
 
-GENERATE OPTIONS FOR USER B THAT:
-1. ✅ ALWAYS incorporate the SPECIFIC words, phrases, and reasoning from the hint above
-2. ✅ Help User B express THEIR authentic perspective using similar language as the hint
-3. ✅ Show that User B has legitimate feelings, valid reasons, and their own truth (as stated in hint)
-4. ✅ Reference the specific people, events, and concerns mentioned in the hint naturally
-5. ✅ Use the hint's emotional tone and subject matter in EVERY turn
-6. ✅ Help User B articulate their perspective clearly so User A can understand their side
-7. ✅ Maintain absolute consistency with hint's emotional context and reasoning across ALL turns
-8. ✅ Balance fairness - this conversation has TWO perspectives, not just User A's issue
-9. ✅ Use hint to inform tone: if hint shows hurt, options reflect that; if defensive, options reflect that
-10. ✅ STRONGLY CONVEY User B's reasons from the hint - explain WHY User B felt/acted the way they did
-
-PERSISTENCE RULE:
-The hint doesn't "expire" after first response. User B's feelings and perspective from the hint remain RELEVANT and ACTIVE throughout the ENTIRE conversation. Keep incorporating this context into EVERY set of options generated for User B.
-
-When generating turns for User B (in the ${firstTurnRole === "A" ? "B → A → B" : "B → A → B"} sequence):
-- If the sequence starts with User B (firstTurnRole === "B"), the FIRST turn must deeply reflect the hint
-- If the sequence has User B in the middle or end, those turns must also reflect the hint
-- ALL User B turns must be consistent with the hint's emotional tone and perspective
-- User B's options must respond to previous messages AND incorporate hint context naturally
-- User B's options MUST use the same words, reasoning, and emotional context from the hint
-
-REMEMBER: The hint is User B's private truth. User B's options must help them express this truth using the EXACT words, reasoning, and emotional context from the hint, in a way that helps both users understand each other better.
+USER B REPLIES:
+- Answer the line just received. Use the words they just used.
+- All 3 choices make the SAME hint point. One straight answer, one short reaction, one small question.
+- "@Name said I am lucky" is spoken as "You said I was lucky." If they do not remember, bring that word back in all 3.
+- Do not contradict the hint. Do not show it to User A. Do not put it in User A's choices.
+- Hear the line just sent, then keep the leftover feeling in the same casual text. Shape: "I hear you, but I'm still upset you called me jealous." Not only thanks. Not a goodbye.
+- Do not say "I didn't mean to hurt you" unless they just said they were hurt.
 ` : `
 hint_from_b: (none provided)
 `}
@@ -1062,36 +1038,37 @@ Examples for first turn:
 
 Keep them natural, human-like, and include casual greetings when appropriate.
 
-For the remaining 2 turns (${firstTurnRole === "A" ? "B → A" : "A → B"}), generate 3 short options each that:
+For the remaining 2 turns (${firstTurnRole === "A" ? "B → A" : "A → B"}), generate 3 options each.
 
-🔥 MANDATORY TWO-PART STRUCTURE FOR EACH OPTION:
-Each option MUST contain:
-1. RESPONSE PART: Acknowledge/respond to the immediately previous message
-   - Reference specific words, topics, or questions from the previous message
-   - Show understanding: "I hear you", "That makes sense", "I understand", "I'm sorry", "I'm good" (if asked how they are)
-   
-2. NEW CONTENT PART: Add something new to advance the conversation
-   - Share your own feeling, perspective, or information
-   - Connect to the topic but add your own angle
-   - Move the conversation forward with new information
+EACH OPTION IS ONE COMPLETE LINE, ONE SMALL PIECE:
+- Reply to what was just said, but add only one new piece: one feeling, one reason, or one specific question.
+- The person named in the story is the person you are texting. Say "you", not their name, and not she or he. Say only your own side. The line is that person's own feeling about what was just said. All 3 say that same feeling. Do not start a new subject.
+- Do not pack a greeting, an apology, and a fix into the same line.
+- In each set of 3, the point stays the same. Only the wording changes:
+  * One statement, ending in a period
+  * One question, ending in a question mark
+  * One exclamation or reaction, ending in an exclamation mark
+- Finish every line. Do not stop halfway.
+- On a User B turn, if a hint exists, that shared point is the hint, spoken as "You said I ...".
 
 ✅ CORRECT EXAMPLES:
-- Previous: "How are you? I am upset about office issue."
+- Previous: "I am upset about the office issue."
   Options:
-  * "Hey, I'm good. I'm also upset about that too" (responds + adds feeling)
-  * "I'm doing okay. I want to understand what happened" (responds + adds intent)
-  * "I'm fine. I felt something was off too" (responds + adds perspective)
+  * "I've been upset about that too." (straight)
+  * "I've been upset about it too." (shorter)
+  * "Have you been as upset about it as I have?" (same feeling, small question)
 
 - Previous: "I felt hurt when you didn't reply."
   Options:
-  * "I hear you. I didn't realize it bothered you that much" (responds + adds understanding)
-  * "I understand. My phone died and I couldn't respond" (responds + adds explanation)
-  * "I'm sorry. I was stressed with work and didn't think" (responds + adds context)
+  * "I didn't realize my silence hurt you that much." (straight)
+  * "I didn't realize it hurt you." (shorter)
+  * "Did my silence hurt you that much?" (same feeling, small question)
 
 ❌ WRONG EXAMPLES (avoid these):
-- "I'm good" (only response, no new content) ❌
-- "I'm also upset" (only new content, doesn't respond) ❌
-- "How are you?" (ignores previous message completely) ❌
+- "I hear you. I didn't realize it bothered you, and I want to fix this together." (too many pieces, and more than one line) ❌
+- A line that stops halfway or ends with "..." ❌
+- Three options that are all statements ❌
+- "How are you?" (ignores what they just said) ❌
 
 Continue the conversation naturally
 Are supportive and consistent with the conversation
@@ -1104,34 +1081,35 @@ Match to relationship type and conversation tone:
 - Romantic: ❤️ 💕 😊 😌 (intimate, caring, affectionate)
 ` : `
 Generate 3 consecutive turns: ${firstTurnRole === "A" ? "A → B → A" : "B → A → B"}.
-Each turn must include 3 short options.
+Each turn must include 3 options.
 
-🔥 MANDATORY TWO-PART STRUCTURE FOR EACH OPTION:
-Each option MUST contain:
-1. RESPONSE PART: Acknowledge/respond to the immediately previous message
-   - Reference specific words, topics, or questions from the previous message
-   - Show understanding: "I hear you", "That makes sense", "I understand", "I'm sorry"
-   
-2. NEW CONTENT PART: Add something new to advance the conversation
-   - Share your own feeling, perspective, or information
-   - Connect to the topic but add your own angle
-   - Move the conversation forward with new information
+EACH OPTION IS ONE COMPLETE LINE, ONE SMALL PIECE:
+- Reply to the previous turn, but add only one new piece from that person's side: one feeling, one reason, or one specific question.
+- The person named in the story is the person you are texting. Say "you", not their name, and not she or he. Say only your own side. The line is that person's own feeling about what was just said. All 3 say that same feeling. Do not start a new subject.
+- Do not explain both sides, apologize, and resolve it in the same line. The other person's next piece comes on their turn.
+- In each set of 3, the point stays the same. Only the wording changes:
+  * One statement, ending in a period
+  * One question, ending in a question mark
+  * One exclamation or reaction, ending in an exclamation mark
+- Finish every line. Do not stop halfway.
+- On a User B turn, if a hint exists, that shared point is the hint, spoken as "You said I ...".
 
 ✅ CORRECT STRUCTURE:
-- Turn 1: User A says "How are you? I am upset about office issue."
-- Turn 2 (User B): Each option should be like:
-  * "Hey, I'm good. I'm also upset about that too" (responds + adds feeling)
-  * "I'm doing okay. I want to understand what happened" (responds + adds intent)
-  * "I'm fine. I felt something was off too" (responds + adds perspective)
-
-- Turn 3 (User A): Each option should respond to Turn 2 AND add new content:
-  * "Thanks for understanding. Can we talk about how to fix this?" (responds + adds action)
-  * "I appreciate that. I think we both need to communicate better" (responds + adds insight)
+- Turn 1: User A says "I am upset about the office issue."
+- Turn 2 (User B), the same feeling three ways:
+  * "I've been upset about that too." (straight)
+  * "I've been upset about it too." (shorter)
+  * "Have you been as upset about it as I have?" (same feeling, small question)
+- Turn 3 (User A), the same feeling three ways:
+  * "I felt left out of that conversation." (straight)
+  * "I felt left out." (shorter)
+  * "Did I seem left out to you?" (same feeling, small question)
 
 ❌ WRONG EXAMPLES (avoid these):
-- "I'm good" (only response, no new content) ❌
-- "I'm also upset" (only new content, doesn't respond) ❌
-- "How are you?" (ignores previous message completely) ❌
+- "Thanks for understanding. Can we fix this and move on?" (wraps the talk up, and more than one piece) ❌
+- A line that stops halfway or ends with "..." ❌
+- Three options that are all statements ❌
+- "How are you?" (ignores what they just said) ❌
 
 Keep them supportive, natural, and consistent with the conversation.
 If near closure, add a smiley-only option as one of the 3.
