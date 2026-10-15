@@ -67,6 +67,8 @@ function ChatsScreen() {
   const [selectedContactIds, setSelectedContactIds] = useState<string[]>([]);
   const profileRetryCount = React.useRef(0);
   const lastChatListFetchAt = React.useRef(0);
+  const listFetchRunning = React.useRef(false);
+  const listFetchQueued = React.useRef(false);
   const MAX_PROFILE_RETRIES = 3;
 
   const welcomeName = userProfile?.nickname
@@ -144,6 +146,11 @@ function ChatsScreen() {
   }, [user?.id]);
 
   const fetchAllChats = useCallback(async () => {
+    if (listFetchRunning.current) {
+      listFetchQueued.current = true;
+      return;
+    }
+    listFetchRunning.current = true;
     lastChatListFetchAt.current = Date.now();
     console.log('📥 Fetching all chats for user:', user?.id);
     try {
@@ -393,7 +400,12 @@ setContactChats(finalChats);
       console.error('💥 Error in fetchAllChats:', error);
       setUnreadContactCount(0);
     } finally {
+      listFetchRunning.current = false;
       setLoading(false);
+      if (listFetchQueued.current) {
+        listFetchQueued.current = false;
+        void fetchAllChats();
+      }
     }
   }, [user?.id, setUnreadContactCount]);
 

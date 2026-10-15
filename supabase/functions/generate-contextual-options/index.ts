@@ -4474,30 +4474,6 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO â
       }
     }
 
-    if (
-      !isVeryFirstMessage &&
-      !finalClosureDetected &&
-      shouldUseHint &&
-      !isRecipientUserA &&
-      hintKeywords.length > 0
-    ) {
-      const hasHintOption = enhancedOptions.some(opt => {
-        const lower = opt.toLowerCase();
-        return hintKeywords.some(keyword => lower.includes(keyword));
-      });
-
-      if (!hasHintOption) {
-        const hintSnippet = getPrimaryStatement(hintPerspective || hintFromBWithFallback || '');
-        if (hintSnippet) {
-          const fallbackHintOption = hintSnippet.endsWith('.') ? hintSnippet : `${hintSnippet}.`;
-          // âœ… REFINED FIX 2: Only add explanation invitation if User B can ask to explain
-          if (canUserBAskToExplain) {
-            addOptionIfMissing(`I want you to understand ${fallbackHintOption}`);
-          }
-        }
-      }
-    }
-
     const latestKeywords = extractKeywords(cleanCurrentMessage || '', 12);
 
     const addEmojiFallbacksIfNeeded = () => {

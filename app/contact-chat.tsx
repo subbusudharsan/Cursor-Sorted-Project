@@ -1402,9 +1402,9 @@ const enterWaitingForOptions = useCallback(
       (heldChoices.latestMessageId || null) === latestOnScreenId &&
       !hintRefreshIsWaiting(screenChatIdRef.current);
     if (choicesMatchThisTurn) {
-      if (waitingForOptionsRef.current) {
-        resolveWaitingForOptions(String(user.id));
-      }
+      setSuggestedOptions(displayedOptionsRef.current.slice());
+      setShowSuggestedOptions(true);
+      resolveWaitingForOptions(String(user.id));
       return;
     }
     
@@ -2899,8 +2899,34 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     return true;
   };
 
+  const revealHeldChoices = (userId: string) => {
+    const lines = displayedOptionsRef.current;
+    if (!lines.length) return false;
+    setSuggestedOptions(lines.slice());
+    setShowSuggestedOptions(true);
+    resolveWaitingForOptions(userId);
+    return true;
+  };
+
   const showChoicesAlreadySaved = async (chatId: string, userId: string) => {
     if (!chatId || !userId || hintRefreshIsWaiting(chatId)) return false;
+    const localLatest = messagesRef.current[messagesRef.current.length - 1];
+    const localLatestId = localLatest?.id ? String(localLatest.id) : null;
+    const memoryNow = shownChoiceSets.get(`${chatId}:${userId}`);
+    if (
+      memoryNow?.options?.length &&
+      localLatest &&
+      String(localLatest.sender_id) !== String(userId) &&
+      (memoryNow.latestMessageId || null) === localLatestId
+    ) {
+      setSuggestedOptions(memoryNow.options);
+      displayedOptionsRef.current = memoryNow.options;
+      currentOptionsSourceRef.current = memoryNow.source;
+      setShowSuggestedOptions(true);
+      resolveWaitingForOptions(userId);
+      console.log("ℹ️ Choices already saved — showing them now");
+      return true;
+    }
     const { data: latestRows } = await supabase
       .from("messages")
       .select("id, sender_id, created_at")
@@ -2957,6 +2983,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     const cleaned = cleanOptionsForDisplay(row.options, contact?.full_name || null);
     setOptionsWithSource(cleaned, "generate-contextual-options");
     setShowSuggestedOptions(true);
+    resolveWaitingForOptions(userId);
     console.log("ℹ️ Saved choices shown on open");
     return true;
   };
@@ -3512,7 +3539,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         console.log("ℹ️ Same choices already on screen — not drawing them again");
         optionFetchBusyUntil.delete(busyKey);
         isFetchingOptionsRef.current = false;
-        resolveWaitingForOptions(userId);
+        revealHeldChoices(userId);
         return;
       }
       
@@ -3557,7 +3584,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         console.log("ℹ️ Choices already on screen for this turn — leaving them");
         optionFetchBusyUntil.delete(busyKey);
         isFetchingOptionsRef.current = false;
-        resolveWaitingForOptions(userId);
+        revealHeldChoices(userId);
         return;
       }
 
@@ -3902,7 +3929,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           JSON.stringify(displayedOptionsRef.current) === JSON.stringify(cleanedOptions)
         ) {
           console.log("ℹ️ Same choices already on screen — not drawing them again");
-          resolveWaitingForOptions(String(user.id));
+          revealHeldChoices(String(user.id));
           return;
         }
         console.log("✅ Applying valid options from ensureInitialOptions:", cleanedOptions);
@@ -4130,7 +4157,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       const cleanedNow = cleanOptionsForDisplay(optionsArray, contact?.full_name || null);
       if (choicesAlreadyOnScreenForThisTurn(chatId, String(currentUserId))) {
         console.log("ℹ️ Choices already on screen for this turn — leaving them");
-        resolveWaitingForOptions(recipientId);
+        revealHeldChoices(String(currentUserId));
         return;
       }
       if (
@@ -4138,7 +4165,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         JSON.stringify(displayedOptionsRef.current) === JSON.stringify(cleanedNow)
       ) {
         console.log("ℹ️ Same choices already on screen — not drawing them again");
-        resolveWaitingForOptions(recipientId);
+        revealHeldChoices(String(currentUserId));
         return;
       }
 
@@ -4402,6 +4429,11 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       // Calling enterWaiting while empty caused focus/poll loops to flicker.
       if (closedChatIds.has(String(chatId))) {
         resolveWaitingForOptions(currentUserId);
+        return;
+      }
+      if (choicesAlreadyOnScreenForThisTurn(chatId, currentUserId)) {
+        revealHeldChoices(currentUserId);
+        loadSucceeded = true;
         return;
       }
       if (showSuggestedOptions && suggestedOptions.length > 0) {

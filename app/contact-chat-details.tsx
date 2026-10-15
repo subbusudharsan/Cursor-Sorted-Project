@@ -201,7 +201,7 @@ function ContactChatDetailsScreen() {
       fetchUserPreferences();
       fetchContactAndChats();
     }
-  }, [user, contactId]);
+  }, [user?.id, contactId]);
 
   const fetchUserPreferences = async () => {
     try {
@@ -350,7 +350,7 @@ function ContactChatDetailsScreen() {
   const continueChat = (chat: ContactChat) => {
     console.log('📱 CONTINUE: Navigating to chat:', chat.id, 'isResolved:', chat.is_resolved);
     const isOngoing = !chat.is_resolved;
-    router.push({
+    router.navigate({
   pathname: '/contact-chat',
   params: {
     chatId: chat.id,
