@@ -597,6 +597,45 @@ const buildNameVariants = (name: string): string[] => {
   return Array.from(variants);
 };
 
+// Quoted words keep one owner for the whole chat. "she ... and said" still counts.
+// A she or he that could be two people is left out.
+const spokenQuotes = (summary: string, userAName: string, userBName: string): { userA: string[]; userB: string[] } => {
+  const userA: string[] = [];
+  const userB: string[] = [];
+  if (!summary) return { userA, userB };
+  const aNames = buildNameVariants(userAName).filter((name) => name.length >= 3);
+  const bNames = buildNameVariants(userBName).filter((name) => name.length >= 3);
+  const hasName = (text: string, names: string[]) =>
+    names.some((name) => new RegExp(`\\b@?${escapeRegex(name)}\\b`, 'i').test(text));
+  const quoteRe = /\b(said|told|asked)\s+['"“]([\s\S]+?)['"”](?=\s|[.,!?;:]|$)/gi;
+  let match: RegExpExecArray | null;
+  while ((match = quoteRe.exec(summary))) {
+    const quote = match[2].replace(/[.?!]+$/, '').trim();
+    if (quote.length < 3) continue;
+    const sentenceStart = Math.max(summary.lastIndexOf('.', match.index), summary.lastIndexOf('!', match.index), summary.lastIndexOf('?', match.index));
+    const beforeVerb = summary.slice(sentenceStart + 1, match.index);
+    const clause = (beforeVerb.split(/,|\bbut\b/i).pop() || beforeVerb).replace(/\band\b/gi, ' ').trim();
+    const otherTagged = (beforeVerb.match(/#\s*[A-Za-z]/g) || []).length;
+    if (/\bUser A\b/i.test(clause) || hasName(clause, aNames)) {
+      userA.push(quote);
+      continue;
+    }
+    if (/\bUser B\b/i.test(clause) || hasName(clause, bNames)) {
+      userB.push(quote);
+      continue;
+    }
+    if (!/\b(she|he|they)\b/i.test(clause) || otherTagged > 0) continue;
+    const aPersonal = hasName(beforeVerb, aNames);
+    const bPersonal = hasName(beforeVerb, bNames);
+    if (aPersonal && bPersonal) continue;
+    const bInSentence = /\bUser B\b/i.test(beforeVerb) || bPersonal;
+    const aInSentence = /\bUser A\b/i.test(beforeVerb) || aPersonal;
+    if (bInSentence && !aPersonal) userB.push(quote);
+    else if (aInSentence && !bPersonal) userA.push(quote);
+  }
+  return { userA: [...new Set(userA)], userB: [...new Set(userB)] };
+};
+
 // ✅ Helper function to normalize name to Title Case
 const normalizeToTitleCase = (name: string): string => {
   if (!name || typeof name !== 'string') return name;
@@ -768,6 +807,15 @@ const cleanPerspective = (text: string | undefined): string => {
   if (!text || typeof text !== 'string') return text || '';
 
   let cleaned = text;
+  const sharedSingleNames = new Set<string>();
+  buildNameVariants(userAName).forEach((part) => {
+    if (part.includes(' ')) return;
+    if (buildNameVariants(userBName).some((other) => !other.includes(' ') && other.toLowerCase() === part.toLowerCase())) {
+      sharedSingleNames.add(part.toLowerCase());
+    }
+  });
+  const nameVariants = (name: string) =>
+    buildNameVariants(name).filter((part) => part.includes(' ') || !sharedSingleNames.has(part.toLowerCase()));
 
   // ✅ NEW: Handle "User A" and "User B" labels from neutral summary
   // These labels appear in conversation_progress_summary and need perspective conversion
@@ -806,7 +854,7 @@ const cleanPerspective = (text: string | undefined): string => {
 
   if (isRecipientUserA) {
     // Generating for User A → User A is speaking TO User B
-    const listenerVariants = buildNameVariants(userBName);
+    const listenerVariants = nameVariants(userBName);
     if (listenerVariants.length > 0) {
       listenerVariants.forEach(variant => {
         const escaped = escapeRegex(variant);
@@ -854,7 +902,7 @@ const cleanPerspective = (text: string | undefined): string => {
     }
   } else {
     // Generating for User B → User B is speaking TO User A
-    const selfVariants = buildNameVariants(userBName);
+    const selfVariants = nameVariants(userBName);
     if (selfVariants.length > 0) {
       selfVariants.forEach(variant => {
         const escaped = escapeRegex(variant);
@@ -880,7 +928,7 @@ const cleanPerspective = (text: string | undefined): string => {
       console.log(`   ✅ User B perspective: Replaced ${selfVariants.join(', ')} with "I/me/my"`);
     }
 
-    const listenerVariants = buildNameVariants(userAName);
+    const listenerVariants = nameVariants(userAName);
     if (listenerVariants.length > 0) {
       listenerVariants.forEach(variant => {
         const escaped = escapeRegex(variant);
@@ -1008,95 +1056,10 @@ console.log("✅ Perspective cleanup complete - using cleaned versions:", {
   conversationHistoryLength: cleanConversationHistory.length
 });
 
-// ✅ HYBRID CONTEXT WINDOW: Update conversation progress summary if stale (best-effort, non-blocking)
+// These choices use the progress note already saved. A newer note is written after the choices are saved.
 let conversationProgressSummary = contextData?.conversation_progress_summary || '';
-const currentMessageCount = safeConversationHistory.length;
 const lastSummaryMessageCount = contextData?.conversation_progress_message_count || 0;
-const summaryIsStale = (currentMessageCount - lastSummaryMessageCount) >= 12 || !conversationProgressSummary;
-
-if (summaryIsStale && currentMessageCount > 0) {
-  try {
-    console.log(`🔄 Updating conversation progress summary (stale: ${currentMessageCount - lastSummaryMessageCount} messages since last update)`);
-    
-    // Use recent messages for summary (last 10 for good context while keeping tokens low)
-    const messagesToSummarize = safeConversationHistory.slice(-10);
-    
-    // Build prompt for summary generation - use neutral third-person language
-    const userALabel = isRecipientUserA ? 'User A' : 'User B';
-    const userBLabel = isRecipientUserA ? 'User B' : 'User A';
-    
-    const summaryPrompt = `Summarize the conversation progress in 2-3 concise sentences using NEUTRAL THIRD-PERSON language. Focus on:
-- What has been discussed or resolved
-- Current emotional state or progress  
-- Key points or understanding reached
-
-CRITICAL: Use third-person neutral language (e.g., "User A explained...", "User B acknowledged...", "They discussed..."). 
-- Use "User A" and "User B" labels consistently
-- Do NOT use first-person ("I", "me", "my") 
-- Do NOT use names or @ tags
-- This summary will be stored and used as background context for both users
-
-Recent conversation messages:
-${messagesToSummarize.map((msg: any, idx: number) => {
-  const content = typeof msg === 'object' ? msg.content : String(msg);
-  const sender = typeof msg === 'object' && msg.sender_id === recipientId ? userALabel : userBLabel;
-  return `${idx + 1}. ${sender}: "${content.substring(0, 150)}${content.length > 150 ? '...' : ''}"`;
-}).join('\n')}
-
-Generate a brief 2-3 sentence summary in NEUTRAL THIRD-PERSON language (using "User A" and "User B" labels) describing the conversation progress:`;
-
-    // Generate new summary using Haiku (cost-efficient)
-    const summaryResponse = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": CLAUDE_API_KEY,
-        "anthropic-version": "2023-06-01"
-      },
-      body: JSON.stringify({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 200,
-        temperature: 0.3,
-        messages: [{
-          role: "user",
-          content: summaryPrompt
-        }]
-      })
-    });
-
-    if (summaryResponse.ok) {
-      const summaryData = await summaryResponse.json();
-      const newSummary = summaryData.content[0].text.trim();
-      
-      if (newSummary && newSummary.length > 20) {
-        // Update context_data with new summary
-        const { error: updateError } = await supabase
-          .from("chats")
-          .update({
-            context_data: {
-              ...contextData,
-              conversation_progress_summary: newSummary,
-              conversation_progress_message_count: currentMessageCount,
-              conversation_progress_last_updated_at: new Date().toISOString()
-            }
-          })
-          .eq("id", chatId);
-        
-        if (!updateError) {
-          conversationProgressSummary = newSummary;
-          console.log(`✅ Conversation progress summary updated (${newSummary.length} chars)`);
-        } else {
-          console.warn("⚠️ Failed to update conversation_progress_summary in DB, using in-memory version:", updateError);
-        }
-      }
-    }
-  } catch (error) {
-    // ✅ Best-effort: Continue with existing summary (or empty) if update fails
-    console.warn("⚠️ Conversation progress summary update failed, using existing summary:", error);
-  }
-} else {
-  console.log(`✅ Using existing conversation progress summary (${conversationProgressSummary.length} chars, ${currentMessageCount - lastSummaryMessageCount} messages since update)`);
-}
+console.log(`✅ Using existing conversation progress summary (${conversationProgressSummary.length} chars, saved at ${lastSummaryMessageCount} messages)`);
 
 // Determine who the AI is generating options for
 const generatingFor = isRecipientUserA ? 'User A' : 'User B';
@@ -1781,7 +1744,25 @@ const lastTwoMessages = cleanConversationHistory.slice(-2).map((msg) => {
 
 Tone: Warm, caring, non-judgmental, genuinely supportive.`;
 
+    const spokenQuoteLists = spokenQuotes(String(summarySharedNeutral || ''), userAName, userBName);
+    const userBOwnQuotes = spokenQuoteLists.userB;
+    const userAOwnQuotes = spokenQuoteLists.userA;
+    const keepQuoteMouth = (line: string) => {
+      const own = isRecipientUserB ? userBOwnQuotes : userAOwnQuotes;
+      const other = isRecipientUserB ? userAOwnQuotes : userBOwnQuotes;
+      const has = (quotes: string[]) => quotes.some((quote) => quote.length >= 3 && line.toLowerCase().includes(quote.toLowerCase()));
+      if (!has(own) || has(other) || !/\byou said\b/i.test(line)) return line;
+      console.log('ℹ️ Choice kept the quoted words with the person who said them');
+      return line.replace(/\byou said\b/gi, 'I said');
+    };
+    const latestLine = String(cleanCurrentMessage || '').trim();
+    const latestIsSmile = latestLine.length > 0 && latestLine.length <= 8 && !/[a-zA-Z0-9]/.test(latestLine) && /🙂|😊|❤️|🤝|🫂|👍|😂|😘|😍/.test(latestLine);
+    const smileReply = latestIsSmile && (otherUserSentSmiley || otherUserRecentSmiley) && !currentUserSentSmiley;
+
     const systemPrompt = `${perspectiveLine} ${thirdPartyLine} ${summarySourceOfTruthRules}
+${smileReply ? `
+THE LAST LINE IS A SMILE. The chat is closing. Do not mention the issue, the hint, or what happened. Two choices are a short close, such as thanks or glad we talked. The third choice is 🙂 or 😊.
+` : ''}
 
 🚫🚫🚫 CRITICAL: YOUR ROLE - READ THIS FIRST 🚫🚫🚫
 
@@ -1812,41 +1793,49 @@ ${!isVeryFirstMessage ? `
 
 The line just received is: "${cleanCurrentMessage}"
 
-Write 3 choices that answer THAT line, the way a real person would text back.
-All 3 choices make the SAME point. Only the wording changes:
-- One straight answer
-- One short reaction
-- One small question
+Write 3 choices that answer THAT line, the way two people would talk to each other, openly, from the heart.
+All 3 choices say the SAME next piece. Only the wording changes:
+- One straight way of saying that piece
+- The same piece, a little shorter, still the whole point
+- One small question about that same piece
 
-Use the words they just used.
+Look at what is already said. The next piece is something not said yet. It can be a feeling, what you meant, what it did to the other person, or one question about your own part. The chat picks which one fits. Use this same rule for every kind of chat.
+A fact already said stays said. Do not bring that fact back in new words.
+A sorry waits until both people have said how it felt.
+Show you heard their last line. Do not rebuild the whole problem out of their words.
 Do not say "I didn't mean to hurt you" or "I understand why you'd feel that way" unless they just said they were hurt.
 Do not start a new subject. Do not repeat what was already said. Do not restart the whole problem.
-The line is what you feel inside about what they just said. All 3 say that same feeling. The small question asks about that same feeling. It does not change the subject.
+All 3 say that same new piece. The small question asks about that same piece. It does not change the subject.
 Do not say "I'd like to talk about what happened earlier" once the chat has already begun.
 What belongs to you stays in your mouth. What belongs to them stays in theirs. If they did it, you do not say you did it.
 Each choice is one finished line. Do not cut it off.
 The other person in this chat is "you". You are "I".
-The saved story may use their name, or "she", or "he". That is still the person you are texting. Do not say that name. Do not say she or he for them. Say "you".
+If the saved story shows they did it, say "you". If it shows you did it, say "I". If a she or he is not clearly one person, leave that action out. Do not give their words to yourself, or your words to them.
+${isRecipientUserB && userBOwnQuotes.length > 0 ? `You said these words: ${userBOwnQuotes.map((quote) => `"${quote}"`).join(', ')}. If a choice mentions them, say "I said". Never "you said" for those words. The hint does not move these words.` : ''}
+${isRecipientUserA && userAOwnQuotes.length > 0 ? `You said these words: ${userAOwnQuotes.map((quote) => `"${quote}"`).join(', ')}. If a choice mentions them, say "I said". Do not say the name User A.` : ''}
+${isRecipientUserB && userAOwnQuotes.length > 0 ? `The other person said these words: ${userAOwnQuotes.map((quote) => `"${quote}"`).join(', ')}. If a choice mentions them, say "you said".` : ''}
 Say only what you yourself would say. Do not put their story in your mouth.
 Wrong: "where they misunderstood" said with their name, or repeating their side as if it happened to you.
 Right: "I want to clear up where you misunderstood me."
 
 ${shouldUseHint && isRecipientUserB ? `
-THE PRIVATE HINT IS THE POINT OF ALL 3 CHOICES. User B is speaking to the other person.
+THE PRIVATE HINT IS USER B'S FEELING. User B is speaking to the other person.
 The hint's meaning, which you must NOT copy: "${hintPromptSnippet}"
-- All 3 choices carry this same meaning in a normal sentence. Do not split it into three different topics.
+- The first time this meaning is not yet in the chat, all 3 choices say it in a normal sentence. Do not split it into three different topics.
 - Say it in your own words. Do not paste the hint's sentence, its typos, or any @name.
 - The other person is "you". User B is "I". Do not say their name.
 - If the hint is about something they said, talk to them as "you", in a sentence you would actually text. Do not repeat their sentence back with their mistakes.
-- Still answer the line they just sent. The hint is the feeling you answer with.
-- Hear that line, then keep going in the same text. Casual, like a real text. The leftover feeling from the hint stays in the line.
-- All 3 say that same leftover feeling. One straight, one shorter, one small question. Not only thanks. Not a goodbye.
+- The first time, the hint stays the point even when their line is only a greeting. Answer that greeting in the same sentence, then say the hint's meaning. Do not stop at hello.
+${rewritingUserBChoices ? `- This is a hint refresh. Reply to the line they just sent, and in that same sentence say the hint's meaning in your own words. Do not copy the hint. Do not start with "Did you mean." A bare she or he stays as written.` : ''}
+- Once that meaning is already in the chat, later choices keep the feeling and add the next piece. Do not say those facts again.
+- Hear that line, then keep going in the same text. Casual, like a real text. The leftover feeling stays as tone. Do not leave the feeling out, and do not rebuild the same facts.
+- All 3 say that same next piece. One straight, one a little shorter that still says the whole point, one small question. Not only thanks. Not a goodbye.
 - This hint stays private. Never put it in the other person's choices.
 ` : `
 The original problem stays in the background: "${cleanOriginalIssueSummary || cleanSummary || 'Not specified'}".
 Do not force it into this line.
 If their last line was already answered, the next choices may bring back one small piece of your own feeling, still as a reply to what they just said. Do not open a new subject.
-When that piece comes back, the person named in the story is the person you are texting. Say "you", not their name, and not she or he.
+When that piece comes back, say "you" only for what the other person did. Say "I" for what you did. Do not turn a she or he into "you" unless the story shows it was them.
 `}
 ` : ''}
 
@@ -2215,7 +2204,7 @@ EXAMPLES OF BAD TONE (NEVER USE):
 STAY WITHIN THE APP - CRITICAL RULES:
 - NEVER suggest "let's chat later", "let's meet up", "let's talk tomorrow", "call me", "text me", "let's talk outside", "let's discuss this in person"
 - NEVER suggest scheduling or coordinating outside this conversation
-- DO NOT generate early apologies without understanding in first 4-5 turns (avoid "I'm sorry", "My bad" unless there's genuine mutual understanding)
+- A sorry waits until both people have said how it felt. Do not say "I'm sorry" or "My bad" before that.
 - Focus on UNDERSTANDING FIRST: Ask questions, share perspectives, explore feelings
 - Keep all communication within this conversation until natural resolution emerges
 - Build understanding before closure - users must feel heard and understood by BOTH sides
@@ -2477,20 +2466,20 @@ The AI must understand:
 4. Options should help User B EXPLAIN their reasons and help User A UNDERSTAND them
 
 GENERATE OPTIONS THAT:
-1. ✅ ALWAYS reflect the emotional tone and subject matter from the hint in EVERY turn
+1. ✅ Keep the hint's emotional tone. Say its facts the first time only. After they are said, do not say them again.
 2. ✅ Help User B express THEIR authentic perspective based on this persistent context
 3. ✅ Show that User B has legitimate feelings, valid reasons, and their own truth
 4. ✅ Say the hint's meaning in a normal sentence of User B's own. Do not copy the hint's words, its typos, or any @name, and do not show it to User A
 5. ✅ Balance fairness - this conversation has TWO perspectives, not just User A's issue
 6. ✅ Maintain absolute consistency with hint's emotional context across ALL turns (turn 1, turn 5, turn 10 - ALWAYS)
 7. ✅ Use hint to inform tone: if hint shows hurt, options reflect that; if defensive, options reflect that
-8. ✅ Keep that same meaning. Do not paste names or sentences from the hint
-9. ✅ STRONGLY CONVEY User B's reasons - explain WHY User B felt/acted the way they did
+8. ✅ The first time, keep that meaning. After it is said, keep the feeling and add the next piece. Do not paste names or sentences from the hint
+9. ✅ The first time, say why User B felt that way. After that reason is said, do not explain it again.
 10. ✅ Help User B articulate their perspective clearly so User A can understand their side
 11. ✅ Compare and bridge the gap between User A's original issue and User B's hint perspective
 
 PERSISTENCE RULE:
-The hint doesn't "expire" after first response. User B's feelings and perspective from the hint remain RELEVANT and ACTIVE throughout the ENTIRE conversation. Keep incorporating this context into EVERY set of options generated for User B.
+The hint doesn't "expire" after first response. User B's feeling from the hint stays in the tone for the whole chat. Once those facts are already said, later choices do not say them again. They add the next piece.
 
 ${hasUserBExplained && isRecipientUserB ? `
 🚫 CRITICAL - USER B HAS ALREADY EXPLAINED:
@@ -2635,7 +2624,9 @@ Build trust and understanding before closure.
 `}
 ` : ''}`;
 
-    const userPrompt = `Generate exactly ${isVeryFirstMessage ? '5' : '3'} options that sound like what this person would ACTUALLY SAY in this conversation.
+    const userPrompt = `Generate exactly ${isVeryFirstMessage ? '5' : '5'} options that sound like what this person would ACTUALLY SAY in this conversation.
+${!isVeryFirstMessage ? `Three are the set that is shown. The other two are spare replies to the same line, used only if a line in the set is a copy.` : ''}
+Each choice must be its own reply. The same sentence with one extra word does not count.
 
 🔴 CRITICAL PRONOUN RULES - APPLY TO EVERY OPTION WITHOUT EXCEPTION:
 ${isRecipientUserA ? `
@@ -2669,7 +2660,7 @@ REAL REPLY:
 - Do not open the line with "I get what you mean", "that makes sense", or "I understand why you'd feel that way" unless they just described a feeling.
 - Do not sound like a therapist.
 - Do not copy their full message.
-- The name in the saved story is the person you are texting. Say "you". Do not say their name. Do not say she or he for them.
+- Say "you" for what the other person did. Say "I" for what you did, including words the summary shows you said. Do not say their name. Do not turn a she or he into "you" unless the story shows it was them.
 - Say only your own side. Do not retell their story as if it happened to you.
 - The line is your own feeling about what they just said. All 3 say that same feeling. Do not start a new subject.
 ${shouldUseHint && isRecipientUserB ? `- All 3 choices carry the same hint point, in different words. If the hint says the other person said it, speak it as "You said I ...". If they do not remember that word, bring the word back. Do not show the hint to them.
@@ -2935,13 +2926,15 @@ Not "I didn't mean to hurt you." That is only for when they just said they were 
 
 **Each option must be:**
 
+- Each choice must be its own reply. The same sentence with one extra word does not count.
+
 - One single complete line: a statement, a question, or an exclamation
 
 - Finish the thought. Do not cut it off, and do not aim for a word count.
 
 - In a set, mix those kinds of line. Do not make them all statements.
 
-- One small piece only: one feeling, one reason, or one specific question. Later turns bring the next piece.
+- One small piece only: one feeling, one reason, or one specific question. Later turns bring the next piece. A fact already said is not said again. A sorry waits until both people have said how it felt.
 
 - Warm, friendly, human
 
@@ -3077,7 +3070,7 @@ ${shouldUserATransitionToIssue ? `
 - Do NOT introduce unrelated topics or deviate from the conversation history
 ` : ''}
 
-${isFirstResponseForUserB ? `
+${isFirstResponseForUserB && !(shouldUseHint && isRecipientUserB) ? `
 🚦 FIRST RESPONSE GUARDRAILS (User B):
 - You just received their opening message: "${cleanCurrentMessage}"
 - RESPOND DIRECTLY to what they said - don't ask generic questions like "can you tell me more" or "what do you want to talk about"
@@ -3088,7 +3081,7 @@ ${isFirstResponseForUserB ? `
 - Focus on acknowledging their message and showing you're ready to listen
 - Avoid generic questions that ignore what they just said
 ` : isRecipientUserB ? `
-${isCasualOrSocialMessage ? `
+${isCasualOrSocialMessage && !shouldUseHint ? `
 ✅ USER B - CASUAL/SOCIAL RESPONSE MODE:
 - User A sent a casual/social message: "${cleanCurrentMessage}"
 - This is a greeting, check-in, or pleasantry - NOT an issue or explanation
@@ -3107,16 +3100,16 @@ ${isCasualOrSocialMessage ? `
 - Only move to issue-focused responses when they actually share an issue or explanation
 ` : `
 ✅ USER B - RESPONDING MODE:
-${shouldUseHint ? `- The private hint is the meaning of all 3 choices. Do not copy this sentence, its typos, or any @name: "${hintPromptSnippet.substring(0, 200)}${hintPromptSnippet.length > 200 ? '...' : ''}"
-- Say that same meaning in a normal sentence of your own.
+${shouldUseHint ? `- The private hint is User B's feeling. The first time, it is the meaning of all 3 choices. Do not copy this sentence, its typos, or any @name: "${hintPromptSnippet.substring(0, 200)}${hintPromptSnippet.length > 200 ? '...' : ''}"
+- Say that meaning in a normal sentence of your own the first time. Once it is said, add the next piece and do not say those facts again.
 ` : ''}- You are responding to User A's latest message: "${cleanCurrentMessage}"
-- ALL 3 choices are one answer to that line. Same meaning. One straight answer, that same answer shorter, that same answer as a small question.
+- ALL 3 choices are the next piece in answer to that line. Same piece. One straight, one a little shorter that still says the whole point, one small question.
 - Do not make one choice answer the line and the other two talk about something else.
 ${shouldUseHint ? `
-- All 3 choices make the SAME point from this hint, only the wording changes. Do not paste the hint.
+- The first time, all 3 choices make the same point from this hint, only the wording changes. Once that point is already said, they add the next piece and do not say it again. Do not paste the hint.
 - Talk to them as "you" and about yourself as "I", in words you would actually text.
 ` : `
-- The old story stays in the background. A piece of it may come back only when it is that same answer, not as a second subject.
+- The old story stays in the background. Bring one piece of it only if that piece has not been said yet, still as a reply to what they just said.
 `}
 - Do NOT ask generic questions like "can you tell me more" or "what do you want to talk about"
 `}
@@ -3130,9 +3123,9 @@ ${shouldUserBExplainDirectly ? `
 - Do not say only "I can explain" or "I want to share" with nothing behind it.
 - Say what you actually felt or why, the way you would text it. Same meaning in all 3. Different wording.
 ` : `
-- Every option carries the same meaning as this private hint, in your own words: "${hintPromptSnippet.substring(0, 200)}${hintPromptSnippet.length > 200 ? '…' : ''}"
+- The first time, every option carries the same meaning as this private hint, in your own words: "${hintPromptSnippet.substring(0, 200)}${hintPromptSnippet.length > 200 ? '…' : ''}"
 - Do not copy the hint's sentence, its typos, or any @name. A normal sentence is enough.
-- Show different tones (softer, direct, vulnerable) but the meaning stays the same.
+- Once that meaning is already said, keep the feeling and add the next piece. Do not say those facts again.
 - Say what you needed or what hurt. Do not stop at "I would like to say" or "I want to share".
 `}
 ${canUserBAskToShareAfterHint ? `
@@ -3252,10 +3245,10 @@ ${isRecipientUserB ? `
    `}
    - Third parties: Use actual names or pronouns from entity registry (never "you")
 8. INCORPORATE specific details from the conversation context to make responses feel personal and relatable
-${shouldUseHint && isRecipientUserB ? `9. USER B ONLY: All 3 choices carry the same hint point. One statement, one short reaction, one question. Same meaning.
-10. USER B ONLY: Say the hint's meaning in your own sentence. Do not copy the hint, its typos, or any @name.
+${shouldUseHint && isRecipientUserB ? `9. USER B ONLY: The first time, all 3 choices carry the same hint point. After it is said, all 3 carry the next piece. One straight, one a little shorter that still says the whole point, one question.
+10. USER B ONLY: Say the hint's meaning in your own sentence the first time. Do not copy the hint, its typos, or any @name. Do not say those facts again later.
 11. USER B ONLY: Do not contradict the hint. Do not show the hint to User A. Do not say their name.
-12. USER B ONLY: Hear the line just sent, then keep going. Casual text. The leftover feeling stays in the line. Shape: "I hear you, but I'm still upset you called me jealous." Not only thanks. Not a goodbye.
+12. USER B ONLY: Hear the line just sent, then add the next piece. Casual text, from the heart. The leftover feeling stays as tone. Not only thanks. Not a goodbye.
 ⚠️ REMEMBER: This hint is PRIVATE to User B and NEVER shown to User A
 ${hasUserBExplained ? `🚫 CRITICAL: User B has ALREADY explained their side - do NOT generate options asking them to explain again. Focus on RESPONDING to User A's messages, not re-explaining.` : ''}
 ${canUserBAskToShareAfterHint ? `
@@ -3271,7 +3264,7 @@ Each option is still a single line, and it carries only one small piece.
 ${isRecipientUserB ? `
 ✅ DIFFERENTIATION RULE FOR USER B - CRITICAL (ROLE SAFETY):
 - User B's options MUST be RESPONSES to User A's latest message: "${cleanCurrentMessage}"
-- All 3 choices are that one answer. Same meaning. One straight, one shorter, one small question.
+- All 3 choices are that next piece. Same piece. One straight, one a little shorter that still says the whole point, one small question.
 - Do not give three different subjects.
 - The saved story is User A's side. Say only what User B would text back. Do not claim User A's actions.
 - If User A said "what you said about the car caught me off guard":
@@ -3291,7 +3284,7 @@ ${isRecipientUserB ? `
 - Example: If User A said "Vikram and Sneha supported me", User B MUST NOT say "I felt hurt when Vikram and Sneha..."
 ` : `
 ✅ DIFFERENTIATION RULE FOR USER A (ROLE SAFETY):
-- User A's three choices answer User B's latest line. Same feeling. One straight, one shorter, one small question. Say only what User A would feel. Do not speak User B's side. Do not start a new subject.
+- User A's three choices answer User B's latest line with the next piece. Same piece. One straight, one a little shorter that still says the whole point, one small question. Say only what User A would feel. Do not speak User B's side. Do not start a new subject. A fact already said is not said again.
 - User A uses "I/me/my" for themselves and "you/your" for User B
 - Third parties: Use EXACT names from summary - do NOT change names
 - 🔒 ROLE SAFETY: These are User A options ONLY - do NOT reuse User B's options
@@ -3420,7 +3413,7 @@ TONE REQUIREMENTS (MANDATORY):
 
 Format as JSON:
 {
-  "options": [${isVeryFirstMessage ? '"Option 1", "Option 2", "Option 3", "Option 4", "Option 5"' : '"Exact words they\'d say 1", "Exact words they\'d say 2", "Exact words they\'d say 3"'}]${shouldUseHint && isRecipientUserB ? `,
+  "options": [${isVeryFirstMessage ? '"Option 1", "Option 2", "Option 3", "Option 4", "Option 5"' : '"Exact words they\'d say 1", "Exact words they\'d say 2", "Exact words they\'d say 3", "Spare reply 4", "Spare reply 5"'}]${shouldUseHint && isRecipientUserB ? `,
   "reasoning": "How hint shaped these responses (User B only)"` : ''}
 }`;
 console.log("🧹 ============ CLEANED DATA CHECK BEFORE CLAUDE ============");
@@ -3585,6 +3578,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     let options = Array.isArray(optionsData.options)
       ? [...optionsData.options]
       : [];
+    const modelLines = options.map((opt) => String(opt || "")).filter((opt) => opt.trim().length > 0);
     const expectedCount = isVeryFirstMessage ? 5 : 3;
 
     if (isVeryFirstMessage) {
@@ -3847,7 +3841,15 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
     const removeListenerName = (option: string): string => {
       if (!option || typeof option !== 'string') return option;
       let cleaned = option;
-      const listenerVariants = buildNameVariants(isRecipientUserA ? userBName : userAName);
+      const sharedSingleNames = new Set<string>();
+      buildNameVariants(userAName).forEach((part) => {
+        if (part.includes(' ')) return;
+        if (buildNameVariants(userBName).some((other) => !other.includes(' ') && other.toLowerCase() === part.toLowerCase())) {
+          sharedSingleNames.add(part.toLowerCase());
+        }
+      });
+      const listenerVariants = buildNameVariants(isRecipientUserA ? userBName : userAName)
+        .filter((part) => part.includes(' ') || !sharedSingleNames.has(part.toLowerCase()));
 
       if (listenerVariants.length === 0) return cleaned;
 
@@ -4358,7 +4360,7 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
         }
         
         // ✅ NEW: Block inappropriate issue-focused responses for casual/social messages
-        if (isCasualOrSocialMessage) {
+        if (isCasualOrSocialMessage && !(shouldUseHint && isRecipientUserB)) {
           const inappropriateForCasualPatterns = [
             /that makes sense/i,
             /i (understand|get it|hear you)/i,
@@ -5073,6 +5075,155 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
 
     console.log("   Final normalized options (after smiley enforcement):", normalizedOptions);
 
+    if (smileReply) {
+      normalizedOptions = [
+        "Thanks for this. I'm glad we could talk.",
+        "I'm okay now. We can leave it here.",
+        "🙂"
+      ];
+      console.log('ℹ️ Smile reply choices are a close, not the issue');
+    }
+
+    if (!smileReply) {
+      normalizedOptions = normalizedOptions.map((line) => keepQuoteMouth(line));
+      const fullSet = normalizedOptions.slice();
+      const choiceWords = (line: string): string[] =>
+        String(line || "")
+          .toLowerCase()
+          .replace(/[’']/g, "'")
+          .replace(/[^\p{L}\p{N}'\s]/gu, " ")
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean);
+      const addsOnlyOneWord = (shorter: string[], longer: string[]): boolean => {
+        if (longer.length !== shorter.length + 1 || shorter.length === 0) return false;
+        let extra = 0;
+        let s = 0;
+        for (const word of longer) {
+          if (s < shorter.length && word === shorter[s]) s += 1;
+          else extra += 1;
+          if (extra > 1) return false;
+        }
+        return s === shorter.length && extra === 1;
+      };
+      const emojiOnlyChoice = (line: string) => /^[\p{Emoji}\s]+$/u.test(String(line || "").trim());
+      const sameWords = (a: string[], b: string[]) => a.length > 0 && a.length === b.length && a.every((word, idx) => word === b[idx]);
+      const isNearCopy = (a: string[], b: string[]) => {
+        if (a.length === 0 || b.length === 0) return false;
+        if (sameWords(a, b)) return true;
+        const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
+        return addsOnlyOneWord(shorter, longer);
+      };
+      const ownWords = (line: string) => keepQuoteMouth(line);
+      const shownWords = fullSet.map(choiceWords);
+      const dropBoth = new Set<number>();
+      for (let i = 0; i < fullSet.length; i++) {
+        if (emojiOnlyChoice(fullSet[i]) || shownWords[i].length === 0) continue;
+        for (let j = i + 1; j < fullSet.length; j++) {
+          if (emojiOnlyChoice(fullSet[j]) || shownWords[j].length === 0) continue;
+          if (isNearCopy(shownWords[i], shownWords[j])) {
+            dropBoth.add(i);
+            dropBoth.add(j);
+          }
+        }
+      }
+      if (dropBoth.size > 0) {
+        dropBoth.forEach((idx) => {
+          console.log(`ℹ️ Dropped a copied choice: "${fullSet[idx]}"`);
+        });
+        const kept = fullSet.filter((_, idx) => !dropBoth.has(idx));
+        const blocked = [
+          ...[...dropBoth].map((idx) => shownWords[idx]),
+          ...kept.filter((line) => !emojiOnlyChoice(line)).map(choiceWords),
+        ];
+        const spares: string[] = [];
+        for (const raw of modelLines) {
+          let line = "";
+          try {
+            line = ownWords(processOption(raw));
+          } catch {
+            line = "";
+          }
+          if (!line || !meetsOptionConstraints(line) || emojiOnlyChoice(line)) continue;
+          const words = choiceWords(line);
+          if (words.length === 0) continue;
+          if (blocked.some((other) => isNearCopy(words, other))) continue;
+          if (spares.some((spare) => isNearCopy(words, choiceWords(spare)))) continue;
+          spares.push(line);
+          blocked.push(words);
+        }
+        const emojiKept = kept.filter((line) => emojiOnlyChoice(line));
+        const textKept = kept.filter((line) => !emojiOnlyChoice(line));
+        while (textKept.length + emojiKept.length < expectedCount && spares.length > 0) {
+          const nextSpare = spares.shift();
+          if (nextSpare) textKept.push(nextSpare);
+        }
+        if (textKept.length + emojiKept.length < expectedCount) {
+          const missing = expectedCount - (textKept.length + emojiKept.length);
+          try {
+            console.log(`ℹ️ Writing ${missing} more choices so the set stays at ${expectedCount}`);
+            const avoid = [...[...dropBoth].map((idx) => fullSet[idx]), ...textKept].filter(Boolean);
+            const latestLine = String(cleanCurrentMessage || "").replace(/[\r\n"]/g, " ").slice(0, 400);
+            const followResponse = await callAnthropicAPI({
+              model: "claude-haiku-4-5-20251001",
+              max_tokens: 500,
+              temperature: 0.7,
+              system: "You write short text replies. Each line is its own reply to the latest line. The same sentence with one extra word does not count. Return JSON only.",
+              messages: [{
+                role: "user",
+                content: `The latest line was: "${latestLine}"
+Write exactly ${missing + 2} different replies to that line. Match this chat.
+Do not write any of these lines again:
+${avoid.map((line) => `- ${line}`).join("\n")}
+JSON: {"options":["reply"]}`
+              }]
+            });
+            const followData = await followResponse.json();
+            const followText = followData?.content?.[0]?.text || "";
+            let followOptions: string[] = [];
+            try {
+              followOptions = JSON.parse(followText).options || [];
+            } catch {
+              const match = followText.match(/\{[\s\S]*"options"[\s\S]*\}/);
+              if (match) followOptions = JSON.parse(match[0]).options || [];
+            }
+            for (const raw of followOptions) {
+              if (textKept.length + emojiKept.length >= expectedCount) break;
+              let line = "";
+              try {
+                line = ownWords(processOption(String(raw || "")));
+              } catch {
+                line = "";
+              }
+              if (!line || !meetsOptionConstraints(line) || emojiOnlyChoice(line)) continue;
+              const words = choiceWords(line);
+              if (words.length === 0) continue;
+              if (blocked.some((other) => isNearCopy(words, other))) continue;
+              textKept.push(line);
+              blocked.push(words);
+            }
+          } catch (followError) {
+            console.warn("⚠️ Could not write the replacement choices", followError);
+          }
+        }
+        const rebuilt = emojiKept.length > 0 ? [...textKept, emojiKept[0]] : textKept.slice();
+        if (rebuilt.length >= expectedCount) {
+          normalizedOptions = rebuilt.slice(0, expectedCount);
+          if (finalClosureDetected) {
+            const emojiIdx = normalizedOptions.findIndex((opt) => emojiOnlyChoice(String(opt)));
+            if (emojiIdx > -1 && emojiIdx !== normalizedOptions.length - 1) {
+              const [emojiLine] = normalizedOptions.splice(emojiIdx, 1);
+              normalizedOptions.push(emojiLine);
+            }
+          }
+          console.log(`ℹ️ Choice set kept at ${normalizedOptions.length}`);
+        } else {
+          console.warn(`ℹ️ Kept the full set of ${fullSet.length} because a shorter set is not allowed`);
+          normalizedOptions = fullSet;
+        }
+      }
+    }
+
     const { data: lockRow } = await supabase
       .from('chats')
       .select('context_data')
@@ -5158,6 +5309,139 @@ console.log(`   Has content: ${cleanRecipientSummary.length > 0 ? 'YES' : 'NO �
       delete afterContext.options_write_lock;
       await supabase.from('chats').update({ context_data: afterContext }).eq('id', chatId);
     }
+
+    // Choices are already saved. Refresh the shared progress note without delaying them.
+    const refreshConversationProgress = async () => {
+      try {
+        const { count: messageCount, error: countError } = await supabase
+          .from('messages')
+          .select('id', { count: 'exact', head: true })
+          .eq('chat_id', chatId);
+        if (countError || messageCount == null) {
+          console.warn('⚠️ Progress note skipped: could not count messages', countError);
+          return;
+        }
+        const realCount = messageCount;
+        const { data: freshChat, error: freshError } = await supabase
+          .from('chats')
+          .select('context_data, closure_state, is_resolved, user_id')
+          .eq('id', chatId)
+          .single();
+        if (freshError || !freshChat) {
+          console.warn('⚠️ Progress note skipped: could not read the latest chat note', freshError);
+          return;
+        }
+        if (freshChat.is_resolved === true && freshChat.closure_state === 'closed') {
+          console.log('ℹ️ Progress note skipped: chat is closed');
+          return;
+        }
+        const freshContext = freshChat.context_data || {};
+        const savedCount = Number(freshContext.conversation_progress_message_count || 0);
+        if (realCount - savedCount < 2) {
+          console.log(`✅ Progress note kept (${realCount - savedCount} new messages since last note)`);
+          return;
+        }
+        const hintWasKnown = String(hintFromBWithFallback || '').trim().length > 0;
+        const freshHint = String(freshContext.hint_from_b || freshContext.hintFromB || '').trim();
+        if (hintWasKnown && !freshHint) {
+          console.log('ℹ️ Progress note skipped: hint was saved and this read missed it');
+          return;
+        }
+        const { data: recentRows, error: recentError } = await supabase
+          .from('messages')
+          .select('sender_id, content')
+          .eq('chat_id', chatId)
+          .order('created_at', { ascending: false })
+          .limit(10);
+        if (recentError || !recentRows || recentRows.length === 0) {
+          console.warn('⚠️ Progress note skipped: could not read recent messages', recentError);
+          return;
+        }
+        const userAId = String(freshChat.user_id || '');
+        const summaryPrompt = `Summarize the conversation progress in 2-3 concise sentences using NEUTRAL THIRD-PERSON language. Focus on:
+- What has been discussed or resolved
+- Current emotional state or progress
+- Key points or understanding reached
+
+CRITICAL:
+- Use "User A" and "User B" labels exactly as listed below
+- Do NOT use first-person ("I", "me", "my")
+- Do NOT use names or @ tags
+- Do NOT add a private hint. Describe only the messages listed
+- This summary is background context for both people
+
+Recent conversation messages:
+${[...recentRows].reverse().map((msg: any, idx: number) => {
+  const content = String(msg.content || '');
+  const sender = String(msg.sender_id) === userAId ? 'User A' : 'User B';
+  return `${idx + 1}. ${sender}: "${content.substring(0, 150)}${content.length > 150 ? '...' : ''}"`;
+}).join('\n')}
+
+Generate a brief 2-3 sentence summary in NEUTRAL THIRD-PERSON language:`;
+        const summaryResponse = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': CLAUDE_API_KEY,
+            'anthropic-version': '2023-06-01'
+          },
+          body: JSON.stringify({
+            model: 'claude-haiku-4-5-20251001',
+            max_tokens: 200,
+            temperature: 0.3,
+            messages: [{ role: 'user', content: summaryPrompt }]
+          })
+        });
+        if (!summaryResponse.ok) {
+          console.warn('⚠️ Progress note skipped: summary write failed', summaryResponse.status);
+          return;
+        }
+        const summaryData = await summaryResponse.json();
+        const newSummary = String(summaryData?.content?.[0]?.text || '').trim();
+        if (!newSummary || newSummary.length <= 20) {
+          console.warn('⚠️ Progress note skipped: summary was empty');
+          return;
+        }
+        const { data: saveChat, error: saveReadError } = await supabase
+          .from('chats')
+          .select('context_data, closure_state, is_resolved')
+          .eq('id', chatId)
+          .single();
+        if (saveReadError || !saveChat) {
+          console.warn('⚠️ Progress note skipped: latest note read failed before save', saveReadError);
+          return;
+        }
+        if (saveChat.is_resolved === true && saveChat.closure_state === 'closed') {
+          console.log('ℹ️ Progress note skipped: chat closed before save');
+          return;
+        }
+        const saveContext = saveChat.context_data || {};
+        const saveHint = String(saveContext.hint_from_b || saveContext.hintFromB || '').trim();
+        if (hintWasKnown && !saveHint) {
+          console.log('ℹ️ Progress note skipped: hint missing on the save read');
+          return;
+        }
+        const { error: updateError } = await supabase
+          .from('chats')
+          .update({
+            context_data: {
+              ...saveContext,
+              conversation_progress_summary: newSummary,
+              conversation_progress_message_count: realCount,
+              conversation_progress_last_updated_at: new Date().toISOString()
+            }
+          })
+          .eq('id', chatId);
+        if (updateError) {
+          console.warn('⚠️ Progress note save failed', updateError);
+          return;
+        }
+        console.log(`✅ Conversation progress summary updated (${newSummary.length} chars, ${realCount} messages)`);
+      } catch (error) {
+        console.warn('⚠️ Conversation progress summary update failed:', error);
+      }
+    };
+    EdgeRuntime.waitUntil(refreshConversationProgress());
     
     // ✅ STEP 4: Logging infrastructure - fallback storage (always logs)
     console.log("💾 FALLBACK STORAGE: generate-contextual-options result storage", {

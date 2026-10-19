@@ -164,6 +164,9 @@ const shownChoiceSets = new Map<string, { options: string[]; source: 'pregenerat
 const hintChoiceGuardAt = new Map<string, number>();
 const optionsFetchEpoch = new Map<string, number>();
 const closedChatIds = new Set<string>();
+const missingChatIds = new Set<string>();
+// Second phone (the one who must answer) waits for the sender's save, then checks once.
+const secondPhoneWait = new Map<string, { messageId: string; wrote: boolean }>();
 const optionFetchBusyUntil = new Map<string, number>();
 const receiverHistoryLeaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const historyLeaveStarted = new Set<string>();
@@ -220,6 +223,38 @@ function choicesWereWrittenBeforeHint(chatId: string, createdAt?: string | null)
   return Number.isFinite(createdMs) && createdMs < guardAt;
 }
 
+function firstSmileNote(startedTheChat: boolean, sentTheSmile: boolean) {
+  if (sentTheSmile) {
+    return startedTheChat
+      ? "You reached out. That matters ❤️"
+      : "You made this moment a little warmer ❤️";
+  }
+  return startedTheChat
+    ? "It’s all going to be okay ❤️"
+    : "Someone took a moment to connect with you ❤️";
+}
+
+async function attachFirstSmileNotes(updateData: any, chatId: string, senderId: string) {
+  const { data: row, error } = await supabase
+    .from("chats")
+    .select("user_id, contact_id, context_data")
+    .eq("id", chatId)
+    .single();
+  if (error || !row?.user_id || !row?.contact_id) return "";
+  const latest = row.context_data || {};
+  const sender = String(senderId);
+  const starter = String(row.user_id);
+  const receiver = sender === starter ? String(row.contact_id) : starter;
+  const notes = latest.closure_notes?.[sender]
+    ? latest.closure_notes
+    : {
+        [sender]: firstSmileNote(sender === starter, true),
+        [receiver]: firstSmileNote(receiver === starter, false),
+      };
+  updateData.context_data = { ...latest, closure_notes: notes };
+  return String(notes[sender] || "");
+}
+
 function ContactChatScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
@@ -251,6 +286,7 @@ function ContactChatScreen() {
   const chatScreenOpenedForRef = useRef<string | null>(null);
   const displayedOptionsRef = useRef<string[]>([]);
   const hintChoiceWatchRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const hintRewriteRetryRef = useRef<(() => Promise<void>) | null>(null);
   screenChatIdRef.current = (currentChatId || (typeof chatId === "string" ? chatId : null) || screenChatIdRef.current);
   const [showSuggestedOptions, setShowSuggestedOptions] = useState(false);
   const [suggestedOptions, setSuggestedOptions] = useState<string[]>([]);
@@ -1289,6 +1325,7 @@ function ContactChatScreen() {
   const [hintPendingPronounName, setHintPendingPronounName] = useState<string | null>(null);
   const hintPronounsRef = useRef<Record<string, string>>({});
 
+  const [closureNote, setClosureNote] = useState<string | null>(null);
   const [notification, setNotification] = useState<{
     visible: boolean;
     type: 'success' | 'error' | 'info' | 'warning';
@@ -1540,6 +1577,8 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           setChatSummary(String(data.context_data.summary_a || data.context_data.summary || ""));
           setChatThoughts(String(data.context_data.thoughts_a || data.context_data.thoughts || ""));
           // 💬 Show hint banner if current user is User B
+          const savedNote = data.context_data?.closure_notes?.[String(user?.id || "")];
+          if (savedNote) setClosureNote(String(savedNote));
           if (user?.id === data.contact_id && data.context_data.hint_to_contact) {
             setHintToContact(data.context_data.hint_to_contact);
             setShowHintBanner(true);
@@ -2743,15 +2782,17 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
   // No expectedTurn calculation - simply find the earliest active turn
   const fetchPregeneratedTurn = async (chatId: string, userId: string) => {
     if (!chatId || !userId) return null;
+    if (missingChatIds.has(chatId)) return null;
     
     // Get chat to determine if user is User A or User B (for logging only)
-    const { data: chatData } = await supabase
+    const { data: chatData, error: chatLookupError } = await supabase
       .from("chats")
       .select("user_id, contact_id")
       .eq("id", chatId)
       .single();
     
     if (!chatData) {
+      if (chatLookupError?.code === "PGRST116") missingChatIds.add(chatId);
       console.warn("⚠️ Chat not found for pregenerated turn lookup - chat may have been deleted");
       return null;
     }
@@ -2833,6 +2874,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     pendingHintRefreshRef.current = false;
     hintRefreshWaitingChatIds.delete(chatId);
     regenerationInProgressRef.current = false;
+    hintRewriteRetryRef.current = null;
     setLoading(false);
   };
 
@@ -2871,9 +2913,9 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       tries += 1;
       if (!hintRefreshIsWaiting(chatId) || tries > 40) {
         if (tries > 40 && hintRefreshIsWaiting(chatId)) {
-          finishHintChoiceWait(chatId);
-          const shown = await showChoicesAlreadySaved(chatId, userId);
-          if (!shown) resolveWaitingForOptions(userId);
+          console.log("ℹ️ Hint rewrite did not arrive — Try Again rewrites with the hint");
+          setOptionsGenerationFailed(true);
+          resolveWaitingForOptions(userId);
         }
         if (hintChoiceWatchRef.current) clearInterval(hintChoiceWatchRef.current);
         hintChoiceWatchRef.current = null;
@@ -3115,7 +3157,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
   ) => {
     const { force = false } = options;
     const epochAtStart = optionsFetchEpoch.get(chatId) ?? 0;
-    if (closedChatIds.has(chatId)) {
+    if (closedChatIds.has(chatId) || missingChatIds.has(chatId)) {
       isFetchingOptionsRef.current = false;
       resolveWaitingForOptions(userId);
       return;
@@ -3309,31 +3351,50 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       return;
     }
 
-    // No matching choices yet: write them from this message now. Do not wait on an older guess.
-    // User B's other phone is already writing this set. Do not write a second one.
-    const viewerIsUserB = !!chatOwnerIdRef.current && String(userId) !== String(chatOwnerIdRef.current);
-    if (
-      replyMustFollowLatestLine() &&
-      latestMsg &&
-      !optionsMatchLatestLine &&
-      String(latestMsg.sender_id) !== String(userId) &&
-      !(viewerIsUserB && _retryCount < 6)
-    ) {
-      enterWaitingForOptions(userId);
-      if (contextualRecoveryForRef.current !== String(latestMsg.id)) {
-        contextualRecoveryForRef.current = String(latestMsg.id);
-        await requestReplyWrittenFromLatestLine(chatId, userId, {
-          content: latestMsg.content,
-          sender_id: latestMsg.sender_id,
-          created_at: latestMsg.created_at,
-        });
+    // Second phone: the person who must answer. The sender's phone is already saving the choices.
+    // Wait, check once, and save only if that row never arrived.
+    const thisPhoneMustAnswer = replyMustFollowLatestLine() && !!latestMsg && String(latestMsg.sender_id) !== String(userId);
+    if (thisPhoneMustAnswer && !optionsMatchLatestLine && latestMsg) {
+      const checkKey = `${chatId}:${userId}`;
+      const messageId = String(latestMsg.id || latestMsg.created_at);
+      const pending = secondPhoneWait.get(checkKey);
+      if (_retryCount === 0 && pending?.messageId === messageId) {
+        console.log("ℹ️ Second phone already waiting for this reply");
+        isFetchingOptionsRef.current = false;
+        return;
       }
+      if (!pending || pending.messageId !== messageId) {
+        secondPhoneWait.set(checkKey, { messageId, wrote: false });
+        enterWaitingForOptions(userId);
+        console.log("ℹ️ Second phone waiting for the choices already being saved");
+        isFetchingOptionsRef.current = false;
+        setTimeout(() => {
+          fetchInitialOptions(chatId, userId, 1, options);
+        }, 8000);
+        return;
+      }
+      if (!pending.wrote) {
+        pending.wrote = true;
+        secondPhoneWait.set(checkKey, pending);
+        enterWaitingForOptions(userId);
+        console.log("ℹ️ Second phone check: choices were not saved, saving them once");
+        if (contextualRecoveryForRef.current !== messageId) {
+          contextualRecoveryForRef.current = messageId;
+          await requestReplyWrittenFromLatestLine(chatId, userId, {
+            content: latestMsg.content,
+            sender_id: latestMsg.sender_id,
+            created_at: latestMsg.created_at,
+          });
+        }
+        isFetchingOptionsRef.current = false;
+        setTimeout(() => {
+          fetchInitialOptions(chatId, userId, 2, options);
+        }, 1500);
+        return;
+      }
+      console.log("ℹ️ Second phone check finished");
       isFetchingOptionsRef.current = false;
-      await fetchInitialOptions(chatId, userId, _retryCount + 1, options);
       return;
-    }
-    if (viewerIsUserB && replyMustFollowLatestLine() && latestMsg && !optionsMatchLatestLine && _retryCount < 6) {
-      console.log("ℹ️ User B: waiting for the set already being written");
     }
     
     // ✅ FIX: Retry if no options found, especially for Stage 4 scenario
@@ -4337,6 +4398,8 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         async (payload) => {
           const updatedChat = payload.new;
           console.log("🎉 CLOSURE STATE CHANGED", updatedChat);
+          const savedNote = updatedChat?.context_data?.closure_notes?.[String(user?.id || "")];
+          if (savedNote) setClosureNote(String(savedNote));
           // FIX: Removed duplicate if-block; consolidated logic
           if (updatedChat.closure_state === 'closed' && updatedChat.is_resolved) {
             if (historyLeaveStarted.has(String(chatId))) return;
@@ -4361,7 +4424,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     reason: 'realtime' | 'poll' | 'focus';
   }) => {
     const { chatId, currentUserId, messageId, reason } = opts;
-    if (!chatId || !currentUserId || isChatClosed || closedChatIds.has(chatId)) return;
+    if (!chatId || !currentUserId || isChatClosed || closedChatIds.has(chatId) || missingChatIds.has(chatId)) return;
     if (closingSmilesAreOnScreen(messagesRef.current)) {
       holdTheSmileThenLeave(chatId);
       return;
@@ -5091,6 +5154,57 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       
       console.log("✅ MESSAGE INSERTED INTO DATABASE");
       console.log(" Message ID:", data.id);
+
+      // A real line was saved. Move this person's count up, and close their open guessed reply
+      // when this line did not come from that guessed list (that path marks its own turn).
+      if (chatCheck && user?.id) {
+        const senderId = String(user.id);
+        const senderIsA = senderId === String(chatCheck.user_id);
+        const countColumn = senderIsA ? "turn_count_a" : "turn_count_b";
+        const { data: countRow } = await supabase
+          .from("chats")
+          .select("turn_count_a, turn_count_b")
+          .eq("id", currentChatId)
+          .single();
+        const currentCount = Number(senderIsA ? countRow?.turn_count_a : countRow?.turn_count_b) || 0;
+        const { error: countError } = await supabase
+          .from("chats")
+          .update({ [countColumn]: currentCount + 1 })
+          .eq("id", currentChatId);
+        if (countError) {
+          console.warn("⚠️ Turn count was not moved", countError);
+        } else {
+          console.log(`✅ ${countColumn} is now ${currentCount + 1}`);
+        }
+
+        if (currentOptionsSourceRef.current !== "pregenerated_turns") {
+          const { data: openTurn } = await supabase
+            .from("pregenerated_turns")
+            .select("id, turn_number")
+            .eq("chat_id", currentChatId)
+            .eq("recipient_id", senderId)
+            .is("selected_message", null)
+            .is("used_at", null)
+            .order("turn_number", { ascending: true })
+            .limit(1)
+            .maybeSingle();
+          if (openTurn?.id) {
+            const { error: closeError } = await supabase
+              .from("pregenerated_turns")
+              .update({
+                selected_message: content,
+                used_at: new Date().toISOString(),
+              })
+              .eq("id", openTurn.id)
+              .is("selected_message", null);
+            if (closeError) {
+              console.warn("⚠️ Open guessed reply was not closed", closeError);
+            } else {
+              console.log(`✅ Closed guessed turn ${openTurn.turn_number} after the sent line`);
+            }
+          }
+        }
+      }
       
       // ✅ FIX: Update messagesRef immediately so turn calculation is accurate
       setMessages((prev) => {
@@ -5229,6 +5343,8 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             updateData.closure_state = 'closed';
             updateData.is_resolved = true;
             updateData.closure_achieved_at = new Date().toISOString();
+            updateData.last_message = content;
+            updateData.last_message_at = new Date().toISOString();
             console.log("✅ Consecutive smileys detected - conversation closed!");
             
             // ✅ NEW: Archive pregenerated turns when chat closes
@@ -5274,7 +5390,8 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               ? 'pending_user_b_smiley'
               : 'pending_user_a_smiley';
             console.log(`⏳ Not consecutive smileys - waiting for ${isUserA ? 'User B' : 'User A'} to send emoji`);
-            showNotification('info', 'It’s all going to be okay ❤️', undefined, false, true);
+            const note = await attachFirstSmileNotes(updateData, String(currentChatId), String(user?.id || ""));
+            if (note) setClosureNote(note);
           }
           
           // ✅ CRITICAL: Update closure state first
@@ -5455,10 +5572,23 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       }) || []; // ✅ Ensure it's always an array
       
       // 🌙 Closure blending start
-      // Compute closure stage for progressive option blending
-      const closureState = (chatData as any).closure_state || 'active';
-      const userASmileySent = (chatData as any).user_a_smiley_sent || false;
-      const userBSmileySent = (chatData as any).user_b_smiley_sent || false;
+      // Read the close flags after a smile is saved. The chat row from the start of this send is still the old open state.
+      let closureState = (chatData as any).closure_state || 'active';
+      let userASmileySent = !!(chatData as any).user_a_smiley_sent;
+      let userBSmileySent = !!(chatData as any).user_b_smiley_sent;
+      const justSentSmile = /^[\p{Emoji_Presentation}\p{Emoji}\uFE0F\u200D\s]+$/u.test(String(content || '').trim()) && !/[a-zA-Z0-9]/.test(String(content || ''));
+      if (justSentSmile && currentChatId) {
+        const { data: freshClose } = await supabase
+          .from('chats')
+          .select('closure_state, user_a_smiley_sent, user_b_smiley_sent')
+          .eq('id', currentChatId)
+          .single();
+        if (freshClose?.closure_state) {
+          closureState = freshClose.closure_state;
+          userASmileySent = !!freshClose.user_a_smiley_sent;
+          userBSmileySent = !!freshClose.user_b_smiley_sent;
+        }
+      }
       const closureStage = computeClosureStage(
         closureState,
         userASmileySent,
@@ -5753,6 +5883,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     }
   };
   const handleSuggestedOptionPress = (option: string, index: number) => {
+    if (regenerationInProgressRef.current) return;
     hasSentMessage.current = true;
     triggerOptionSelectVisuals(index);
     // ✅ FIX: Removed setTimeout wrapper - run immediately for faster pregeneration
@@ -6853,14 +6984,9 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               } else {
                 console.log("🔄 Deferred regeneration not triggered or failed - continuing to remainingCount check");
               }
-            } 
+            }
 
-            
-          
-          // ⬅️ ADD THIS HERE
-        
-
-          else {
+          } else {
             console.log("ℹ️ No pendingHint flag - skipping deferred regeneration");
             console.log("ℹ️ Context data check:", {
               hasContextData: !!chatDataForPendingHint?.context_data,
@@ -6868,9 +6994,6 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               hasHintFromB: !!chatDataForPendingHint?.context_data?.hint_from_b
             });
           }
-        } else {
-          console.log("⚠️ Message not sent successfully - skipping deferred regeneration check");
-        }
 
         // ✅ FIX 1: Check if smiley was selected from pregenerated turn and handle closure
         const isSmileyOnly = /^[\p{Emoji_Presentation}\p{Emoji}\u200d\ufe0f\s]+$/u.test(selectedOption.trim());
@@ -6900,7 +7023,9 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             .eq("id", currentChatId)
             .single();
           
-          if (chatData && user) {
+          if (chatData?.closure_state === 'closed') {
+            console.log('ℹ️ Chat already closed — leaving the first close');
+          } else if (chatData && user) {
             const isUserA = user.id === chatData.user_id;
             const updateData: any = {};
             
@@ -6916,6 +7041,8 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               updateData.closure_state = 'closed';
               updateData.is_resolved = true;
               updateData.closure_achieved_at = new Date().toISOString();
+              updateData.last_message = selectedOption;
+              updateData.last_message_at = new Date().toISOString();
               console.log("✅ Consecutive smileys detected - conversation closed!");
               
               // Archive pregenerated turns
@@ -6952,7 +7079,8 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                 ? 'pending_user_b_smiley'
                 : 'pending_user_a_smiley';
               console.log(`⏳ Not consecutive smileys - waiting for ${isUserA ? 'User B' : 'User A'} to send emoji`);
-              showNotification('info', 'It’s all going to be okay ❤️', undefined, false, true);
+              const note = await attachFirstSmileNotes(updateData, String(currentChatId), String(user?.id || ""));
+              if (note) setClosureNote(note);
             }
             
             await supabase
@@ -7187,6 +7315,8 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           } else {
             console.log(`ℹ️ remainingCount check skipped: shouldSkipRegeneration=${shouldSkipRegeneration}`);
           }
+        } else {
+          console.log("⚠️ Message not sent successfully - skipping deferred regeneration check");
         }
       })();
     })();
@@ -7613,6 +7743,11 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
   </TouchableOpacity>
 </Animated.View>
       </Animated.View>
+      {closureNote ? (
+        <View style={styles.closureNote}>
+          <Text style={styles.closureNoteText}>{closureNote}</Text>
+        </View>
+      ) : null}
     {/* 🌈 Peaceful Closure Banner (Animated) */}
   {isResolved && (
     <Animated.View
@@ -8077,6 +8212,32 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                       console.log("❌ EARLY EXIT: Missing currentChatId or user");
                       return;
                     }
+
+                    const showHintRewriteWait = () => {
+                      regenerationInProgressRef.current = true;
+                      pendingHintRefreshRef.current = true;
+                      if (currentChatId && user?.id) {
+                        hintRefreshWaitingChatIds.add(currentChatId);
+                        shownChoiceSets.delete(`${currentChatId}:${user.id}`);
+                      }
+                      displayedOptionsRef.current = [];
+                      lastOptionsSignatureRef.current = null;
+                      setSuggestedOptions([]);
+                      setShowSuggestedOptions(false);
+                      setOptionsGenerationFailed(false);
+                      setManualInputMode(false);
+                      stopOptionShimmer();
+                      setActiveOptionIndex(null);
+                      pendingOptionsRecipientRef.current = String(user.id);
+                      setPendingOptionsRecipientId(String(user.id));
+                      pendingOptionsSinceRef.current = Date.now();
+                      waitingForOptionsRef.current = true;
+                      setWaitingForOptions(true);
+                    };
+                    const localLast = messagesRef.current[messagesRef.current.length - 1];
+                    if (localLast && String(localLast.sender_id) !== String(user.id)) {
+                      showHintRewriteWait();
+                    }
                     
                     console.log("🔍 HINT SUBMISSION DEBUG:", {
                       currentChatId,
@@ -8154,79 +8315,104 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                         // User B speaks only after User A's latest line. Rewrite the three on this screen.
                         if (lastLineIsFromUserA) {
                           console.log("User B's turn — rewriting the choices already on screen with the hint");
-                          regenerationInProgressRef.current = true;
+                          const hintText = tipText.trim();
+                          const runHintRewrite = async () => {
+                            showHintRewriteWait();
+                            if (currentChatId) markHintChoicesGuard(currentChatId);
+                            const scenarioBContext = {
+                              ...(chatCheck.context_data || {}),
+                              hint_from_b: hintText,
+                              hint_submitted_at: new Date().toISOString(),
+                              hint_tagged_entities: hintTaggedEntities,
+                              pendingHint: false,
+                            };
+                            const { error: updateError } = await supabase
+                              .from("chats")
+                              .update({ context_data: scenarioBContext })
+                              .eq("id", currentChatId);
+                            if (updateError) {
+                              console.error("❌ Failed to update context_data:", updateError);
+                              setOptionsGenerationFailed(true);
+                              resolveWaitingForOptions(String(user.id));
+                              return;
+                            }
+
+                            const latestFromUserA = [...messagesRef.current].reverse().find((m) => String(m.sender_id) === String(chatCheck.user_id));
+                            if (currentChatId && user?.id) watchForHintChoices(currentChatId, user.id);
+                            let written: { options?: string[]; alreadySaved?: boolean; alreadyWriting?: boolean } | null = null;
+                            let regenError: unknown = null;
+                            for (let attempt = 0; attempt < 2; attempt += 1) {
+                              const result = await supabase.functions.invoke(
+                                "generate-contextual-options",
+                                {
+                                  body: {
+                                    chatId: currentChatId,
+                                    recipientId: user.id,
+                                    currentUserId: user.id,
+                                    currentMessage: latestFromUserA?.content || "",
+                                    summary: chatCheck.context_data?.summary_shared_neutral || "",
+                                    thoughts: chatCheck.context_data?.thoughts_b || "",
+                                    originalIssue: {
+                                      summary: chatCheck.context_data?.summary_a || chatCheck.context_data?.summary || "",
+                                      thoughts: chatCheck.context_data?.thoughts_a || chatCheck.context_data?.thoughts || "",
+                                    },
+                                    hintFromB: hintText,
+                                    hint_from_b: hintText,
+                                    hintRefresh: true,
+                                    conversationHistory: messagesRef.current.slice(-8).map((m) => ({
+                                      sender_id: m.sender_id,
+                                      content: m.content,
+                                    })),
+                                    isInitial: false,
+                                    contactCategory: contact?.category || "General",
+                                    conversationPhase,
+                                    resolutionDetected: false,
+                                    lastMessageTimestamp: latestFromUserA?.created_at,
+                                    wordLimit: 15,
+                                  },
+                                }
+                              );
+                              written = result.data;
+                              regenError = result.error;
+                              if (!regenError) break;
+                            }
+
+                            const freshOptions = Array.isArray(written?.options) ? written.options : [];
+                            const wroteNewSet = freshOptions.length > 0 && !written?.alreadySaved && !written?.alreadyWriting;
+                            if (wroteNewSet && currentChatId && user?.id) {
+                              const cleaned = cleanOptionsForDisplay(freshOptions, contact?.full_name || null);
+                              await showOptionsWithDelay(cleaned, "generate-contextual-options");
+                              resolveWaitingForOptions(String(user.id));
+                              finishHintChoiceWait(currentChatId);
+                              console.log("Hint choices shown on this screen");
+                              return;
+                            }
+                            if (currentChatId && user?.id) {
+                              const shown = await showSavedHintChoices(currentChatId, user.id);
+                              if (shown) return;
+                            }
+                            if (written?.alreadyWriting) {
+                              console.log("ℹ️ Hint rewrite is already being written — waiting for the new set");
+                              return;
+                            }
+                            console.error("❌ Hint refresh did not write a new set:", regenError || written);
+                            setOptionsGenerationFailed(true);
+                            resolveWaitingForOptions(String(user.id));
+                          };
+
                           setShowTipBox(false);
                           setHintSubmitted(true);
-                          pendingHintRefreshRef.current = true;
-                          if (currentChatId && user?.id) {
-                            hintRefreshWaitingChatIds.add(currentChatId);
-                            markHintChoicesGuard(currentChatId);
-                            userBLockedMessageRef.current = null;
-                            watchForHintChoices(currentChatId, user.id);
-                          }
+                          userBLockedMessageRef.current = null;
                           awaitingTurnRef.current = true;
-
-                          const scenarioBContext = {
-                            ...(chatCheck.context_data || {}),
-                            hint_from_b: tipText,
-                            hint_submitted_at: new Date().toISOString(),
-                            hint_tagged_entities: hintTaggedEntities,
-                            pendingHint: false,
-                          };
-                          const { error: updateError } = await supabase
-                            .from("chats")
-                            .update({ context_data: scenarioBContext })
-                            .eq("id", currentChatId);
-                          if (updateError) {
-                            console.error("❌ Failed to update context_data:", updateError);
-                            throw updateError;
-                          }
-
-                          const latestFromUserA = [...messages].reverse().find((m) => String(m.sender_id) === String(chatCheck.user_id));
-                          const { data: written, error: regenError } = await supabase.functions.invoke(
-                            "generate-contextual-options",
-                            {
-                              body: {
-                                chatId: currentChatId,
-                                recipientId: user.id,
-                                currentUserId: user.id,
-                                currentMessage: latestFromUserA?.content || "",
-                                summary: chatCheck.context_data?.summary_shared_neutral || "",
-                                thoughts: chatCheck.context_data?.thoughts_b || "",
-                                originalIssue: {
-                                  summary: chatCheck.context_data?.summary_a || chatCheck.context_data?.summary || "",
-                                  thoughts: chatCheck.context_data?.thoughts_a || chatCheck.context_data?.thoughts || "",
-                                },
-                                hintFromB: tipText.trim(),
-                                hint_from_b: tipText.trim(),
-                                hintRefresh: true,
-                                conversationHistory: buildHistory(),
-                                isInitial: false,
-                                contactCategory: contact?.category || "General",
-                                conversationPhase,
-                                resolutionDetected: false,
-                                lastMessageTimestamp: latestFromUserA?.created_at,
-                                wordLimit: 15,
-                              },
-                            }
-                          );
-                          if (regenError || written?.alreadySaved || written?.alreadyWriting) {
-                            console.error("❌ Hint refresh did not write a new set:", regenError || written);
-                            if (currentChatId) finishHintChoiceWait(currentChatId);
-                            if (currentChatId && user?.id) {
-                              const shown = await showChoicesAlreadySaved(currentChatId, String(user.id));
-                              if (!shown) resolveWaitingForOptions(String(user.id));
-                            }
-                          } else if (Array.isArray(written?.options) && written.options.length > 0 && currentChatId && user?.id) {
-                            const cleaned = cleanOptionsForDisplay(written.options, contact?.full_name || null);
-                            await showOptionsWithDelay(cleaned, "generate-contextual-options");
-                            resolveWaitingForOptions(String(user.id));
-                            finishHintChoiceWait(currentChatId);
-                            console.log("Hint choices shown on this screen");
-                          } else if (currentChatId && user?.id) {
-                            await showSavedHintChoices(currentChatId, user.id);
-                          }
+                          hintRewriteRetryRef.current = runHintRewrite;
+                          showHintRewriteWait();
+                          await runHintRewrite();
                           return;
+                        }
+
+                        if (currentChatId && hintRefreshIsWaiting(currentChatId)) {
+                          finishHintChoiceWait(currentChatId);
+                          resolveWaitingForOptions(String(user.id));
                         }
                         
                         // ✅ Only check User A's turn if User B's turn is NOT active
@@ -8375,6 +8561,10 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
                           console.log("⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️");
                         }
                       } else {
+                        if (currentChatId && hintRefreshIsWaiting(currentChatId)) {
+                          finishHintChoiceWait(currentChatId);
+                          resolveWaitingForOptions(String(user.id));
+                        }
                         console.log("ℹ️ Not User B submitting hint - skipping early blocker check");
                         console.log("ℹ️ User ID comparison:", {
                           currentUserId: user.id,
@@ -8966,7 +9156,14 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
               <View style={styles.recoveryButtonsContainer}>
               <TouchableOpacity
         style={styles.recoveryButton}
-        onPress={regenerateOptions}
+        onPress={() => {
+          const retryHintRewrite = hintRewriteRetryRef.current;
+          if (retryHintRewrite) {
+            void retryHintRewrite();
+            return;
+          }
+          regenerateOptions();
+        }}
         disabled={waitingForOptions} // ← NEW: stops clicking while loading
       >
         {waitingForOptions ? (
@@ -9267,6 +9464,22 @@ const styles = StyleSheet.create({
     fontSize: Typography.fontSize.lg,
     color: Colors.text.secondary,
     fontWeight: Typography.fontWeight.medium,
+  },
+  closureNote: {
+    alignSelf: "center",
+    marginTop: 4,
+    marginBottom: 6,
+    backgroundColor: "#1B7F4E",
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    maxWidth: "88%",
+  },
+  closureNoteText: {
+    color: "#FFFFFF",
+    fontSize: 15,
+    fontWeight: "600",
+    textAlign: "center",
   },
   header: {
     flexDirection: "row",

@@ -176,7 +176,15 @@ export default function SignUpScreen() {
     try {
       const fullName = `${firstName.trim()} ${lastName.trim()}`.trim();
       const result = await signUp(email.trim(), password, fullName);
-      
+
+      // Confirmed email already exists: Supabase returns a user with no identities
+      // and does not create a second account or change the password.
+      const alreadyRegistered = !!result?.user && (result.user.identities?.length ?? 0) === 0;
+      if (alreadyRegistered) {
+        showNotification('error', 'Already Registered', 'This email is already registered. Please sign in or reset your password.');
+        return;
+      }
+
       // Check if user was created successfully
       if (result?.user) {
         // Show verification modal instead of notification
@@ -185,8 +193,14 @@ export default function SignUpScreen() {
         throw new Error('Failed to create account. Please try again.');
       }
     } catch (error: any) {
-      // Show only real Supabase error messages
       const errorMessage = error?.message || 'Failed to create account. Please try again.';
+      const alreadyRegistered = errorMessage.toLowerCase().includes('already registered') ||
+        errorMessage.toLowerCase().includes('already been registered') ||
+        errorMessage.toLowerCase().includes('user already exists');
+      if (alreadyRegistered) {
+        showNotification('error', 'Already Registered', 'This email is already registered. Please sign in or reset your password.');
+        return;
+      }
       showNotification('error', 'Sign Up Failed', errorMessage);
     } finally {
       setLoading(false);
