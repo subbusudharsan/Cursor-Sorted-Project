@@ -100,7 +100,7 @@ module.exports = {
       EXPO_PUBLIC_SUPABASE_ANON_KEY: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || "",
       // ✅ EAS configuration
       eas: {
-        projectId: process.env.EAS_PROJECT_ID || ""
+        projectId: process.env.EAS_PROJECT_ID || "239d50ad-2bab-470e-8b28-2f81a1f1aad0"
       }
     }
   }
