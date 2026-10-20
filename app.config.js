@@ -34,7 +34,7 @@ module.exports = {
         //monochromeImage: null - // monochromeImage intentionally omitted
       },
       package: "com.sorted.app",
-      versionCode: 5,
+      versionCode: 6,
       permissions: [
         "android.permission.CAMERA",
         "android.permission.READ_EXTERNAL_STORAGE",
