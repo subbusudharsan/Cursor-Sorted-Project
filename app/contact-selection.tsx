@@ -15,6 +15,7 @@ import { supabase } from '@/lib/supabase';
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/Colors';
 import { ArrowLeft, MessageCircle, User, Plus, Bot } from 'lucide-react-native';
 import { MY_TALKS_LIMIT, getCompletedMyTalksCount, buildMyTalksLimitMessage } from "@/lib/myTalksLimit";
+import { getBlockState } from "@/lib/userSafety";
 
 interface ContactChat {
   id: string;
@@ -165,6 +166,20 @@ function ContactSelectionScreen() {
           }
         } catch (contextError) {
           console.log('Could not fetch AI context, proceeding without it:', contextError);
+        }
+      }
+
+      if (user?.id && contactId) {
+        try {
+          const block = await getBlockState(user.id, contactId);
+          if (block.blocked) {
+            Alert.alert('Messages stopped', 'This contact is blocked, so a new chat cannot be started.');
+            return;
+          }
+        } catch (error) {
+          console.error('Error checking contact block:', error);
+          Alert.alert('Error', 'Could not check whether this contact is blocked. Please try again.');
+          return;
         }
       }
 

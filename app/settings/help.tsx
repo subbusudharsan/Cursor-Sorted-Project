@@ -127,8 +127,8 @@ const userGuideSections = [
     emoji: '🛡️',
     intro: 'Your trust is at the center of Sorted.',
     bullets: [
-      'Personal data, tags, and pronouns stay inside your account—never shared without consent.',
-      'All chats, reflections, and AI sessions are encrypted. You control what to archive or delete.',
+      'Conversations are stored so Sorted and its AI features can read them. They are not end-to-end encrypted.',
+      'When you use AI features, the text you submit is sent to Anthropic. Sorted does not sell your personal information.',
       'We continuously audit for data leaks so your emotional world remains yours.'
     ],
   },
@@ -176,7 +176,7 @@ export default function HelpSupportScreen() {
     },
     {
       question: 'Are my conversations private?',
-      answer: 'Yes, all conversations are private and encrypted. Only you and your contact can see your messages. AI Assistant sessions are completely private to you. You can delete conversations or clear all data anytime from Settings > Privacy & Security.',
+      answer: 'Conversations are stored so Sorted and its AI features can read them. They are not end-to-end encrypted. A contact chat can be read by you and that contact. When you use AI features, the text you submit is sent to Anthropic. You can delete conversations from Settings, or delete your account from Settings > Privacy & Security.',
     },
     {
       question: 'How do I manage notifications?',

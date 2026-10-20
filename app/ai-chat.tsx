@@ -38,6 +38,7 @@ import {
   Typography,
 } from "@/constants/Colors";
 import { MY_TALKS_LIMIT, getCompletedMyTalksCount, buildMyTalksLimitMessage } from "@/lib/myTalksLimit";
+import { getBlockState } from "@/lib/userSafety";
 import KeyboardSafeView from '@/components/KeyboardSafeView';
 // Prevent undefined Colors or constants crash in Expo web
 if (!Colors?.primary) console.warn("⚠️ Colors not loaded properly");
@@ -4164,6 +4165,11 @@ const enforceShortInput = (text: string, maxWords = 4): boolean => {
               
               console.log("✅ Updated context_data for early pregeneration");
             } else {
+              const block = await getBlockState(user.id, String(contactId));
+              if (block.blocked) {
+                console.log('Blocked contact: not creating a contact chat');
+                return;
+              }
               // Create new contact chat
               const { data: newChat, error: createError } = await supabase
                 .from("chats")
@@ -4893,6 +4899,18 @@ CRITICAL:
         hasContactId: !!contactIdValue,
         isInitializing: initializing
       });
+      return;
+    }
+
+    try {
+      const block = await getBlockState(user.id, String(contactIdValue));
+      if (block.blocked) {
+        Alert.alert('Messages stopped', 'This contact is blocked, so a new chat cannot be started.');
+        return;
+      }
+    } catch (error) {
+      console.error('Error checking contact block:', error);
+      Alert.alert('Error', 'Could not check whether this contact is blocked. Please try again.');
       return;
     }
 

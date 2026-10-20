@@ -15,6 +15,7 @@ import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/lib/supabase';
 import { MY_TALKS_LIMIT, getCompletedMyTalksCount, buildMyTalksLimitMessage } from '@/lib/myTalksLimit';
+import { getBlockState } from '@/lib/userSafety';
 import {
   Users,
   Search,
@@ -55,6 +56,16 @@ interface UserProfile {
   full_name: string | null;
   avatar_url: string | null;
   status?: 'not_contact' | 'pending_invite' | 'already_contact' | 'not_registered';
+}
+
+/** Dots in the local part of @gmail.com are ignored. Other domains are unchanged. */
+function gmailLocalWithoutDots(email: string): string | null {
+  const normalized = email.trim().toLowerCase();
+  const at = normalized.lastIndexOf('@');
+  if (at <= 0) return null;
+  const domain = normalized.slice(at + 1);
+  if (domain !== 'gmail.com') return null;
+  return normalized.slice(0, at).replace(/\./g, '');
 }
 
 function ContactsScreen() {
@@ -204,24 +215,42 @@ function ContactsScreen() {
     setSearching(true);
     try {
       const trimmedEmail = email.trim().toLowerCase();
-      
-      if (trimmedEmail === user?.email?.toLowerCase()) {
+      const queryGmailKey = gmailLocalWithoutDots(trimmedEmail);
+      const ownGmailKey = gmailLocalWithoutDots(user?.email ?? '');
+      const isOwnEmail = queryGmailKey
+        ? queryGmailKey === ownGmailKey
+        : trimmedEmail === user?.email?.toLowerCase();
+
+      if (isOwnEmail) {
         Alert.alert('Error', "You can't search for your own email address.");
         setSearchResults([]);
         setSearching(false);
         return;
       }
 
-      const { data: usersFound, error: userSearchError } = await supabase
-        .from('profiles')
-        .select('id, email, full_name, avatar_url')
-        .ilike('email', `%${trimmedEmail}%`);
+      let matches: UserProfile[] = [];
+      if (queryGmailKey) {
+        const { data: gmailUsers, error: userSearchError } = await supabase
+          .from('profiles')
+          .select('id, email, full_name, avatar_url')
+          .ilike('email', '%@gmail.com');
 
-      if (userSearchError) throw userSearchError;
+        if (userSearchError) throw userSearchError;
 
-      const foundUser = usersFound?.[0];
+        matches = (gmailUsers ?? []).filter(
+          (profile) => gmailLocalWithoutDots(profile.email ?? '') === queryGmailKey
+        );
+      } else {
+        const { data: usersFound, error: userSearchError } = await supabase
+          .from('profiles')
+          .select('id, email, full_name, avatar_url')
+          .ilike('email', `%${trimmedEmail}%`);
 
-      if (!foundUser) {
+        if (userSearchError) throw userSearchError;
+        matches = usersFound?.[0] ? [usersFound[0]] : [];
+      }
+
+      if (matches.length === 0) {
         // User is not registered in the database
         setSearchResults([
           {
@@ -235,30 +264,33 @@ function ContactsScreen() {
         return;
       }
 
-      const { data: contactStatus, error: contactStatusError } = await supabase
-        .from('contacts')
-        .select('status')
-        .eq('user_id', user?.id)
-        .eq('contact_id', foundUser.id)
-        .single();
+      const results: UserProfile[] = [];
+      for (const foundUser of matches) {
+        const { data: contactStatus, error: contactStatusError } = await supabase
+          .from('contacts')
+          .select('status')
+          .eq('user_id', user?.id)
+          .eq('contact_id', foundUser.id)
+          .maybeSingle();
 
-      if (contactStatusError && contactStatusError.code !== 'PGRST116') {
-        throw contactStatusError;
-      }
-      
-      const updatedUser: UserProfile = { ...foundUser };
+        if (contactStatusError) {
+          throw contactStatusError;
+        }
 
-      if (contactStatus?.status === 'accepted') {
-        updatedUser.status = 'already_contact';
-      } else if (contactStatus?.status === 'invited') {
-        updatedUser.status = 'pending_invite';
-      } else {
-        // Here's the key: if the user is registered but not a contact,
-        // we'll explicitly mark them as 'not_contact'
-        updatedUser.status = 'not_contact';
+        const updatedUser: UserProfile = { ...foundUser };
+
+        if (contactStatus?.status === 'accepted') {
+          updatedUser.status = 'already_contact';
+        } else if (contactStatus?.status === 'invited') {
+          updatedUser.status = 'pending_invite';
+        } else {
+          updatedUser.status = 'not_contact';
+        }
+
+        results.push(updatedUser);
       }
-      
-      setSearchResults([updatedUser]);
+
+      setSearchResults(results);
 
     } catch (error) {
       console.error('Error during user search:', error);
@@ -408,6 +440,20 @@ if (userToContactError) throw userToContactError;
 
       if (!targetContactId) {
         throw new Error('Contact ID is missing for chat initiation.');
+      }
+
+      if (user?.id) {
+        try {
+          const block = await getBlockState(user.id, targetContactId);
+          if (block.blocked) {
+            Alert.alert('Messages stopped', 'This contact is blocked, so a new chat cannot be started.');
+            return;
+          }
+        } catch (error) {
+          console.error('Error checking contact block:', error);
+          Alert.alert('Error', 'Could not check whether this contact is blocked. Please try again.');
+          return;
+        }
       }
 
       // If we're in AI chat mode, check conversation limit first

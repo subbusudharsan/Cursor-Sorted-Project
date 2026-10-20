@@ -19,6 +19,21 @@ import { isStrongPassword, PASSWORD_RULE_DESCRIPTION } from '@/utils/passwordPol
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+function gmailLocalWithoutDots(email: string): string | null {
+  const normalized = email.trim().toLowerCase();
+  const at = normalized.lastIndexOf('@');
+  if (at <= 0) return null;
+  if (normalized.slice(at + 1) !== 'gmail.com') return null;
+  const local = normalized.slice(0, at).replace(/\./g, '');
+  return local.length > 0 ? local : null;
+}
+
+function isInvalidLogin(error: { message?: string; status?: number; code?: string } | null): boolean {
+  if (!error) return false;
+  const errorMessage = error.message?.toLowerCase() || '';
+  return errorMessage.includes('invalid login credentials') || errorMessage.includes('invalid credentials');
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [user, setUser] = useState<User | null>(null);
@@ -406,11 +421,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signIn = async (email: string, password: string) => {
-    console.log("🔐 signIn:", email);
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
+    const typedEmail = email.trim();
+    console.log("🔐 signIn:", typedEmail);
+    let { data, error } = await supabase.auth.signInWithPassword({
+      email: typedEmail,
       password,
     });
+
+    if (isInvalidLogin(error) && gmailLocalWithoutDots(typedEmail)) {
+      const { data: storedEmail, error: resolveError } = await supabase.rpc(
+        'resolve_gmail_signin_email',
+        { input_email: typedEmail }
+      );
+      if (
+        !resolveError &&
+        typeof storedEmail === 'string' &&
+        storedEmail.length > 0 &&
+        storedEmail.toLowerCase() !== typedEmail.toLowerCase()
+      ) {
+        const retry = await supabase.auth.signInWithPassword({
+          email: storedEmail,
+          password,
+        });
+        data = retry.data;
+        error = retry.error;
+      }
+    }
     console.log("🛬 signIn result:", data, error);
     
     if (error) {

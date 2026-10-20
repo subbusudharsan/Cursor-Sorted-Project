@@ -19,6 +19,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { router, useLocalSearchParams } from "expo-router";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
+import { blockUser, getBlockState, REPORT_REASONS, submitContentReport, unblockUser, type BlockState, type ReportReason } from "@/lib/userSafety";
 import { ArrowLeft, User, X, History, Home, ListFilter as Filter, AtSign, Hash } from "lucide-react-native";
 import { Colors, Shadows, BorderRadius, Spacing, Typography } from '@/constants/Colors';
 import { getLastTypingTag, replaceTypingTag, parseTaggedEntities, getCommonHashTags, type TaggedEntity } from '@/lib/tagParser';
@@ -281,7 +282,37 @@ function ContactChatScreen() {
   const [loading, setLoading] = useState(false);
   const [initialLoading, setInitialLoading] = useState(false); // ✅ PERFORMANCE: Show UI immediately, load data in background
   const [contact, setContact] = useState<Contact | null>(null);
+  const [blockState, setBlockState] = useState<BlockState | null>(null);
+  const [showReportModal, setShowReportModal] = useState(false);
+  const [reportReason, setReportReason] = useState<ReportReason | null>(null);
+  const [reportDetails, setReportDetails] = useState('');
+  const [reportSubmitting, setReportSubmitting] = useState(false);
+  const [otherUserId, setOtherUserId] = useState<string | null>(typeof contactId === 'string' ? contactId : null);
+  const contactIsBlocked = !!blockState?.blocked;
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof contactId === 'string' && contactId) {
+      setOtherUserId(contactId);
+      return;
+    }
+    const chatToRead = currentChatId || (typeof chatId === 'string' ? chatId : null);
+    if (!chatToRead || !user?.id) return;
+    let cancelled = false;
+    supabase
+      .from('chats')
+      .select('user_id, contact_id')
+      .eq('id', chatToRead)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (cancelled || !data) return;
+        const other = data.user_id === user.id ? data.contact_id : data.user_id;
+        if (other) setOtherUserId(String(other));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [contactId, currentChatId, chatId, user?.id]);
   const screenChatIdRef = useRef<string | null>(null);
   const chatScreenOpenedForRef = useRef<string | null>(null);
   const displayedOptionsRef = useRef<string[]>([]);
@@ -1685,6 +1716,9 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       }
       const id = chatId as string;
       const sameChatStillOpen = chatScreenOpenedForRef.current === id;
+      if (!sameChatStillOpen && !receiverHistoryLeaveTimers.has(id)) {
+        historyLeaveStarted.delete(id);
+      }
       const remembered = rememberedChatLines
         && rememberedChatLines.chatId === id
         && rememberedChatLines.userId === String(user.id)
@@ -1716,7 +1750,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
         console.log("🧹 Cleared messagesRef for new chat:", id);
       } else if (remembered && messagesRef.current.length === 0) {
         messagesRef.current = remembered;
-        messagesReadyRef.current = true;
+        messagesReadyRef.current = false;
         chatHasLinesRef.current = true;
         setMessages(remembered);
         console.log('Same chat opened again — putting the lines back');
@@ -1881,8 +1915,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           
           // ✅ Start checking immediately (non-blocking)
           checkPregeneratedTurns();
-        } else if (!finishedChatRef.current) {
-          // ✅ If options already showing, just ensure they're up to date
+        } else if (!finishedChatRef.current && !sameChatStillOpen && !remembered) {
           fetchInitialOptions(id, user.id, 0, { force: true });
         }
         unsubscribeMessages = subscribeToMessages(id, user.id);
@@ -3030,6 +3063,16 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     return true;
   };
 
+  // A skipped load must still put saved choices on an empty screen. It must not write a second set.
+  const showSavedChoicesIfScreenEmpty = (chatId: string, userId: string) => {
+    if (!chatId || !userId || hintRefreshIsWaiting(chatId)) return;
+    if (choicesAlreadyOnScreenForThisTurn(chatId, userId)) {
+      revealHeldChoices(userId);
+      return;
+    }
+    void showChoicesAlreadySaved(chatId, userId);
+  };
+
   const confirmChatHasSentLines = async (chatId: string) => {
     if (hintRefreshIsWaiting(chatId)) return false;
     if (messagesRef.current.length > 0 || chatHasLinesRef.current) {
@@ -3254,6 +3297,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     // ✅ FIX: Prevent duplicate calls - if already fetching for this user, skip
     if (isFetchingOptionsRef.current && _retryCount === 0) {
       console.log("ℹ️ Already fetching options, skipping duplicate call");
+      showSavedChoicesIfScreenEmpty(chatId, userId);
       return;
     }
     
@@ -3361,6 +3405,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       if (_retryCount === 0 && pending?.messageId === messageId) {
         console.log("ℹ️ Second phone already waiting for this reply");
         isFetchingOptionsRef.current = false;
+        showSavedChoicesIfScreenEmpty(chatId, userId);
         return;
       }
       if (!pending || pending.messageId !== messageId) {
@@ -3394,6 +3439,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       }
       console.log("ℹ️ Second phone check finished");
       isFetchingOptionsRef.current = false;
+      showSavedChoicesIfScreenEmpty(chatId, userId);
       return;
     }
     
@@ -4434,8 +4480,13 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     let claimedMessageId: string | null = null;
     if (messageId) {
       if (optionsLoadHandledMessageIdsRef.current.has(messageId)) {
-        console.log(`⏸️ Options load already handled for message ${messageId} (${reason})`);
-        return;
+        if (displayedOptionsRef.current.length > 0) {
+          console.log(`⏸️ Options load already handled for message ${messageId} (${reason})`);
+          showSavedChoicesIfScreenEmpty(chatId, currentUserId);
+          return;
+        }
+        optionsLoadHandledMessageIdsRef.current.delete(messageId);
+        console.log(`🔓 Empty screen — trying this reply again (${reason})`);
       }
       optionsLoadHandledMessageIdsRef.current.add(messageId);
       claimedMessageId = messageId;
@@ -4540,7 +4591,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       if (chatHasSentLines && !hintRefreshIsWaiting(chatId)) {
         console.log(`ℹ️ loadOptionsForCurrentUserTurn: reply follows the latest message — skip guessed turns (${reason})`);
         await fetchInitialOptions(chatId, currentUserId, 0, { force: true });
-        loadSucceeded = true;
+        loadSucceeded = displayedOptionsRef.current.length > 0;
         return;
       }
 
@@ -4579,7 +4630,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       // Fallback: force initial/options fetch (message_options / contextual path)
       console.log(`ℹ️ loadOptionsForCurrentUserTurn: no pregen after wait — fetchInitialOptions (${reason})`);
       await fetchInitialOptions(chatId, currentUserId, 0, { force: true });
-      loadSucceeded = true;
+      loadSucceeded = displayedOptionsRef.current.length > 0;
       resolveWaitingForOptions(currentUserId);
     } catch (err) {
       console.warn(`⚠️ loadOptionsForCurrentUserTurn error (${reason}):`, err);
@@ -5067,11 +5118,25 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
   // 🌙 Closure blending end
 
   // ---- send message ----
+  const refreshBlockState = useCallback(async () => {
+    if (!user?.id || !otherUserId) return null;
+    try {
+      const next = await getBlockState(user.id, otherUserId);
+      setBlockState(next);
+      return next;
+    } catch (error) {
+      console.error('Error checking contact block:', error);
+      return null;
+    }
+  }, [user?.id, otherUserId]);
+
+  useEffect(() => {
+    void refreshBlockState();
+  }, [refreshBlockState]);
+
   const sendMessage = async (messageContent: string) => {
     const content = messageContent.trim();
     if (!content || !currentChatId || loading) return;
-      // ← ADD THIS LINE
-      hasSentMessage.current = true;
     // Check if conversation is already resolved
     const { data: chatCheck } = await supabase
       .from("chats")
@@ -5083,6 +5148,24 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       showNotification('info', 'Conversation Closed', 'This conversation has been completed and closed.');
       return;
     }
+    const counterpartId = user?.id && chatCheck
+      ? (user.id === chatCheck.user_id ? chatCheck.contact_id : chatCheck.user_id)
+      : otherUserId;
+    if (user?.id && counterpartId) {
+      try {
+        const block = await getBlockState(user.id, String(counterpartId));
+        setBlockState(block);
+        if (block.blocked) {
+          showNotification('info', 'Messages stopped', 'This contact is blocked, so a new message cannot be sent.');
+          return;
+        }
+      } catch (error) {
+        console.error('Error checking contact block:', error);
+        showNotification('error', 'Send stopped', 'Could not check whether this contact is blocked. Please try again.');
+        return;
+      }
+    }
+    hasSentMessage.current = true;
     console.log("\n" + "🚀".repeat(30));
     console.log("📤 SENDING MESSAGE");
     console.log(" From User ID:", user?.id);
@@ -5883,6 +5966,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     }
   };
   const handleSuggestedOptionPress = (option: string, index: number) => {
+    if (contactIsBlocked) return;
     if (regenerationInProgressRef.current) return;
     hasSentMessage.current = true;
     triggerOptionSelectVisuals(index);
@@ -7642,6 +7726,68 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     String(pendingOptionsRecipientId) === String(user.id);
   const recentThreshold = Math.max(0, displayedMessages.length - 2);
 
+  const handleBlockPress = () => {
+    if (!user?.id || !otherUserId) return;
+    const removing = !!blockState?.blockedByMe;
+    Alert.alert(
+      removing ? 'Unblock contact' : 'Block contact',
+      removing
+        ? 'New messages can be sent again after you unblock this person.'
+        : 'New messages and new contact chats will stop between you and this person. You can still read this chat.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: removing ? 'Unblock' : 'Block',
+          style: removing ? 'default' : 'destructive',
+          onPress: async () => {
+            try {
+              if (removing) {
+                await unblockUser(user.id, otherUserId);
+              } else {
+                await blockUser(user.id, otherUserId);
+              }
+              const nextBlock = await refreshBlockState();
+              const canSendAgain = removing && !!nextBlock && !nextBlock.blocked;
+              showNotification('success', removing ? 'Contact unblocked' : 'Contact blocked',
+                !removing
+                  ? 'New messages are stopped.'
+                  : (canSendAgain ? 'You can send messages again.' : 'New messages are still stopped.'));
+            } catch (error) {
+              const message = error instanceof Error ? error.message : 'Could not update this block.';
+              showNotification('error', 'Block failed', message);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleSubmitReport = async () => {
+    if (!user?.id || !otherUserId || !reportReason || reportSubmitting) return;
+    setReportSubmitting(true);
+    try {
+      const latestFromOther = [...messages].reverse().find((message) => message.sender_id && message.sender_id !== user.id);
+      await submitContentReport({
+        reporterId: user.id,
+        reportedUserId: otherUserId,
+        chatId: currentChatId,
+        messageId: latestFromOther?.id ?? null,
+        messageExcerpt: latestFromOther?.content ?? null,
+        reason: reportReason,
+        details: reportDetails,
+      });
+      setShowReportModal(false);
+      setReportReason(null);
+      setReportDetails('');
+      showNotification('success', 'Report sent', 'The report is saved for review. The other person cannot read it.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not send this report.';
+      showNotification('error', 'Report failed', message);
+    } finally {
+      setReportSubmitting(false);
+    }
+  };
+
   // ✅ PERFORMANCE: Removed blocking loading screen - UI shows immediately while data loads in background
   return (
     <>
@@ -7709,6 +7855,28 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
     },
   ]}
 >
+  {otherUserId ? (
+    <TouchableOpacity
+      style={styles.safetyButton}
+      onPress={() => {
+        setReportReason(null);
+        setReportDetails('');
+        setShowReportModal(true);
+      }}
+      activeOpacity={0.7}
+    >
+      <Text style={styles.safetyButtonText}>Report</Text>
+    </TouchableOpacity>
+  ) : null}
+  {otherUserId ? (
+    <TouchableOpacity
+      style={styles.safetyButton}
+      onPress={handleBlockPress}
+      activeOpacity={0.7}
+    >
+      <Text style={styles.safetyButtonText}>{blockState?.blockedByMe ? 'Unblock' : 'Block'}</Text>
+    </TouchableOpacity>
+  ) : null}
   <TouchableOpacity 
     style={styles.historyButton} 
     onPress={() => router.push('/(tabs)/chats')}
@@ -7746,6 +7914,15 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
       {closureNote ? (
         <View style={styles.closureNote}>
           <Text style={styles.closureNoteText}>{closureNote}</Text>
+        </View>
+      ) : null}
+      {contactIsBlocked ? (
+        <View style={styles.blockBanner}>
+          <Text style={styles.blockBannerText}>
+            {blockState?.blockedByMe
+              ? 'You blocked this person. New messages are stopped.'
+              : 'New messages are stopped.'}
+          </Text>
         </View>
       ) : null}
     {/* 🌈 Peaceful Closure Banner (Animated) */}
@@ -9147,7 +9324,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             </Animated.View>
           )}
           {/* 🔄 Recovery UI: Show when options failed to generate */}
-          {optionsGenerationFailed && !waitingForOptions && !showSuggestedOptions && (
+          {optionsGenerationFailed && !waitingForOptions && !showSuggestedOptions && !contactIsBlocked && (
             <View style={styles.recoveryContainer}>
               <Text style={styles.recoveryTitle}>Options Not Available</Text>
               <Text style={styles.recoveryText}>
@@ -9192,7 +9369,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
             </Text>
           </View>
         )}
-        {showSuggestedOptions && suggestedOptions.length > 0 && !manualInputMode && !waitingForOptions && !isChatClosed && (
+        {showSuggestedOptions && suggestedOptions.length > 0 && !manualInputMode && !waitingForOptions && !isChatClosed && !contactIsBlocked && (
           <Animated.View
             style={[
               styles.suggestedOptionsContainer,
@@ -9276,7 +9453,7 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           </Animated.View>
         )}
         {/* ✍️ Manual Input Mode */}
-        {manualInputMode && (
+        {manualInputMode && !contactIsBlocked && (
           <View style={styles.manualInputContainer}>
             <View style={styles.manualInputHeader}>
               <Text style={styles.manualInputTitle}>Type your response:</Text>
@@ -9325,6 +9502,59 @@ const resolveWaitingForOptions = useCallback((recipientId?: string | null) => {
           </View>
         )}
       </View>
+      <Modal
+        visible={showReportModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!reportSubmitting) setShowReportModal(false);
+        }}
+      >
+        <View style={styles.reportOverlay}>
+          <View style={styles.reportCard}>
+            <Text style={styles.reportTitle}>Report this person</Text>
+            <Text style={styles.reportBody}>
+              Choose a reason. The report is saved for review. The other person cannot read it.
+            </Text>
+            {REPORT_REASONS.map((reason) => (
+              <TouchableOpacity
+                key={reason.id}
+                style={[styles.reportReason, reportReason === reason.id && styles.reportReasonSelected]}
+                onPress={() => setReportReason(reason.id)}
+                disabled={reportSubmitting}
+              >
+                <Text style={styles.reportReasonText}>{reason.label}</Text>
+              </TouchableOpacity>
+            ))}
+            <TextInput
+              style={styles.reportDetails}
+              placeholder="Add details (optional)"
+              placeholderTextColor={Colors.text.tertiary}
+              value={reportDetails}
+              onChangeText={setReportDetails}
+              maxLength={1000}
+              multiline
+              editable={!reportSubmitting}
+            />
+            <View style={styles.reportActions}>
+              <TouchableOpacity
+                style={styles.reportCancel}
+                onPress={() => setShowReportModal(false)}
+                disabled={reportSubmitting}
+              >
+                <Text style={styles.reportCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.reportSubmit, (!reportReason || reportSubmitting) && styles.reportSubmitDisabled]}
+                onPress={() => { void handleSubmitReport(); }}
+                disabled={!reportReason || reportSubmitting}
+              >
+                <Text style={styles.reportSubmitText}>{reportSubmitting ? 'Sending...' : 'Submit report'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
       {/* ✅ NEW: Unified History Modal with Filter Toggles */}
       <Modal
         visible={showHistoryModal}
@@ -10224,6 +10454,107 @@ hintTagName: {
   fontSize: Typography.fontSize.sm,
   color: Colors.text.primary,
   fontWeight: Typography.fontWeight.medium,
+},
+safetyButton: {
+  minWidth: 52,
+  height: 34,
+  borderRadius: 8,
+  backgroundColor: '#FFF9C4',
+  justifyContent: 'center',
+  alignItems: 'center',
+  borderWidth: 1,
+  borderColor: '#F9E79F',
+  paddingHorizontal: 6,
+},
+safetyButtonText: {
+  fontSize: 11,
+  fontWeight: '700',
+  color: '#333333',
+},
+blockBanner: {
+  marginHorizontal: Spacing.md,
+  marginBottom: Spacing.sm,
+  padding: Spacing.sm,
+  borderRadius: BorderRadius.lg,
+  backgroundColor: '#FFEBEE',
+  borderWidth: 1,
+  borderColor: '#EF9A9A',
+},
+blockBannerText: {
+  color: '#B71C1C',
+  fontSize: Typography.fontSize.sm,
+  textAlign: 'center',
+},
+reportOverlay: {
+  flex: 1,
+  backgroundColor: 'rgba(0,0,0,0.45)',
+  justifyContent: 'center',
+  padding: Spacing.lg,
+},
+reportCard: {
+  backgroundColor: Colors.surface,
+  borderRadius: BorderRadius.lg,
+  padding: Spacing.md,
+  gap: Spacing.sm,
+},
+reportTitle: {
+  fontSize: Typography.fontSize.lg,
+  fontWeight: Typography.fontWeight.bold,
+  color: Colors.text.primary,
+},
+reportBody: {
+  fontSize: Typography.fontSize.sm,
+  color: Colors.text.secondary,
+},
+reportReason: {
+  borderWidth: 1,
+  borderColor: Colors.borderLight,
+  borderRadius: BorderRadius.md,
+  paddingVertical: Spacing.sm,
+  paddingHorizontal: Spacing.md,
+},
+reportReasonSelected: {
+  borderColor: Colors.primary[500],
+  backgroundColor: Colors.primary[50],
+},
+reportReasonText: {
+  color: Colors.text.primary,
+  fontSize: Typography.fontSize.sm,
+},
+reportDetails: {
+  minHeight: 72,
+  borderWidth: 1,
+  borderColor: Colors.borderLight,
+  borderRadius: BorderRadius.md,
+  padding: Spacing.sm,
+  color: Colors.text.primary,
+  textAlignVertical: 'top',
+},
+reportActions: {
+  flexDirection: 'row',
+  justifyContent: 'flex-end',
+  gap: Spacing.sm,
+},
+reportCancel: {
+  paddingVertical: Spacing.sm,
+  paddingHorizontal: Spacing.md,
+},
+reportCancelText: {
+  color: Colors.text.secondary,
+  fontWeight: '600',
+},
+reportSubmit: {
+  backgroundColor: Colors.primary[500],
+  borderRadius: BorderRadius.md,
+  paddingVertical: Spacing.sm,
+  paddingHorizontal: Spacing.md,
+},
+reportSubmitDisabled: {
+  opacity: 0.5,
+},
+reportSubmitText: {
+  color: '#ffffff',
+  fontWeight: '700',
 },
 });
 export default ContactChatScreen;

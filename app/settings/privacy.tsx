@@ -196,8 +196,7 @@ export default function PrivacySecurityScreen() {
                       console.log('🔐 Calling delete-user-account edge function');
                       console.log('📤 Request body:', JSON.stringify({ userId: user.id }));
 
-                      // Get the anon key for Authorization header
-                      // Even though the function has auth: false, Supabase runtime may still require the header
+                      // The anon key stays in the apikey header. Authorization carries the signed-in session.
                       const getEnvVariable = (key: string): string => {
                         if (process.env[key]) return process.env[key]!;
                         if (Constants.expoConfig?.extra?.[key]) return Constants.expoConfig.extra[key];
@@ -206,6 +205,14 @@ export default function PrivacySecurityScreen() {
                           return Constants.manifest2.extra.expoClient.extra[key];
                         return '';
                       };
+                      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+                      const accessToken = sessionData.session?.access_token;
+                      if (sessionError || !accessToken) {
+                        showNotification('error', 'Error', 'Please sign in again before deleting your account.');
+                        setLoading(false);
+                        return;
+                      }
+
                       const anonKey = getEnvVariable('EXPO_PUBLIC_SUPABASE_ANON_KEY');
 
                       const response = await fetch(
@@ -214,7 +221,8 @@ export default function PrivacySecurityScreen() {
                           method: "POST",
                           headers: {
                             "Content-Type": "application/json",
-                            "Authorization": `Bearer ${anonKey}`,
+                            "Authorization": `Bearer ${accessToken}`,
+                            "apikey": anonKey,
                           },
                           body: JSON.stringify({ userId: user.id }),
                         }
@@ -483,10 +491,9 @@ export default function PrivacySecurityScreen() {
             <View style={styles.infoCard}>
               <Shield size={16} color={Colors.primary[500]} />
               <View style={styles.infoContent}>
-                <Text style={styles.infoTitle}>Your Data is Secure</Text>
+                <Text style={styles.infoTitle}>How your conversations are stored</Text>
                 <Text style={styles.infoText}>
-                  Sorted uses end-to-end encryption for all conversations and stores your data securely. 
-                  We never share your personal information with third parties without your explicit consent.
+                  Conversations are stored so Sorted and its AI features can read them. They are not end-to-end encrypted. When you use AI features, the text you submit is sent to Anthropic. Sorted does not sell your personal information.
                 </Text>
               </View>
             </View>

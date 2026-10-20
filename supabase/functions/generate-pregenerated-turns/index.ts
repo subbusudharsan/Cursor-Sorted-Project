@@ -24,6 +24,226 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey"
 };
 
+function emojiOnlyLine(line: string): boolean {
+  const trimmed = String(line || "").trim();
+  if (!trimmed) return false;
+  return /^[\p{Emoji_Presentation}\p{Extended_Pictographic}\uFE0F\s]+$/u.test(trimmed);
+}
+
+const OPENER_ACT_SKIP = new Set([
+  "want", "think", "know", "feel", "felt", "need", "hope", "guess", "have", "been",
+  "being", "just", "really", "still", "also", "would", "could", "should", "sorry",
+  "glad", "sure", "yeah", "here", "there", "like", "love", "hate", "wish",
+  "the", "and", "but", "that", "this", "with", "from", "your", "you", "was", "were",
+  "what", "when", "where", "how", "why", "not", "for", "are", "did", "about",
+  "into", "over", "them", "they", "her", "his", "she", "him", "our", "get", "got",
+  "see", "saw", "hear", "heard", "make", "made", "very", "only"
+]);
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function sameActWords(acts: Set<string>): Set<string> {
+  const words = new Set(acts);
+  if ([...acts].some((word) => word.startsWith("congratul"))) {
+    words.add("celebrate");
+    words.add("celebrating");
+    words.add("celebration");
+    words.add("congrats");
+    words.add("congratulations");
+  }
+  return words;
+}
+
+// The word is said as "I ...", and not only as "you ...".
+function speakerClaimsWord(line: string, word: string): boolean {
+  const escaped = escapeRegExp(word);
+  const aboutYou = new RegExp(`\\byou(?:\\s+(?!i\\b|i'm\\b)\\w+){0,3}\\s+${escaped}\\b`, "i");
+  const aboutMe = new RegExp(`\\b(?:i|i'm|i am|i was|i wasn't)(?:\\s+\\w+){0,8}\\s+${escaped}\\b`, "i");
+  if (!aboutMe.test(line)) return false;
+  if (!aboutYou.test(line)) return true;
+  return aboutMe.test(line.replace(aboutYou, " "));
+}
+
+// The other person is quoting what was said, but the line still speaks as the opener or as nobody.
+function otherPersonDodgesWhatWasSaid(line: string, story: string): boolean {
+  if (/\bi want to understand your side of this\b/i.test(line)) return true;
+  if (/\bhelp me see what you heard from me\b/i.test(line)) return true;
+  if (/\btell me what landed wrong for you\b/i.test(line)) return true;
+  if (/jealous/i.test(story) && /\bthey\s+(were|are|seemed|sounded)\s+jealous\b/i.test(line)) return true;
+  const otherPersonJudged = /\b(she|he)\s+(said i|told me i|called me|interpreted|thought i)\b/i.test(story);
+  const ownsIt = /\b(i heard|i said|i felt|i thought|i meant|made me|to me|i picked|i was answering)\b/i.test(line);
+  if (!otherPersonJudged || ownsIt) return false;
+  if (/\byou(?:'re| are)?\s+confused\b/i.test(line)) return true;
+  if (/\byou took it the wrong way\b/i.test(line)) return true;
+  if (/\byou (?:misread|misunderstood|interpreted)\b/i.test(line)) return true;
+  return false;
+}
+
+// True only when a line says the opener's own act or feeling. A fair reply is left as it is.
+function otherPersonSpeaksAsOpener(lines: string[], openerStory: string): boolean {
+  const story = String(openerStory || "");
+  if (!story.trim()) return false;
+  const acts = new Set<string>();
+  const takeActs = (re: RegExp) => {
+    const pattern = new RegExp(re.source, re.flags);
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(story))) {
+      const word = match[1].toLowerCase();
+      if (word.length >= 4 && !OPENER_ACT_SKIP.has(word)) acts.add(word);
+    }
+  };
+  takeActs(/\bi(?:'m| am| was| wasn't| were)?\s+(?:just\s+|really\s+|only\s+|not\s+)?([a-z']{4,})/gi);
+  takeActs(/\b(?:called me|said i am|said i was|told me i am|told me i was)\s+([a-z']{4,})/gi);
+  takeActs(/\buser a\s+(?:was\s+|is\s+|has\s+|had\s+)?([a-z']{4,})/gi);
+  const claimed = sameActWords(acts);
+  const nouns = new Set<string>();
+  const nounSkip = new Set(["her", "his", "their", "your", "the", "new", "our", "this", "that", "very"]);
+  const nounRe = /\b(?:about|on|over|regarding)\s+((?:[a-z]+\s+){0,3}[a-z]+)/gi;
+  let nounMatch: RegExpExecArray | null;
+  while ((nounMatch = nounRe.exec(story))) {
+    for (const word of nounMatch[1].toLowerCase().split(/\s+/)) {
+      if (word.length >= 3 && !nounSkip.has(word) && !OPENER_ACT_SKIP.has(word)) nouns.add(word);
+    }
+  }
+  const openerUnsure = /\bi(?:'m| am) not sure\b/i.test(story);
+  if (claimed.size === 0 && nouns.size === 0 && !openerUnsure) return false;
+  const actList = [...claimed].map(escapeRegExp).join("|");
+  const nounList = [...nouns].map(escapeRegExp).join("|");
+  for (const raw of lines) {
+    const line = String(raw || "").trim();
+    if (!line || emojiOnlyLine(line)) continue;
+    if (otherPersonDodgesWhatWasSaid(line, story)) return true;
+    for (const word of claimed) {
+      if (speakerClaimsWord(line, word)) return true;
+    }
+    if (openerUnsure && /\bi(?:'m| am) not sure\b/i.test(line) && (claimed.size > 0 || nouns.size > 0)) {
+      const sharesStory = [...claimed, ...nouns].some((word) => new RegExp(`\\b${escapeRegExp(word)}\\b`, "i").test(line));
+      if (sharesStory) return true;
+    }
+    if (actList && new RegExp(`\\bi(?:'m| am| was| wasn't)?\\s+(?:just\\s+|really\\s+|only\\s+|not\\s+)?(?:${actList})\\b`, "i").test(line)) {
+      return true;
+    }
+    const claimsTheAct = /\b(i said|i told|when i said|i came across|i was trying|i wasn't trying|i was just trying|i didn't mean)\b/i.test(line);
+    if (!claimsTheAct) continue;
+    if (nounList && new RegExp(`\\b(?:${nounList})\\b`, "i").test(line)) return true;
+  }
+  return false;
+}
+
+// The opener's own three lines never enter this function.
+function listenerAnswer(story: string, index: number): string {
+  const actMatch = String(story || "").match(/\bi\s+(congratulated|apologized|asked|told|called|texted|messaged|brought|mentioned)\b/i);
+  const labelMatch = String(story || "").match(/\b(?:said|called|told)\s+i\s+(?:am|was)\s+([a-z]+)/i);
+  const act = actMatch ? actMatch[1].toLowerCase() : "";
+  const label = labelMatch ? labelMatch[1].toLowerCase() : "";
+  if (index % 2 === 1 && act && label) return `I heard you ${act} me, and I said you seemed ${label}.`;
+  if (act && label) return `When you ${act} me, I said you seemed ${label}.`;
+  if (act) return `When you ${act} me, I was answering what I heard.`;
+  if (label) return `I said you seemed ${label} because of what I heard from you.`;
+  return "I was answering what I heard you say.";
+}
+
+function keepOtherPersonsVoice(lines: string[], story: string): string[] {
+  return lines.map((line, index) => {
+    if (emojiOnlyLine(line)) return line;
+    if (otherPersonSpeaksAsOpener([line], story)) return listenerAnswer(story, index);
+    return line;
+  });
+}
+
+async function askForOtherPersonsLines(
+  apiKey: string,
+  lines: string[],
+  story: string,
+  heard: string,
+  hint: string,
+  again: boolean
+): Promise<string[] | null> {
+  try {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01"
+      },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 500,
+        temperature: again ? 0.2 : 0.4,
+        system: "You fix who is speaking. Return JSON only.",
+        messages: [{
+          role: "user",
+          content: `The person who opened this issue said: "${story}"
+The latest line to answer is: "${heard}"
+${hint ? `A private feeling already in play: "${hint}". Keep that feeling if a line already has it.` : ""}
+These ${lines.length} replies belong to the OTHER person, the one who heard the opener.
+${again ? "The last try still spoke as the opener. Do not copy those lines." : ""}
+This is about what was said. Answer as the person who heard it, in this shape: "When you <their action>, I <what I felt or what I said back>."
+Do not say "they" for either person. Do not say the opener is confused. Do not say the opener took it the wrong way.
+Do not use "I want to understand your side of this."
+Keep a reply unchanged only when it is already the other person's own words.
+A reply that says the opener's action or feeling as "I" is not the other person's words. Rewrite that reply.
+If a reply is only an emoji, copy it unchanged.
+Do not apologize as the opener. Do not say the opener's action as "I". Do not say the opener's feeling as "I", including "I'm not sure" and "I wasn't" about what they were called.
+Return exactly ${lines.length} replies.
+Current replies:
+${lines.map((line) => `- ${line}`).join("\n")}
+JSON: {"options":["reply"]}`
+        }]
+      })
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    const text = data?.content?.[0]?.text || "";
+    let options: string[] = [];
+    try {
+      options = JSON.parse(text).options || [];
+    } catch {
+      const match = text.match(/\{[\s\S]*"options"[\s\S]*\}/);
+      if (match) options = JSON.parse(match[0]).options || [];
+    }
+    const rewritten = options.map((line) => String(line || "").trim()).filter((line) => line.length > 0);
+    if (rewritten.length !== lines.length) return null;
+    return rewritten.map((line, index) => (emojiOnlyLine(lines[index]) ? lines[index] : line));
+  } catch (err) {
+    console.warn("⚠️ Could not check the other person's voice", err);
+    return null;
+  }
+}
+
+// Ask for the other person's lines again. Do not flip I and you here.
+async function rewriteOtherPersonsLines(
+  apiKey: string,
+  lines: string[],
+  openerStory: string,
+  latestLine: string,
+  privateHint: string
+): Promise<string[] | null> {
+  const clean = lines.map((line) => String(line ?? "").trim());
+  if (!apiKey || clean.length === 0 || clean.every((line) => !line)) return null;
+  const story = String(openerStory || "").replace(/\s+/g, " ").slice(0, 700);
+  if (!otherPersonSpeaksAsOpener(clean, story)) return null;
+  const heard = String(latestLine || "").replace(/\s+/g, " ").slice(0, 300);
+  const hint = String(privateHint || "").replace(/\s+/g, " ").slice(0, 300);
+  let rewritten = await askForOtherPersonsLines(apiKey, clean, story, heard, hint, false);
+  const stillOpener = (set: string[] | null) =>
+    !set || set.some((line, index) => !emojiOnlyLine(clean[index]) && otherPersonSpeaksAsOpener([line], story));
+  if (stillOpener(rewritten)) {
+    const second = await askForOtherPersonsLines(apiKey, rewritten || clean, story, heard, hint, true);
+    if (second) rewritten = second;
+  }
+  const source = rewritten && rewritten.length === clean.length ? rewritten : clean;
+  const fixed = keepOtherPersonsVoice(
+    source.map((line, index) => (emojiOnlyLine(clean[index]) ? clean[index] : line)),
+    story
+  );
+  console.log("ℹ️ Checked the other person's lines are in their voice");
+  return fixed;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, {
@@ -1854,6 +2074,18 @@ Use this history to understand the conversation flow and ensure your generated t
         
         return fixed;
       };
+
+      // The other person's set is rewritten in their voice before the existing pronoun and smiley steps.
+      if (recipientId === userBId) {
+        const rewritten = await rewriteOtherPersonsLines(
+          CLAUDE_API_KEY,
+          turn.options.map((opt: string) => String(opt)),
+          [thoughtsA, contextData.summary_a || ""].filter(Boolean).join("\n"),
+          "",
+          hintFromB || ""
+        );
+        if (rewritten) turn.options = rewritten;
+      }
 
       // ✅ POST-GENERATION ENFORCEMENT: Ensure exactly one emoji-only option when needed
       let finalOptions = [...turn.options]; // Copy options array
